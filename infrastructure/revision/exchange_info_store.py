@@ -478,9 +478,12 @@ class ExchangeInfoRowVerifier:
         """Prove the Raw table at ``head`` without retaining rows or a proof cache.
 
         The returned RunRef is sorted by ``(revision_id, arrival_seq)`` and contains exact rows in
-        ``{"row": ..., "sort_key": [...]}`` envelopes. Consume it using ``iter_run`` and close
-        that context. Scratch objects may orphan on failure; callers must provide a namespace
-        distinct from report/evidence storage. The cap is explicit and checked before spooling.
+        ``{"row": ..., "sort_key": [...], "snapshot_id": ..., "snapshot_ordinal": ...}``
+        envelopes. The snapshot identity and ordinal are derived from the actual verified catalog
+        history row paired with its data row, never inferred from arrival order alone. Consume it
+        using ``iter_run`` and close that context. Scratch objects may orphan on failure; callers
+        must provide a namespace distinct from report/evidence storage. The cap is explicit and
+        checked before spooling.
 
         This reduces Python row/result retention. Catalog snapshot metadata and an individual
         backend record batch remain implementation-dependent, so this is not an E1-CAP-1 claim.
@@ -521,9 +524,10 @@ class ExchangeInfoRowVerifier:
 
         row_builder = make_run(pair_key)
         history_builder = make_run(pair_key)
+        proved_builder = make_run(pair_key)
         revision_builder = make_run(lambda row: row["revision_id"])
         arrival_builder = make_run(lambda row: row["arrival_seq"])
-        with row_builder, history_builder, revision_builder, arrival_builder:
+        with row_builder, history_builder, proved_builder, revision_builder, arrival_builder:
             head_info = self._catalog.get_snapshot(EXCHANGE_INFO_TABLE, head)
             if head_info.snapshot_id != head:
                 raise CatalogIntegrityError("Raw snapshot lookup returned a different head")
@@ -541,6 +545,11 @@ class ExchangeInfoRowVerifier:
                     raise CatalogIntegrityError(
                         f"{EXCHANGE_INFO_TABLE} snapshot {snapshot.snapshot_id} is not a "
                         "one-row snapshot append"
+                    )
+                if int(match.group(2)) != snapshot.total_rows - 1:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} snapshot {snapshot.snapshot_id} has a batch "
+                        "arrival sequence inconsistent with its append ordinal"
                     )
                 history_row = {
                     "sort_key": [match.group(1), int(match.group(2))],
@@ -629,6 +638,14 @@ class ExchangeInfoRowVerifier:
                     check_batch_snapshot(
                         BINANCE_SPOT_EXCHANGE_INFO, batch_id, snapshot, [found["row"]]
                     )
+                    proved = {
+                        "row": found["row"],
+                        "sort_key": found["sort_key"],
+                        "snapshot_id": snapshot.snapshot_id,
+                        "snapshot_ordinal": snapshot.total_rows - 1,
+                    }
+                    self._check_bounded_row(proved, max_record_bytes)
+                    proved_builder.add(proved)
                     expected_item = next(expected_rows, sentinel)
                     found_item = next(found_rows, sentinel)
                 if expected_item is not sentinel or found_item is not sentinel:
@@ -645,7 +662,10 @@ class ExchangeInfoRowVerifier:
                                 f"{EXCHANGE_INFO_TABLE}: {field} {current} occurs more than once"
                             )
                         previous = current
-            return row_root
+            proved_root = proved_builder.finish()
+            if proved_root is None:
+                raise CatalogIntegrityError("a non-empty Raw table produced an empty proved run")
+            return proved_root
 
     @staticmethod
     def _check_bounded_row(row: Mapping[str, Any], maximum: int) -> None:

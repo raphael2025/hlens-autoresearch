@@ -123,8 +123,15 @@ def test_bounded_raw_table_proof_spools_sorted_rows_without_proof_cache(h: Harne
         assert verifier._proven == {}
         with iter_run(scratch, root) as rows:
             actual = list(rows)
+        history = {
+            snapshot.batch_id: (snapshot.snapshot_id, snapshot.total_rows - 1)
+            for snapshot in h.adapter.history(TABLE, h.head(TABLE))
+        }
         assert [item["sort_key"] for item in actual] == sorted(item["sort_key"] for item in actual)
         assert sorted(item["row"]["arrival_seq"] for item in actual) == [0, 1]
+        for item in actual:
+            batch_id = snapshot_batch_id(item["row"]["revision_id"], item["row"]["arrival_seq"])
+            assert (item["snapshot_id"], item["snapshot_ordinal"]) == history[batch_id]
     finally:
         verifier.close()
         scratch.close()
