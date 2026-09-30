@@ -8,7 +8,7 @@ time without retaining all observations.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import replace
 from itertools import chain, groupby, islice
 from typing import Any
@@ -165,7 +165,7 @@ def iter_planned_listing_revisions(
     *,
     max_record_bytes: int,
     finding_sink: Callable[[str, str, Any, Iterable[str], Callable[[int], str]], None],
-) -> Iterator[lr.PlannedListing]:
+) -> Generator[lr.PlannedListing]:
     """Derive the current chain one record at a time from sorted observation rows.
 
     ``rows`` must be ordered by ``(venue_symbol, retrieved_at, snapshot_revision_id)`` as emitted

@@ -64,6 +64,11 @@ from core.contracts.universe import (
 )
 from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
+from infrastructure.canonical.listing_bounded_verify import (
+    BoundedListingReplayProof,
+    FindingSink,
+    verify_listing_history_bounded,
+)
 from infrastructure.canonical.listing_history_runs import listing_history_prefix_run
 from infrastructure.canonical.listing_prefix_index import (
     ListingPrefixIndex,
@@ -232,6 +237,7 @@ class ListingDeriver:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._adapter = adapter
+        self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
         try:
             self._verifier = ExchangeInfoRowVerifier(adapter, storage, market_data_base_url)
@@ -331,6 +337,61 @@ class ListingDeriver:
             prefix_index=prefix_index,
             prefix_roots=prefix_roots,
             listing_batches=listing_batches,
+        )
+
+    def verify_bounded(
+        self,
+        *,
+        scratch_storage: StorageAdapter,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_record_bytes: int,
+        max_run_object_bytes: int,
+        prefix_leaf_max_records: int,
+        prefix_fanout: int,
+        prefix_max_node_bytes: int,
+        prefix_max_record_bytes: int,
+        row_chunk_capacity: int,
+        max_hash_chunk_bytes: int,
+        finding_sink: FindingSink,
+    ) -> BoundedListingReplayProof:
+        """Prove persisted Listing batches with bounded row streams and historical Raw prefixes.
+
+        The v1/v2 ``verify`` API and its materialized result are unchanged. This additive path
+        writes only caller-provided scratch storage, does not read the clock, and checks each
+        persisted batch's rows, knowledge-time floor, recorded contract version, and exact C3
+        batch fingerprint. PyIceberg history metadata remains an O(H) process-memory boundary.
+        """
+        inputs = self.bounded_replay_inputs(
+            scratch_storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+            prefix_leaf_max_records=prefix_leaf_max_records,
+            prefix_fanout=prefix_fanout,
+            prefix_max_node_bytes=prefix_max_node_bytes,
+            prefix_max_record_bytes=prefix_max_record_bytes,
+        )
+        return verify_listing_history_bounded(
+            self._adapter,
+            inputs,
+            evidence_storage=self._storage,
+            scratch_storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+            row_chunk_capacity=row_chunk_capacity,
+            max_hash_chunk_bytes=max_hash_chunk_bytes,
+            prefix_leaf_max_records=prefix_leaf_max_records,
+            prefix_fanout=prefix_fanout,
+            prefix_max_node_bytes=prefix_max_node_bytes,
+            prefix_max_record_bytes=prefix_max_record_bytes,
+            finding_sink=finding_sink,
         )
 
     # ------------------------------------------------------------------ entry points

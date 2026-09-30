@@ -182,6 +182,49 @@ class ListingPrefixIndex:
         selected = None if root is None else self._parse_ref(root)
         yield from self.iter_rows(selected)
 
+    def lookup(
+        self,
+        venue_symbol: str,
+        retrieved_at: datetime,
+        snapshot_revision_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Look up one exact observation key through the validated B+ tree path."""
+        if not isinstance(venue_symbol, str) or not venue_symbol:
+            raise ListingPrefixIndexError("lookup venue_symbol must be non-empty text")
+        if not isinstance(snapshot_revision_id, str) or not snapshot_revision_id:
+            raise ListingPrefixIndexError("lookup revision ID must be non-empty text")
+        if not isinstance(retrieved_at, datetime) or retrieved_at.tzinfo is None:
+            raise ListingPrefixIndexError("lookup retrieved_at must be timezone-aware")
+        offset = retrieved_at.utcoffset()
+        if offset is None or offset.total_seconds() != 0:
+            raise ListingPrefixIndexError("lookup retrieved_at must be UTC")
+        key = (venue_symbol, retrieved_at.astimezone(UTC), snapshot_revision_id)
+        ref = self._root
+        while ref is not None:
+            document = self._read_node(ref)
+            if document["kind"] == "internal":
+                children = [self._parse_ref(child) for child in document["children"]]
+                child_index = 0
+                for index in range(1, len(children)):
+                    if children[index].first_key > key:
+                        break
+                    child_index = index
+                ref = children[child_index]
+                continue
+            entries = document["entries"]
+            low, high = 0, len(entries)
+            while low < high:
+                middle = (low + high) // 2
+                entry_key = self._key_from_json(entries[middle]["key"])
+                if entry_key < key:
+                    low = middle + 1
+                else:
+                    high = middle
+            if low < len(entries) and self._key_from_json(entries[low]["key"]) == key:
+                return dict(entries[low]["row"])
+            return None
+        return None
+
     def _insert(
         self, ref: _NodeRef, entry: Mapping[str, Any], *, depth: int
     ) -> tuple[_NodeRef, _NodeRef | None]:
@@ -576,6 +619,7 @@ def _build_index_in_ordinal_order(
 ) -> tuple[ListingPrefixIndex, RunRef]:
     with roots, snapshot_ids:
         expected_ordinal = 0
+        raw_knowledge_floor: datetime | None = None
         for item in ordered_reader:
             ordinal = item["snapshot_ordinal"]
             if ordinal != expected_ordinal:
@@ -587,6 +631,14 @@ def _build_index_in_ordinal_order(
                 raise ListingPrefixIndexError("Raw proof row has an invalid snapshot id")
             snapshot_ids.add({"snapshot_id": snapshot_id, "snapshot_ordinal": ordinal})
             row = item["row"]
+            knowledge_time = row.get("knowledge_time")
+            if not isinstance(knowledge_time, datetime):
+                raise ListingPrefixIndexError("Raw proof row has invalid knowledge_time")
+            raw_knowledge_floor = (
+                knowledge_time
+                if raw_knowledge_floor is None or knowledge_time > raw_knowledge_floor
+                else raw_knowledge_floor
+            )
             requested = row["requested_symbols"]
             present = {entry["symbol"]: entry for entry in row["symbols"]}
             for symbol in requested:
@@ -611,6 +663,7 @@ def _build_index_in_ordinal_order(
                     "snapshot_id": snapshot_id,
                     "root": None if root is None else index._ref_json(root),
                     "observation_count": index.stats.observation_count,
+                    "raw_knowledge_floor": raw_knowledge_floor,
                 }
             )
             expected_ordinal += 1

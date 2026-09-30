@@ -161,6 +161,7 @@ def listing_history_prefix_run(
                     "snapshot": snapshot,
                     "root": root_row.get("root"),
                     "observation_count": root_row.get("observation_count"),
+                    "raw_knowledge_floor": root_row.get("raw_knowledge_floor"),
                 }
                 _check_row(joined, max_record_bytes)
                 joined_by_ordinal.add(joined)
