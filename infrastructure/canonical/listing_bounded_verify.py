@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import codecs
+import json
+import struct
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+import pyarrow as pa  # type: ignore[import-untyped]
 
 from core.contracts.storage import StorageAdapter
 from infrastructure import contract_version
@@ -263,6 +268,7 @@ def _scan_current_rows(
         try:
             for record_batch in reader:
                 for index in range(record_batch.num_rows):
+                    _preflight_arrow_jsonl_row(record_batch, index, max_record_bytes)
                     [raw] = record_batch.slice(index, 1).to_pylist()
                     if not isinstance(raw, Mapping):
                         raise CatalogIntegrityError("Listing row batch contains a non-mapping")
@@ -285,6 +291,118 @@ def _scan_current_rows(
     if row_count != result.record_count:
         raise CatalogIntegrityError("Listing head scan count differs from its sorted run")
     return result
+
+
+def _preflight_arrow_jsonl_row(batch: pa.RecordBatch, row_index: int, maximum: int) -> int:
+    """Count tagged RunSet JSONL bytes from Arrow buffers before Python conversion.
+
+    The only text scan uses zero-copy Arrow buffer views and stops as soon as the caller's
+    existing ``max_record_bytes`` limit is exceeded. It deliberately supports exactly the Arrow
+    types in the frozen Listing schema and fails closed if that schema changes.
+    """
+    size = 0
+
+    def add(amount: int) -> None:
+        nonlocal size
+        size += amount
+        if size > maximum:
+            raise CatalogIntegrityError(f"{LISTINGS_TABLE} row exceeds max_record_bytes={maximum}")
+
+    def offset_pair(buffer: memoryview, physical: int, width: int) -> tuple[int, int]:
+        fmt = "<q" if width == 8 else "<i"
+        start = struct.unpack_from(fmt, buffer, physical * width)[0]
+        end = struct.unpack_from(fmt, buffer, (physical + 1) * width)[0]
+        return start, end
+
+    def string_size(array: pa.Array, index: int) -> None:
+        is_large = pa.types.is_large_string(array.type)
+        width = 8 if is_large else 4
+        offsets = memoryview(array.buffers()[1])
+        physical = array.offset + index
+        start, end = offset_pair(offsets, physical, width)
+        data = memoryview(array.buffers()[2]).cast("B")
+        add(2)  # JSON quotes
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        cursor = start
+        while cursor < end:
+            next_cursor = min(end, cursor + 4096)
+            chunk = data[cursor:next_cursor]
+            try:
+                decoder.decode(chunk, final=next_cursor == end)
+            except UnicodeDecodeError as exc:
+                raise CatalogIntegrityError("Listing Arrow string contains invalid UTF-8") from exc
+            chunk_size = 0
+            for byte in chunk:
+                if byte in (0x22, 0x5C) or byte in (0x08, 0x09, 0x0A, 0x0C, 0x0D):
+                    chunk_size += 2
+                elif byte < 0x20:
+                    chunk_size += 6
+                else:
+                    chunk_size += 1
+            add(chunk_size)
+            cursor = next_cursor
+
+    def value_size(array: pa.Array, index: int) -> None:
+        if not array[index].is_valid:
+            add(4)  # null
+            return
+        data_type = array.type
+        if pa.types.is_string(data_type) or pa.types.is_large_string(data_type):
+            string_size(array, index)
+        elif pa.types.is_boolean(data_type):
+            add(4 if array[index].as_py() else 5)
+        elif pa.types.is_integer(data_type):
+            add(len(str(array[index].as_py())))
+        elif pa.types.is_timestamp(data_type):
+            instant = array[index].as_py()
+            if not isinstance(instant, datetime):
+                raise CatalogIntegrityError("Listing Arrow timestamp has an invalid scalar")
+            encoded = json.dumps(
+                {"$dt": instant.astimezone(UTC).isoformat()},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            add(len(encoded.encode("utf-8")))
+        elif pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+            is_large = pa.types.is_large_list(data_type)
+            width = 8 if is_large else 4
+            offsets = memoryview(array.buffers()[1])
+            physical = array.offset + index
+            start, end = offset_pair(offsets, physical, width)
+            values = array.values
+            add(1)  # [
+            for child_index in range(start, end):
+                if child_index != start:
+                    add(1)  # comma
+                value_size(values, child_index)
+            add(1)  # ]
+        elif pa.types.is_struct(data_type):
+            children = sorted((field.name, i) for i, field in enumerate(data_type))
+            add(len('{"$obj":'))
+            add(1)  # {
+            for position, (name, child_index) in enumerate(children):
+                if position:
+                    add(1)  # comma
+                encoded_name = json.dumps(name, ensure_ascii=False, separators=(",", ":"))
+                add(len(encoded_name.encode("utf-8")))
+                add(1)  # colon
+                value_size(array.field(child_index), index)
+            add(1)  # }
+            add(1)  # closing $obj wrapper
+        else:
+            raise CatalogIntegrityError(f"unsupported Listing Arrow type {data_type}")
+
+    names = sorted(batch.schema.names)
+    add(1)  # {
+    for position, name in enumerate(names):
+        if position:
+            add(1)  # comma
+        key = json.dumps(name, ensure_ascii=False, separators=(",", ":"))
+        add(len(key.encode("utf-8")))
+        add(1)  # colon
+        value_size(batch.column(batch.schema.get_field_index(name)), row_index)
+    add(2)  # } + JSONL LF
+    return size
 
 
 def _capture_batch_rows(

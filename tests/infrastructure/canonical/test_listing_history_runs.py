@@ -5,16 +5,25 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
-from infrastructure.canonical.listing_bounded_verify import verify_listing_history_bounded
+from core.domain.base import canonical_json
+from infrastructure.canonical.listing_bounded_verify import (
+    _preflight_arrow_jsonl_row,
+    _scan_current_rows,
+    verify_listing_history_bounded,
+)
 from infrastructure.canonical.listing_history_runs import listing_history_prefix_run
 from infrastructure.canonical.listing_rules import parse_batch_id
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
+from infrastructure.revision.exchange_info_store import ExchangeInfoRowVerifier
 from infrastructure.revision.row_integrity import history_from
 from infrastructure.storage import LocalFileStorageAdapter
-from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, _encode_row, iter_run
 from tests.infrastructure.revision import exchange_info_support as xs
 from tests.infrastructure.revision.exchange_info_support import LISTINGS, T1, Harness
 
@@ -302,6 +311,205 @@ def test_bounded_replay_rejects_a_tampered_persisted_batch_fingerprint(h: Harnes
             verify_listing_history_bounded(
                 h.adapter,
                 corrupted,
+                evidence_storage=h.storage,
+                scratch_storage=scratch,
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                row_chunk_capacity=2,
+                max_hash_chunk_bytes=64,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+                finding_sink=lambda *_args: None,
+            )
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_arrow_row_preflight_matches_existing_jsonl_byte_cap(h: Harness) -> None:
+    h.observe("listing-preflight", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+    [stored] = h.rows(LISTINGS.table)
+    row = dict(stored)
+    row["symbol"] = 'BTC"\\\n☃'
+    row["availability_evidence"] = ["é\\\n", "\u0001"]
+    row["precedence_evidence"] = [
+        {
+            "superseded_revision_id": "previous",
+            "policy_id": "policy",
+            "policy_version": "1.0.0",
+            "policy_hash": "hash",
+            "evidence": ["é\\\n", "\u0001"],
+            "knowledge_time": T1,
+        }
+    ]
+    schema = CANONICAL_INSTRUMENT_LISTINGS.arrow_schema
+    batch = pa.RecordBatch.from_pylist([row], schema=schema)
+    size = _preflight_arrow_jsonl_row(batch, 0, 1_000_000)
+    [round_tripped] = batch.to_pylist()
+    assert size == len(canonical_json(_encode_row(round_tripped)).encode("utf-8")) + 1
+    ExchangeInfoRowVerifier._check_bounded_row(round_tripped, size)
+    with pytest.raises(CatalogIntegrityError, match="max_record_bytes"):
+        _preflight_arrow_jsonl_row(batch, 0, size - 1)
+
+
+def test_oversized_arrow_row_is_rejected_before_to_pylist(h: Harness) -> None:
+    schema = CANONICAL_INSTRUMENT_LISTINGS.arrow_schema
+    arrays = [
+        pa.array(
+            ["x" * 100_000] if field.name == "observation_key" else [None],
+            type=field.type,
+        )
+        for field in schema
+    ]
+    batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+    conversions = {"count": 0}
+
+    class SliceSpy:
+        def __init__(self, sliced: pa.RecordBatch) -> None:
+            self._sliced = sliced
+
+        def to_pylist(self) -> list[dict[str, Any]]:
+            conversions["count"] += 1
+            return cast(list[dict[str, Any]], self._sliced.to_pylist())
+
+    class BatchSpy:
+        schema = batch.schema
+        num_rows = batch.num_rows
+
+        def column(self, index: int) -> pa.Array:
+            return batch.column(index)
+
+        def slice(self, offset: int, length: int) -> SliceSpy:
+            return SliceSpy(batch.slice(offset, length))
+
+    class Reader:
+        closed = False
+
+        def __iter__(self) -> Iterator[BatchSpy]:
+            yield BatchSpy()
+
+        def close(self) -> None:
+            self.closed = True
+
+    reader = Reader()
+
+    class Catalog:
+        def scan_column_batches(
+            self, _table: str, *, columns: tuple[str, ...], snapshot_id: str
+        ) -> Reader:
+            assert columns
+            assert snapshot_id == "pinned"
+            return reader
+
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "preflight-warehouse").as_uri(),
+        (h.tmp_path / "preflight-stage").as_uri(),
+    )
+    try:
+        with pytest.raises(CatalogIntegrityError, match="max_record_bytes=256"):
+            _scan_current_rows(
+                Catalog(),  # type: ignore[arg-type]
+                "pinned",
+                scratch,
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=4096, fanout=2),
+                max_record_bytes=256,
+                max_run_object_bytes=4096,
+            )
+        assert conversions["count"] == 0
+        assert reader.closed
+    finally:
+        scratch.close()
+
+
+def test_recomputed_c3_fingerprint_does_not_hide_changed_listing_content(h: Harness) -> None:
+    h.observe("listing-replay-tamper", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.listing_batches is not None
+        [changed_row] = h.rows(LISTINGS.table)
+        changed_row = dict(changed_row)
+        changed_row["status_reason"] += " altered"
+        schema = CANONICAL_INSTRUMENT_LISTINGS.arrow_schema
+        changed_batch = pa.Table.from_pylist([changed_row], schema=schema)
+        changed_fingerprint = CANONICAL_INSTRUMENT_LISTINGS.fingerprint_rule.fingerprint(
+            changed_batch
+        )
+        changed_batches = RunSetBuilder(
+            scratch,
+            key=lambda row: row["snapshot_ordinal"],
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+        )
+        with changed_batches, iter_run(scratch, inputs.listing_batches) as batches:
+            for batch in batches:
+                changed = dict(batch)
+                snapshot = dict(changed["snapshot"])
+                snapshot["batch_fingerprint"] = changed_fingerprint
+                changed["snapshot"] = snapshot
+                changed_batches.add(changed)
+            changed_ref = changed_batches.finish()
+        assert changed_ref is not None
+        changed_inputs = replace(inputs, listing_batches=changed_ref)
+
+        class ChangedCatalog:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(h.adapter, name)
+
+            def scan_column_batches(
+                self,
+                table: str,
+                *,
+                columns: tuple[str, ...],
+                snapshot_id: str,
+            ) -> Iterator[pa.RecordBatch]:
+                source = h.adapter.scan_column_batches(
+                    table, columns=columns, snapshot_id=snapshot_id
+                )
+                try:
+                    for batch in source:
+                        rows = batch.to_pylist()
+                        rows[0]["status_reason"] += " altered"
+                        yield pa.RecordBatch.from_pylist(rows, schema=batch.schema)
+                finally:
+                    close = getattr(source, "close", None)
+                    if callable(close):
+                        close()
+
+        with pytest.raises(CatalogIntegrityError, match="differs from its replay"):
+            verify_listing_history_bounded(
+                ChangedCatalog(),  # type: ignore[arg-type]
+                changed_inputs,
                 evidence_storage=h.storage,
                 scratch_storage=scratch,
                 capacity=2,
