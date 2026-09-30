@@ -94,8 +94,15 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   bars with the baseline ``ValidatorSetup``'s own inputs (``WindowValidationBinding``: spec,
   metadata incl. ``family_trial_count``, Outcome label spec + provider = the run's recorded
   ``outcome_ref`` / plugin, validation seed ∈ the run's ``seeds``, ``RobustnessParams``, control
-  seeds, market benchmark, declared execution model, C-R3 scope; each checked against the run and
-  the baseline report's own gates — ``baseline_binding_mismatch`` / ``execution_mismatch``).
+  seeds, market benchmark, declared execution model, C-R3 scope = exactly the pipeline's
+  instruments; each checked against the run and the baseline report's own gates —
+  ``baseline_binding_mismatch`` / ``execution_mismatch``). Inputs the baseline does **not** record
+  (``family_trial_count``, which seed the validator used, a ``param:`` CSCV partition count or
+  impact coefficient, a state labeller) cannot be proven equal, so every ruled definition whose
+  gate depends on one is refused (``baseline_input_unrecorded``): ``G3.*``, ``G4.overfitting``,
+  ``G2.null_model_percentile``, the single-seed G1 controls and every ``G2.*`` gate after them,
+  ``G4.overfitting`` with ``param:cscv_partitions``, ``G4.capacity.*`` with
+  ``param:capacity.impact_coefficient``, ``G4.state.*`` with a state labeller.
   Outcome labels are computed by that provider over the window's proven bars of the pinned source
   manifest for the pipeline's own non-flat targets — the evaluation target, never an input
   (C-L2, the validator's own guard). Its trial runner must reproduce the window backtest
@@ -237,6 +244,7 @@ from research.validation.gates import (
     GATE_VALUE_QUANTIZATION,
     PARAM_SOURCE_PREFIX,
     PROFILE_FIELD_MISSING,
+    profile_has,
 )
 from research.validation.pipeline import ValidationContext
 from research.validation.returns import PeriodReturns, from_backtest
@@ -248,6 +256,7 @@ __all__ = [
     "ANCHOR_PRESENT",
     "AUTHORITY_FORMAT",
     "BASELINE_BINDING_MISMATCH",
+    "BASELINE_INPUT_UNRECORDED",
     "EVIDENCE_WINDOW_RETURNS",
     "EVIDENCE_WINDOW_VALIDATION",
     "EXECUTION_MISMATCH",
@@ -308,6 +317,11 @@ LIFECYCLE_HEAD_UNKNOWN: Final = "lifecycle_head_unknown"
 LIFECYCLE_NOT_ACTIVE: Final = "lifecycle_not_active"
 LIFECYCLE_UNAVAILABLE: Final = "lifecycle_unavailable"
 BASELINE_BINDING_MISMATCH: Final = "baseline_binding_mismatch"
+#: a ruled ``window_validation`` definition depends on a baseline validator input that neither the
+#: baseline report nor its run records, so the binding's value cannot be proven to be the
+#: baseline's (``family_trial_count``, the validation ``seed``, a ``param:`` ``cscv_partitions`` /
+#: ``impact_coefficient``, a caller-supplied state labeller): the definition is refused
+BASELINE_INPUT_UNRECORDED: Final = "baseline_input_unrecorded"
 EXECUTION_MISMATCH: Final = "execution_mismatch"
 METRIC_REFUSED: Final = "metric_refused"
 #: a defined metric whose inputs (the ``WindowValidationBinding``) were not supplied
@@ -1469,7 +1483,17 @@ class WindowValidationBinding:
       ``control_seeds`` (checked against the report's per-seed control gates),
       ``market_benchmark`` (required when the report carries ADR-0060 items), ``backtester`` /
       ``execution`` (declared exactly when the report carries ``G0.execution_model``),
-      ``declared_instruments`` (the C-R3 scope, within the pipeline's instruments);
+      ``declared_instruments`` (the C-R3 scope: exactly the pipeline's instruments);
+    - **unrecorded inputs** (integrity fixes 2026-09-30): the baseline report and run record
+      neither ``metadata.family_trial_count``, nor which of the run's ``seeds`` the validator
+      used, nor a ``param:`` ``cscv_partitions`` / ``impact_coefficient`` value, nor the state
+      labeller. A ruled definition whose gate depends on one of them is refused
+      (``baseline_input_unrecorded``, ``_check_unrecorded_inputs``): ``G3.*`` and
+      ``G4.overfitting`` (family trial count; G3 also the seed through the G2 null model),
+      ``G2.null_model_percentile`` (seed), the single-seed ``G1`` controls and — through the G1
+      stage stop — every ``G2.*`` gate when the baseline ran single-seed controls (seed),
+      ``G4.overfitting`` with a ``param:`` CSCV partition count, ``G4.capacity.*`` with a
+      ``param:`` impact coefficient, and ``G4.state.*`` with a state labeller;
     - ``state_labels``: the baseline's causal state labeller over the window (``None``: the C-R2
       gates are the function's own ``state_labels_missing``, i.e. *missing*);
     - ``bar_volume``: ``True`` when the baseline read bar volumes — the window's are the proven
@@ -1531,6 +1555,7 @@ def _check_validation_binding(
     report: ValidationReport,
     run: ExperimentRun,
     identity: TargetSourceIdentity,
+    definitions: Sequence[RuledMetric],
 ) -> None:
     """The binding must describe the baseline validation (class docs); else refused."""
     if not isinstance(binding, WindowValidationBinding):
@@ -1577,6 +1602,16 @@ def _check_validation_binding(
         raise AuthorityRefused(
             EXECUTION_MISMATCH, "the outcome provider is not the one the baseline run recorded"
         )
+    if (
+        meta.constitution_version != repro.constitution_version
+        or meta.constitution_version != report.constitution_version
+        or canonical_json(meta.profile_selection.model_dump(mode="json"))
+        != canonical_json(repro.profile_selection.model_dump(mode="json"))
+    ):
+        raise _binding_mismatch(
+            "the ExperimentMetadata's Constitution version / Profile selection is not the "
+            "baseline run's and report's"
+        )
     seed = binding.seed
     if isinstance(seed, bool) or not isinstance(seed, int) or seed not in repro.seeds:
         raise _binding_mismatch("the validation seed is not one of the baseline run's seeds")
@@ -1587,9 +1622,12 @@ def _check_validation_binding(
         not isinstance(declared, tuple)
         or not declared
         or not all(isinstance(name, str) and name for name in declared)
-        or not set(declared) <= set(identity.instruments)
+        or len(set(declared)) != len(declared)
+        or set(declared) != set(identity.instruments)
     ):
-        raise _binding_mismatch("declared_instruments must be within the pipeline's instruments")
+        raise _binding_mismatch(
+            "declared_instruments must be exactly the pipeline's (baseline) instruments"
+        )
     if not callable(binding.trials) or (
         binding.state_labels is not None and not callable(binding.state_labels)
     ):
@@ -1628,6 +1666,95 @@ def _check_validation_binding(
             name = _MISSING_PARAM_FIELDS.get(gate.metric.split(":", 1)[1])
             if name is not None and getattr(params, name) is not None:
                 raise _binding_mismatch(f"the baseline had no {gate.metric.split(':', 1)[1]}")
+    for path, name in _PROFILE_SOURCED_PARAMS:
+        if profile_has(profile, path) and getattr(params, name) is not None:
+            raise _binding_mismatch(
+                f"the Profile carries {path}; the baseline could not use a param:{name}"
+            )
+    _check_unrecorded_inputs(binding, profile=profile, report=report, definitions=definitions)
+
+
+#: Non-threshold G4 parameters a Profile may carry (then a ``param:`` value is refused by the
+#: validator itself, C-A4) and the ``RobustnessParams`` field that would carry the ``param:``.
+_PROFILE_SOURCED_PARAMS: Final = (
+    ("significance.cscv_partitions", "cscv_partitions"),
+    ("capacity.impact_coefficient", "impact_coefficient"),
+)
+_INSTRUMENT_TAIL: Final = re.compile(r"\.instrument\.[A-Za-z0-9_-]+$")
+
+
+def _unrecorded_dependency(
+    gate_id: str,
+    binding: WindowValidationBinding,
+    profile: ValidationProfile,
+    single_seed: bool,
+) -> str | None:
+    """Why the window value of the baseline gate ``gate_id`` depends on a validator input the
+    baseline does not record (class docs, **unrecorded inputs**), or ``None``."""
+    base = _INSTRUMENT_TAIL.sub("", gate_id)
+    if base.startswith("G3."):
+        return (
+            "G3 uses metadata.family_trial_count (multiple-testing adjustment) and runs only after "
+            "the seeded G2 null model; neither the trial count nor the validation seed is recorded "
+            "by the baseline report or run"
+        )
+    if base == "G4.overfitting":
+        return (
+            "the overfitting check uses metadata.family_trial_count, which the baseline report and "
+            "run do not record"
+        )
+    if base == "G2.null_model_percentile":
+        return "the null model is drawn with the validation seed, which the baseline does not record"
+    if single_seed and base in ("G1.shuffle_control", "G1.shift_control"):
+        return (
+            "the baseline ran single-seed negative controls with the validation seed, which it "
+            "does not record"
+        )
+    if single_seed and base.startswith("G2."):
+        return (
+            "G2 runs only when the single-seed G1 controls pass, and those are drawn with the "
+            "validation seed, which the baseline does not record"
+        )
+    params = binding.robustness
+    if base.startswith("G4.overfitting") and (
+        params.cscv_partitions is not None
+        and not profile_has(profile, "significance.cscv_partitions")
+    ):
+        return "param:cscv_partitions is not recorded by the baseline report"
+    if base.startswith("G4.capacity.") and (
+        params.impact_coefficient is not None
+        and not profile_has(profile, "capacity.impact_coefficient")
+    ):
+        return "param:capacity.impact_coefficient is not recorded by the baseline report"
+    if base.startswith("G4.state.") and binding.state_labels is not None:
+        return (
+            "the state labeller is caller code the baseline does not record (no spec hash binds "
+            "it)"
+        )
+    return None
+
+
+def _check_unrecorded_inputs(
+    binding: WindowValidationBinding,
+    *,
+    profile: ValidationProfile,
+    report: ValidationReport,
+    definitions: Sequence[RuledMetric],
+) -> None:
+    """Refuse every ruled ``window_validation`` definition whose gate depends on an input the
+    baseline does not record (class docs); the first one is the refusal."""
+    ids = {gate.gate_id for gate in report.gates}
+    single_seed = not any(_CONTROL_SEED_GATE.fullmatch(item) for item in ids)
+    for item in definitions:
+        if item.definition.evidence != EVIDENCE_WINDOW_VALIDATION:
+            continue
+        reason = _unrecorded_dependency(item.gate_id, binding, profile, single_seed)
+        if reason is not None:
+            raise AuthorityRefused(
+                BASELINE_INPUT_UNRECORDED,
+                f"{item.definition.definition_ref} @ {item.gate_id}: {reason}; the binding's "
+                "value cannot be proven to be the baseline's",
+            )
 
 
 def _window_validation_gates(
@@ -1992,6 +2119,7 @@ def resolve_degradation_inputs(
             report=baseline_report,
             run=baseline_run,
             identity=identity,
+            definitions=definitions,
         )
 
     # 2. the source and the window's proven bars
