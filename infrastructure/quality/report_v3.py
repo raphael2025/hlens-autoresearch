@@ -824,27 +824,30 @@ class QualityReporterV3:
                         pit_key = next(pit_keys, None)
                         previous_canonical: str | None = None
                         previous_pit: str | None = None
-                        while canonical_key is not None or pit_key is not None:
-                            if canonical_key is not None:
-                                canonical_value = canonical_key["observation_key"]
-                                if canonical_value == previous_canonical:
-                                    canonical_key = next(canonical_keys, None)
-                                    continue
-                                previous_canonical = canonical_value
-                            else:
-                                canonical_value = None
-                            if pit_key is not None:
-                                pit_value = pit_key["observation_key"]
-                                if pit_value == previous_pit:
-                                    pit_key = next(pit_keys, None)
-                                    continue
-                                previous_pit = pit_value
-                            else:
-                                pit_value = None
+                        while True:
+                            # Skip repeats on both sides before comparing; the markers move only
+                            # after a compared pair, so one side's repeat never hides the other's
+                            # next distinct key.
+                            while (
+                                canonical_key is not None
+                                and canonical_key["observation_key"] == previous_canonical
+                            ):
+                                canonical_key = next(canonical_keys, None)
+                            while (
+                                pit_key is not None and pit_key["observation_key"] == previous_pit
+                            ):
+                                pit_key = next(pit_keys, None)
+                            if canonical_key is None and pit_key is None:
+                                break
+                            canonical_value = (
+                                None if canonical_key is None else canonical_key["observation_key"]
+                            )
+                            pit_value = None if pit_key is None else pit_key["observation_key"]
                             if canonical_value != pit_value:
                                 raise CatalogIntegrityError(
                                     "PIT key coverage differs from the pinned Canonical day rows"
                                 )
+                            previous_canonical, previous_pit = canonical_value, pit_value
                             canonical_key = next(canonical_keys, None)
                             pit_key = next(pit_keys, None)
                 if revision_root is not None:
