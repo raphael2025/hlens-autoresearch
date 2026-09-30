@@ -49,21 +49,66 @@ def _spec(*extra_availability: PolicyBinding) -> PointInTimeSpec:
 
 def test_identity_is_fixed_by_the_adr() -> None:
     assert backfill.ASSUMPTION_ID == "hlens.listing.observed-state-backfill-assumption"
-    assert backfill.ASSUMPTION_VERSION == "1.0.0"
+    assert backfill.ASSUMPTION_VERSION == "1.1.0"
     assert backfill.ASSUMPTION_BINDING.role is PolicyRole.AVAILABILITY
     assert backfill.ASSUMPTION_BINDING.policy_id == backfill.ASSUMPTION_ID
     assert backfill.ASSUMPTION_BINDING.version == backfill.ASSUMPTION_VERSION
     assert backfill.ASSUMPTION_SPEC["rule"] == backfill.ASSUMPTION_ID
+    assert backfill.ASSUMPTION_SPEC["version"] == backfill.ASSUMPTION_VERSION
 
 
-def test_policy_table_ships_empty_pending_archive_evidence() -> None:
-    """No network access was authorized to check the official archive index (ADR-0051 §2): a
-    guessed ``backfill_floor`` would be worse than none. An empty table cannot make anyone appear;
-    it is exactly as conservative as leaving the assumption unbound."""
-    assert backfill.POLICY_TABLE == {}
-    assert backfill.backfill_floor_for("BTCUSDT") is None
-    assert backfill.backfill_floor_for("ETHUSDT") is None
-    assert backfill.ASSUMPTION_SPEC["policy_table"]["entries"] == {}
+def test_every_published_version_stays_bindable() -> None:
+    assert dict(backfill.ASSUMPTION_BINDINGS) == {
+        "1.0.0": backfill.ASSUMPTION_BINDING_1_0_0,
+        "1.1.0": backfill.ASSUMPTION_BINDING,
+    }
+    assert backfill.ASSUMPTION_BINDING_1_0_0.policy_hash != backfill.ASSUMPTION_BINDING.policy_hash
+
+
+def test_the_1_0_0_spec_and_hash_are_frozen_for_replay() -> None:
+    """A spec bound to 1.0.0 before the table was populated must replay bit for bit."""
+    assert backfill.ASSUMPTION_BINDING_1_0_0.version == "1.0.0"
+    assert backfill.ASSUMPTION_SPEC_1_0_0["version"] == "1.0.0"
+    assert (
+        backfill.ASSUMPTION_BINDING_1_0_0.policy_hash
+        == "ec89145ffce3197864e9150a6776963d27819f68c66d644238d3999e5c15b4e9"
+    )
+
+
+def test_the_1_0_0_policy_table_stays_empty() -> None:
+    """1.0.0 was published before any live archive-index check (ADR-0051 §2): its table is empty
+    and binding it can never make anyone appear, exactly as conservative as leaving it unbound."""
+    assert dict(backfill.POLICY_TABLE_1_0_0) == {}
+    assert backfill.backfill_floor_for("BTCUSDT", backfill.ASSUMPTION_BINDING_1_0_0) is None
+    assert backfill.backfill_floor_for("ETHUSDT", backfill.ASSUMPTION_BINDING_1_0_0) is None
+    assert backfill.ASSUMPTION_SPEC_1_0_0["policy_table"]["entries"] == {}
+
+
+def test_the_1_1_0_policy_table_holds_the_verified_archive_floors() -> None:
+    """Earliest official 1m kline daily archive day of each first-slice symbol, verified live on
+    2026-09-30 (ADR-0100 item 5); each entry carries its provenance in the hashed spec."""
+    expected = {"BTCUSDT": FLOOR, "ETHUSDT": FLOOR}
+    assert backfill.POLICY_TABLE == expected
+    assert backfill.backfill_floor_for("BTCUSDT") == FLOOR
+    assert backfill.backfill_floor_for("ETHUSDT", backfill.ASSUMPTION_BINDING) == FLOOR
+    assert backfill.backfill_floor_for("SOLUSDT") is None
+    entries = backfill.ASSUMPTION_SPEC["policy_table"]["entries"]
+    assert entries == {symbol: floor.isoformat() for symbol, floor in expected.items()}
+    evidence = backfill.ASSUMPTION_SPEC["policy_table"]["evidence"]
+    assert set(evidence) == set(expected)
+    for symbol, item in evidence.items():
+        assert item["earliest_daily_archive_file"].endswith(f"/{symbol}-1m-2017-08-17.zip")
+        assert item["first_kline_open_time_utc"] == "2017-08-17T04:00:00+00:00"
+        assert item["exchange_info_status_at_verification"] == "TRADING"
+        assert item["verified_at_utc"].startswith("2026-09-30T")
+
+
+def test_an_unpublished_binding_has_no_table() -> None:
+    wrong = backfill.ASSUMPTION_BINDING.model_copy(update={"policy_hash": "0" * 64})
+    with pytest.raises(backfill.AssumptionSpecError):
+        backfill.policy_table_for(wrong)
+    with pytest.raises(backfill.AssumptionSpecError):
+        backfill.backfill_floor_for("BTCUSDT", wrong)
 
 
 # --------------------------------------------------------------------------- assumption_bound
@@ -75,6 +120,27 @@ def test_an_unbound_spec_is_not_bound() -> None:
 
 def test_a_spec_binding_the_exact_binding_is_bound() -> None:
     assert backfill.assumption_bound(_spec(backfill.ASSUMPTION_BINDING)) is True
+    assert backfill.bound_binding(_spec(backfill.ASSUMPTION_BINDING)) == backfill.ASSUMPTION_BINDING
+
+
+def test_a_spec_binding_the_frozen_1_0_0_version_is_still_bound() -> None:
+    spec = _spec(backfill.ASSUMPTION_BINDING_1_0_0)
+    assert backfill.assumption_bound(spec) is True
+    assert backfill.bound_binding(spec) == backfill.ASSUMPTION_BINDING_1_0_0
+
+
+def test_a_version_with_another_versions_hash_is_refused() -> None:
+    crossed = backfill.ASSUMPTION_BINDING.model_copy(
+        update={"policy_hash": backfill.ASSUMPTION_BINDING_1_0_0.policy_hash}
+    )
+    with pytest.raises(backfill.AssumptionSpecError):
+        backfill.assumption_bound(_spec(crossed))
+
+
+def test_binding_two_versions_at_once_is_refused() -> None:
+    both = _spec(backfill.ASSUMPTION_BINDING_1_0_0, backfill.ASSUMPTION_BINDING)
+    with pytest.raises(backfill.AssumptionSpecError):
+        backfill.assumption_bound(both)
 
 
 def test_a_wrong_version_is_refused_not_silently_ignored() -> None:

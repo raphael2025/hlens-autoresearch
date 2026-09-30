@@ -3,8 +3,8 @@ implementation phase: only the ``pit`` parameter and the assumed-answer branch, 
 builder or dataset manifest — those are the second phase).
 
 Same harness as ``test_listings.py``: real collector checkpoints (mock venue), real snapshot
-store, real SQLite catalog, the real ``ListingDeriver``. ``POLICY_TABLE`` ships empty (no network
-access was authorized to gather the real ``backfill_floor`` evidence), so it is monkeypatched here
+store, real SQLite catalog, the real ``ListingDeriver``. The current version's ``POLICY_TABLE``
+(1.1.0: real 2017 archive floors; 1.0.0 stays empty) is monkeypatched here with fixture floors
 to exercise the "in table" branch; ``ASSUMPTION_BINDING`` itself (the identity a spec must bind) is
 the real, unpatched module constant throughout.
 """

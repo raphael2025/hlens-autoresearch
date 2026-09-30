@@ -41,7 +41,11 @@ def _binding(
     return PolicyBinding(role=role, policy_id=policy_id, version=version, policy_hash=digit * 64)
 
 
-def _bound_pit(simulation: datetime, cutoff: datetime) -> PointInTimeSpec:
+def _bound_pit(
+    simulation: datetime,
+    cutoff: datetime,
+    assumption: PolicyBinding = backfill.ASSUMPTION_BINDING,
+) -> PointInTimeSpec:
     base = _binding(PolicyRole.AVAILABILITY, "binance.spot.exchange-info-publication")
     pit_binding = _binding(PolicyRole.POINT_IN_TIME, "hlens.pit.maximal-head", digit="b")
     precedence = _binding(PolicyRole.PRECEDENCE, "binance.spot.listing-observation", digit="c")
@@ -53,7 +57,7 @@ def _bound_pit(simulation: datetime, cutoff: datetime) -> PointInTimeSpec:
         knowledge_cutoff=cutoff,
         snapshot_bindings=FrozenMapping({"canonical.instrument_listings": "1"}),
         point_in_time_binding=pit_binding,
-        availability_bindings=(base, backfill.ASSUMPTION_BINDING),
+        availability_bindings=(base, assumption),
         precedence_bindings=(precedence,),
         parser_bindings=(parser,),
     )
@@ -109,11 +113,22 @@ def test_a_symbol_only_ever_observed_suspended_never_traded_is_never_assumed(
 
 
 def test_a_symbol_outside_the_real_shipped_policy_table_is_never_assumed(h: Harness) -> None:
-    """No monkeypatch: the real, currently-empty ``POLICY_TABLE`` (ADR-0051 §2, evidence pending)
-    cannot let even a fully-observed, cleanly-derived BTCUSDT episode appear via the assumption."""
+    """No monkeypatch: the real, frozen, empty 1.0.0 table (ADR-0051 §2, published before any
+    archive evidence) cannot let even a fully-observed, cleanly-derived BTCUSDT episode appear
+    via the assumption when a spec binds that version."""
     h.observe("snap-1", TRADING, T1)
     derive(h)
-    _refused(at(h, FLOOR, LATE, _bound_pit(FLOOR, LATE)))
+    _refused(at(h, FLOOR, LATE, _bound_pit(FLOOR, LATE, backfill.ASSUMPTION_BINDING_1_0_0)))
+
+
+def test_the_real_1_1_0_table_never_assumes_before_its_floor(h: Harness) -> None:
+    """No monkeypatch: the real 1.1.0 table names BTCUSDT from 2017-08-17; one microsecond
+    earlier the assumption must still refuse."""
+    h.observe("snap-1", TRADING, T1)
+    derive(h)
+    floor = backfill.POLICY_TABLE["BTCUSDT"]
+    before = floor - timedelta(microseconds=1)
+    _refused(at(h, before, LATE, _bound_pit(before, LATE)))
 
 
 # ------------------------------------------------------------- suspended / "delisted" periods
