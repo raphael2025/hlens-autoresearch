@@ -17,9 +17,10 @@ import importlib
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from apps.worker.jobs import JobRunner
 
@@ -60,20 +61,60 @@ def load_factory(spec: str) -> RuntimeFactory:
     return cast(RuntimeFactory, value)
 
 
-def run(runner: JobRunner, stop: threading.Event, *, idle_wait: float = 1.0) -> None:
-    """Poll one job at a time until stopped; finish an active job's durable ack boundary."""
+class StopSignal(Protocol):
+    def is_set(self) -> bool: ...
+
+    def wait(self, timeout: float) -> object: ...
+
+
+class _StopFlag:
+    """Signal-safe stop request.
+
+    A signal handler runs on the main thread, possibly while that thread is inside
+    ``threading.Event.wait`` holding the event's non-reentrant internal lock; calling
+    ``Event.set`` from the handler could then deadlock. Setting a plain attribute is atomic and
+    lock-free, and :meth:`wait` sleeps in short slices so a request is observed promptly.
+    """
+
+    _SLICE = 0.05
+
+    def __init__(self) -> None:
+        self._requested = False
+
+    def set(self) -> None:
+        self._requested = True
+
+    def is_set(self) -> bool:
+        return self._requested
+
+    def wait(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while not self._requested:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(self._SLICE, remaining))
+        return self._requested
+
+
+def run(runner: JobRunner, stop: StopSignal, *, idle_wait: float = 1.0) -> None:
+    """Poll one job at a time until stopped; finish an active job's durable ack boundary.
+
+    The host idles only when a poll delivered no message at all; a redelivered message that was
+    merely acknowledged (its result already journaled) is followed immediately by the next poll.
+    """
     if idle_wait <= 0:
         raise ValueError("idle_wait must be positive")
     while not stop.is_set():
-        completed = runner.run_pending(limit=1)
-        if not completed:
+        runner.run_pending(limit=1)
+        if runner.last_poll_count == 0:
             stop.wait(idle_wait)
 
 
 class _SignalHandlers:
-    """Install main-thread shutdown handlers that only set an event."""
+    """Install main-thread shutdown handlers that only set a lock-free flag."""
 
-    def __init__(self, stop: threading.Event) -> None:
+    def __init__(self, stop: _StopFlag) -> None:
         self.stop = stop
         self.previous: dict[signal.Signals, Any] = {}
 
@@ -92,7 +133,7 @@ class _SignalHandlers:
 
 def serve(factory: RuntimeFactory, *, idle_wait: float = 1.0) -> None:
     """Compose and run the worker, releasing all factory-owned resources on every exit path."""
-    stop = threading.Event()
+    stop = _StopFlag()
     with _SignalHandlers(stop):
         with factory() as runner:
             if not isinstance(runner, JobRunner):
