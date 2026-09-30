@@ -7,14 +7,27 @@ they came from in an ``AuthorityProvenance`` that ``run_degradation_check(..., a
 writes into the report's ``evidence.authority``. The explicit caller-declared path is unchanged and
 carries no ``authority`` field — that absence is how the two evidence strengths stay apart.
 
-**1. Lifecycle (ADR-0098 §1).** ``infrastructure.registry.lifecycle.LifecycleRegistry`` at an
-**explicit** head (the latest ``registry.head`` or one the caller pinned; a head not on the chain is
-``lifecycle_head_unknown``). The subject must be in the ACTIVE set at that head
-(``lifecycle_not_active`` otherwise); its replayed history is the ``LifecycleHistory`` handed to the
-operation, and the head identity plus the replayed record hashes go into the provenance, with
-``anchor`` = ``present`` when the registry was opened with its external anchor (a rollback of whole
-trailing records would have been refused on open) or ``absent`` (not detectable; recorded, not
-refused — ADR-0098 修订 1).
+**Evaluation time (ADR-0098 修订 2 §1).** Every resolution takes an explicit ``as_of`` (UTC,
+``as_of >= window.end``): the window's last bar is only available after the window ends
+(``available_time = max(interval_end, raw.available_time + latency)``), so the evaluation moment is
+separate from the window. Nothing reads a clock; ``as_of`` is recorded in the provenance and in the
+recent manifest.
+
+**1. Lifecycle (ADR-0098 §1, 修订 2 §2 / §6).**
+``infrastructure.registry.lifecycle.LifecycleRegistry`` opened as a **read-only snapshot**
+(``LifecycleRegistry.open_snapshot``: no writer lock, no anchor crash-recovery write; a writer
+instance is ``lifecycle_unavailable``) at an **explicit** head (the latest ``registry.head`` or
+one the caller pinned; a head not on the chain is ``lifecycle_head_unknown``). The subject's
+replay at that head is **truncated** to the transitions with ``occurred_at <= as_of``
+(``occurred_at`` is non-decreasing, so this is a prefix). The truncated replay must end in
+ACTIVE, the transition into that ACTIVE state must have ``occurred_at <= window.start``, and no
+transition may have ``occurred_at`` in ``[window.start, as_of]`` — else ``lifecycle_not_active``
+(together these mean the subject entered ACTIVE strictly before the window and stayed there
+through ``as_of``). The truncated history is the ``LifecycleHistory`` handed to the operation
+(its hash is what ``run_degradation_check`` binds), and the head identity plus the truncated
+record hashes go into the provenance, with ``anchor`` = ``present`` when the snapshot was
+verified against its external anchor (any mismatch is refused on open) or ``absent`` (not
+detectable; recorded, not refused — ADR-0098 修订 1).
 
 **2. Source (ADR-0098 §2).** The only non-synthetic source is one ADR-0077 v3
 ``ResearchDatasetEvidenceManifest``, read through the ``DatasetCatalog`` (its ``evidence_verifier``
@@ -39,12 +52,21 @@ bindings. Rules, each a named refusal:
   ``point_in_time_binding`` / ``availability_bindings`` / ``precedence_bindings`` /
   ``parser_bindings`` (representation — the same fields the sealed-pair rule of
   ``research.loop.dataset_source`` compares across windows);
-- only ``available_time <= window.end`` (``backtest_bars_from_dataset(price_cutoff=window.end)``
-  refuses a later bar instead of dropping it) over the bars whose ``interval_start`` is in
-  ``[window.start, window.end)``; per instrument the bars must tile the window exactly (first
-  starts at ``window.start``, each starts where the previous ended, the last ends at
-  ``window.end``). A missing bar, a late bar or a window the manifest does not cover →
-  ``source_incomplete``; nothing is filled or interpolated.
+- instruments (修订 2 §3): the decision pipeline's declared ``TargetSourceIdentity.instruments``
+  must equal the baseline manifest's universe members **and** the source manifest's universe
+  members, as sets of Canonical symbols → ``source_scope_mismatch`` otherwise. A manifest's members
+  are its v3 ``members`` evidence stream (root-hash authenticated, one record at a time); a member
+  is a Canonical symbol only through a ``DegradedEpisodeKey`` of that instrument's venue, type and
+  symbol (the rule ``research.loop.dataset_source`` uses; an episode with a stable product id names
+  no symbol, so it is refused rather than guessed);
+- only ``available_time <= as_of`` (``backtest_bars_from_dataset(price_cutoff=as_of)`` refuses a
+  later bar instead of dropping it; ``as_of`` must not be after the manifest's point-in-time view)
+  over the bars whose ``interval_start`` is in ``[window.start, window.end)``, of which only the
+  bars with ``interval_end <= window.end`` are kept; per instrument the kept bars must tile
+  ``[window.start, window.end)`` exactly (first starts at ``window.start``, each starts where the
+  previous ended, the last ends at ``window.end``). A missing bar, a late bar or a window the
+  manifest does not cover → ``source_incomplete``; nothing is filled or interpolated. The decision
+  pipeline still sees each bar only from its own ``available_time`` (no look-ahead is introduced).
 
 **3. Metrics (ADR-0098 §3).** ``MONITORING_METRICS`` is the closed registry. Each
 ``MonitoringMetricDefinition`` names the baseline gate whose value it reproduces and calls **the
@@ -68,13 +90,18 @@ equity and a ``WindowTargetSource`` (the admitted strategy's decision pipeline o
 proven bars). Its declared identities must equal the baseline run's reproducibility tuple
 (backtest provider descriptor hash in ``plugin_versions``; cost model ref + content hash in
 ``dependency_hashes``; strategy ref + spec hash, risk policy ref + hash, params and every declared
-plugin hash) — else ``execution_mismatch``. The provider's result is re-validated and checked with
+plugin hash; params compared as canonical JSON, so ``True``, ``1`` and ``1.0`` differ — 修订 2 §4)
+— else ``execution_mismatch``. The provider's result is re-validated and checked with
 ``BacktestResult.check_answers``; one window yields one sample.
 
-**Boundaries.** Nothing here reads a clock (the as-of time is ``window.end``), schedules, loops,
-writes the lifecycle, or writes a report; any refusal raises ``AuthorityRefused`` (a
-``DegradationOperationRefused`` with a ``code``) before the operation runs, so no report is
-written. The ADR-0074 operator and the API do not import this module (ADR-0098 §4).
+**Baseline binding (修订 2 §5).** The provenance records the ``BaselineMetricSet`` content hash;
+``run_degradation_check`` refuses a baseline set whose hash differs.
+
+**Boundaries.** Nothing here reads a clock (the as-of time is the caller's explicit ``as_of``),
+schedules, loops, writes the lifecycle, or writes a report; any refusal raises
+``AuthorityRefused`` (a ``DegradationOperationRefused`` with a ``code``) before the operation
+runs, so no report is written. The ADR-0074 operator and the API do not import this module
+(ADR-0098 §4).
 
 **Honest boundary.** The decision pipeline (``WindowTargetSource``) is caller code bound by its
 declared identities, not re-derived here; the Lifecycle Registry's actors are declared names. The
@@ -113,22 +140,28 @@ from core.contracts.strategy import (
     PriceBar,
     TargetPosition,
 )
-from core.contracts.universe import DATASET_SELECTION_ID_PATTERN, ResearchDatasetEvidenceManifest
+from core.contracts.universe import (
+    DATASET_SELECTION_ID_PATTERN,
+    DegradedEpisodeKey,
+    EvidenceStream,
+    ResearchDatasetEvidenceManifest,
+    ResearchDatasetManifest,
+    UniverseMember,
+)
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Ref, canonical_json, content_hash
 from core.domain.research import ExperimentRun, ValidationReport
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState
-from infrastructure.bars.dataset import (
-    DatasetBarsError,
-    DatasetPriceBars,
-    backtest_bars_from_dataset,
-)
+from infrastructure.bars.dataset import DatasetBarsError, backtest_bars_from_dataset
+from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_EVIDENCE_MANIFESTS
+from infrastructure.dataset.evidence import EvidenceError
 from infrastructure.dataset.manifests import ManifestFormError
 from infrastructure.feature.dataset import (
     AnyDatasetManifest,
     DatasetBindingError,
+    iter_manifest_evidence,
     load_any_manifest,
 )
 from infrastructure.registry.lifecycle import LifecycleHead, LifecycleRegistry, UnknownHead
@@ -202,6 +235,8 @@ METRIC_REFUSED: Final = "metric_refused"
 
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _SELECTION_ID: Final = re.compile(DATASET_SELECTION_ID_PATTERN)
+#: Canonical symbol → its instrument (venue, type): how a universe member names a symbol.
+_CANONICAL_INSTRUMENTS: Final = {item.symbol: item for item in rules.SYMBOLS.values()}
 #: PIT bindings that fix how Canonical rows become the dataset's representation (module docs).
 _REPRESENTATION_FIELDS: Final = (
     "point_in_time_binding",
@@ -470,6 +505,7 @@ def _resolve_source(
     manifest_hash: str,
     baseline_manifest: AnyDatasetManifest,
     window: ObservationWindow,
+    as_of: datetime,
 ) -> ResearchDatasetEvidenceManifest:
     persisted = _persisted_hashes(catalog, dataset_id)
     if len(persisted) > 1:
@@ -502,7 +538,103 @@ def _resolve_source(
             f"the dataset covers [{_utc_text(data.time_range_start)}, "
             f"{_utc_text(data.time_range_end)}), not the whole window",
         )
+    view = manifest.point_in_time.simulation_time
+    if view is None or view < as_of:
+        raise AuthorityRefused(
+            SOURCE_INCOMPLETE,
+            "the dataset's point-in-time view "
+            + ("is an interval" if view is None else f"{_utc_text(view)} is before as_of")
+            + f" {_utc_text(as_of)}; its bars cannot be read as of that time",
+        )
     return manifest
+
+
+def _member_symbol(member: object) -> str | None:
+    """The Canonical symbol a universe member names, or ``None`` when it names none (module
+    docs: only a ``DegradedEpisodeKey`` of a known instrument's venue, type and symbol)."""
+    if not isinstance(member, UniverseMember):
+        return None
+    episode = member.episode
+    if not isinstance(episode, DegradedEpisodeKey):
+        return None
+    instrument = _CANONICAL_INSTRUMENTS.get(episode.symbol)
+    if (
+        instrument is None
+        or episode.venue != instrument.venue
+        or episode.instrument_type.value != instrument.instrument_type
+    ):
+        return None
+    return episode.symbol
+
+
+def _universe_symbols(
+    catalog: DatasetCatalog, manifest: AnyDatasetManifest, what: str
+) -> frozenset[str]:
+    """The Canonical symbols of ``manifest``'s universe members (the v2 tuple, or the v3
+    ``members`` evidence stream read with the catalog's verifier). A member naming no Canonical
+    symbol is ``source_scope_mismatch`` (never guessed); a stream that does not verify is
+    ``source_unavailable``."""
+    symbols: set[str] = set()
+    unnamed = 0
+
+    def take(members: Any) -> None:
+        nonlocal unnamed
+        for member in members:
+            symbol = _member_symbol(member)
+            if symbol is None:
+                unnamed += 1
+            else:
+                symbols.add(symbol)
+
+    try:
+        if isinstance(manifest, ResearchDatasetManifest):
+            take(manifest.members)
+        else:
+            verifier = catalog.evidence_verifier
+            if verifier is None:
+                raise AuthorityRefused(
+                    SOURCE_UNAVAILABLE, "a v3 manifest's members need the evidence verifier"
+                )
+            with iter_manifest_evidence(verifier, manifest, EvidenceStream.MEMBERS) as records:
+                take(records)
+    except AuthorityRefused:
+        raise
+    except (
+        CatalogIntegrityError,
+        DatasetBindingError,
+        EvidenceError,
+        ManifestFormError,
+        ValidationError,
+    ) as exc:
+        raise AuthorityRefused(
+            SOURCE_UNAVAILABLE, f"the {what} manifest's members do not verify: {exc}"
+        ) from exc
+    if unnamed:
+        raise AuthorityRefused(
+            SOURCE_SCOPE_MISMATCH,
+            f"{unnamed} member(s) of the {what} manifest name no Canonical instrument (only a "
+            "DegradedEpisodeKey of a known venue, type and symbol does)",
+        )
+    return frozenset(symbols)
+
+
+def _check_instruments(
+    identity: TargetSourceIdentity,
+    catalog: DatasetCatalog,
+    *,
+    baseline_manifest: AnyDatasetManifest,
+    source_manifest: ResearchDatasetEvidenceManifest,
+) -> None:
+    """The declared instruments equal both manifests' universe members (ADR-0098 修订 2 §3)."""
+    declared = frozenset(identity.instruments)
+    for what, manifest in (("baseline", baseline_manifest), ("source", source_manifest)):
+        members = _universe_symbols(catalog, manifest, what)
+        if declared != members:
+            raise AuthorityRefused(
+                SOURCE_SCOPE_MISMATCH,
+                f"the decision pipeline's instruments {sorted(declared)} are not the {what} "
+                f"manifest's universe members {sorted(members)}",
+            )
 
 
 def _window_bars(
@@ -510,7 +642,11 @@ def _window_bars(
     manifest_hash: str,
     instruments: tuple[str, ...],
     window: ObservationWindow,
-) -> DatasetPriceBars:
+    as_of: datetime,
+) -> tuple[PriceBar, ...]:
+    """The window's proven bars as of ``as_of`` (module docs): read with
+    ``price_cutoff=as_of``, keep ``interval_end <= window.end``, and require the kept bars of every
+    instrument to tile ``[window.start, window.end)`` exactly."""
     try:
         prices = backtest_bars_from_dataset(
             catalog.adapter,
@@ -518,7 +654,7 @@ def _window_bars(
             builder=catalog.builder,
             manifest_content_hash=manifest_hash,
             symbols=instruments,
-            price_cutoff=window.end,
+            price_cutoff=as_of,
             start=window.start,
             end=window.end,
             manifest_cache=catalog.manifest_cache,
@@ -530,18 +666,22 @@ def _window_bars(
         raise AuthorityRefused(SOURCE_UNAVAILABLE, f"the window's bars: {exc}") from exc
     if prices.manifest_content_hash != manifest_hash:
         raise AuthorityRefused(SOURCE_UNAVAILABLE, "the bars are bound to another manifest")
-    if prices.price_cutoff > window.end:
-        raise AuthorityRefused(SOURCE_INCOMPLETE, "the bars' price cutoff is after the window end")
+    if prices.price_cutoff != as_of:
+        raise AuthorityRefused(SOURCE_UNAVAILABLE, "the bars are read at another price cutoff")
     for bar in prices.bars:
         if bar.instrument not in instruments:
             raise AuthorityRefused(SOURCE_UNAVAILABLE, f"an unrequested {bar.instrument} bar")
-        if bar.available_time > window.end:
+        if bar.available_time > as_of:
             raise AuthorityRefused(
-                SOURCE_INCOMPLETE, f"a {bar.instrument} bar is available after the window end"
+                SOURCE_INCOMPLETE, f"a {bar.instrument} bar is available after as_of"
             )
+        if not window.contains(bar.interval_start):
+            raise AuthorityRefused(SOURCE_UNAVAILABLE, f"a {bar.instrument} bar outside the window")
+    # a bar that starts inside the window but ends after it is not part of the window
+    kept = tuple(bar for bar in prices.bars if bar.interval_end <= window.end)
     for instrument in instruments:
         mine = sorted(
-            (bar for bar in prices.bars if bar.instrument == instrument),
+            (bar for bar in kept if bar.instrument == instrument),
             key=lambda bar: bar.interval_start,
         )
         if not mine:
@@ -557,7 +697,7 @@ def _window_bars(
                     f"{instrument} misses bars in [{_utc_text(earlier.interval_end)}, "
                     f"{_utc_text(later.interval_start)})",
                 )
-    return prices
+    return kept
 
 
 # ======================================================================================
@@ -668,7 +808,13 @@ def _check_execution(
     expected_risk_hash = None if risk is None else repro.dependency_hashes.get(str(risk))
     if identity.risk_policy_hash != expected_risk_hash:
         raise AuthorityRefused(EXECUTION_MISMATCH, "the risk policy hash is not the baseline's")
-    if dict(identity.params) != dict(repro.params):
+    try:  # canonical JSON, not Python equality: True == 1 == 1.0 would pass (修订 2 §4)
+        same_params = canonical_json(dict(identity.params)) == canonical_json(dict(repro.params))
+    except (TypeError, ValueError) as exc:
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH, f"the strategy params are not canonical JSON: {exc}"
+        ) from exc
+    if not same_params:
         raise AuthorityRefused(EXECUTION_MISMATCH, "the strategy params are not the baseline's")
     if not identity.plugins:
         raise AuthorityRefused(EXECUTION_MISMATCH, "the target source declares no plugins")
@@ -758,6 +904,7 @@ class AuthorityProvenance:
     source: SourceIdentity
     baseline_run_id: str
     baseline_manifest_hash: str
+    baseline_set_hash: str
     validation_report_hash: str
     profile_ref: str
     profile_hash: str
@@ -794,6 +941,7 @@ class AuthorityProvenance:
             "baseline": {
                 "run_id": self.baseline_run_id,
                 "manifest_hash": self.baseline_manifest_hash,
+                "baseline_set_hash": self.baseline_set_hash,
                 "validation_report_hash": self.validation_report_hash,
                 "profile_ref": self.profile_ref,
                 "profile_hash": self.profile_hash,
@@ -835,25 +983,63 @@ class AuthorityEnvironment:
 
 
 def _resolve_lifecycle(
-    lifecycle: LifecycleRegistry, head: LifecycleHead, subject: Ref
+    lifecycle: LifecycleRegistry,
+    head: LifecycleHead,
+    subject: Ref,
+    window: ObservationWindow,
+    as_of: datetime,
 ) -> tuple[LifecycleHead, LifecycleHistory, tuple[str, ...]]:
+    """The subject's replay at ``head`` truncated to ``occurred_at <= as_of`` (module docs,
+    ADR-0098 修订 2 §2), with the hashes of exactly the kept records."""
     if not isinstance(lifecycle, LifecycleRegistry):
         raise AuthorityRefused(LIFECYCLE_UNAVAILABLE, "lifecycle must be an open LifecycleRegistry")
     try:
+        if not lifecycle.read_only:
+            raise AuthorityRefused(
+                LIFECYCLE_UNAVAILABLE,
+                "the resolver reads a read-only snapshot (LifecycleRegistry.open_snapshot), not a "
+                "writer instance",
+            )
         pinned = lifecycle.verify_head(head)
-        active = lifecycle.active_set(pinned)
         replayed = lifecycle.lifecycle_of(subject, pinned)
     except UnknownHead as exc:
         raise AuthorityRefused(LIFECYCLE_HEAD_UNKNOWN, str(exc)) from exc
     except RegistryError as exc:
         raise AuthorityRefused(LIFECYCLE_UNAVAILABLE, str(exc)) from exc
-    if not active.contains(subject) or replayed.current_state is not LifecycleState.ACTIVE:
+    transitions = replayed.history.transitions
+    if len(replayed.record_hashes) != len(transitions):
+        raise AuthorityRefused(
+            LIFECYCLE_UNAVAILABLE, "the replay's record hashes do not match its transitions"
+        )
+    kept = 0  # occurred_at is non-decreasing (LifecycleHistory), so the kept ones are a prefix
+    while kept < len(transitions) and transitions[kept].occurred_at <= as_of:
+        kept += 1
+    try:
+        history = LifecycleHistory(subject=replayed.history.subject, transitions=transitions[:kept])
+    except (ValidationError, ValueError) as exc:
+        raise AuthorityRefused(
+            LIFECYCLE_UNAVAILABLE, f"the truncated replay does not validate: {exc}"
+        ) from exc
+    where = f"at head {pinned.record_count}/{pinned.last_record_hash} as of {_utc_text(as_of)}"
+    if history.current_state is not LifecycleState.ACTIVE:
+        raise AuthorityRefused(
+            LIFECYCLE_NOT_ACTIVE, f"{subject} replays to {history.current_state} {where}"
+        )
+    entered = history.transitions[-1]  # the transition into the terminal ACTIVE state
+    if entered.occurred_at > window.start:
         raise AuthorityRefused(
             LIFECYCLE_NOT_ACTIVE,
-            f"{subject} replays to {replayed.current_state} at head "
-            f"{pinned.record_count}/{pinned.last_record_hash}",
+            f"{subject} entered ACTIVE at {_utc_text(entered.occurred_at)}, after the window "
+            f"start {_utc_text(window.start)} ({where})",
         )
-    return pinned, replayed.history, replayed.record_hashes
+    moved = [t for t in history.transitions if window.start <= t.occurred_at <= as_of]
+    if moved:
+        raise AuthorityRefused(
+            LIFECYCLE_NOT_ACTIVE,
+            f"{subject} has {len(moved)} lifecycle transition(s) in [window start, as_of] "
+            f"(first at {_utc_text(moved[0].occurred_at)}; {where})",
+        )
+    return pinned, history, replayed.record_hashes[:kept]
 
 
 def _check_baseline_run(
@@ -896,14 +1082,26 @@ def resolve_degradation_inputs(
     manifest_hash: str,
     execution: WindowExecution,
     window: ObservationWindow,
+    as_of: datetime,
 ) -> AuthorityResolution:
     """Resolve ``run_degradation_check``'s lifecycle and recent inputs from the ADR-0098
-    authorities (module docs). Raises ``AuthorityRefused`` (with a ``code``) on any failed rule;
-    reads only, writes nothing, reads no clock."""
+    authorities (module docs) as of the explicit ``as_of`` (UTC, ``>= window.end``; ADR-0098
+    修订 2 §1). ``lifecycle`` must be a read-only snapshot (``LifecycleRegistry.open_snapshot``).
+    Raises ``AuthorityRefused`` (with a ``code``) on any failed rule; reads only, writes nothing,
+    reads no clock."""
     if not isinstance(subject, Ref):
         raise DegradationOperationRefused("subject must be a Ref")
     if not isinstance(window, ObservationWindow):
         raise DegradationOperationRefused("window must be an ObservationWindow")
+    if (
+        not isinstance(as_of, datetime)
+        or as_of.tzinfo is None
+        or as_of.utcoffset() != UTC.utcoffset(None)
+    ):
+        raise DegradationOperationRefused("as_of must be a timezone-aware UTC datetime")
+    as_of = as_of.astimezone(UTC)
+    if as_of < window.end:
+        raise DegradationOperationRefused("as_of must not be before the window end")
     if not isinstance(baseline, BaselineMetricSet):
         raise DegradationOperationRefused("baseline must be a BaselineMetricSet")
     if not isinstance(profile, ValidationProfile) or not isinstance(
@@ -923,8 +1121,8 @@ def resolve_degradation_inputs(
         if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
             raise AuthorityRefused(SOURCE_IDENTITY_MISMATCH, f"{label} is not a SHA-256 hash")
 
-    # 1. lifecycle at the explicit head
-    pinned, history, record_hashes = _resolve_lifecycle(lifecycle, head, subject)
+    # 1. lifecycle at the explicit head, truncated to as_of
+    pinned, history, record_hashes = _resolve_lifecycle(lifecycle, head, subject, window, as_of)
     anchor = ANCHOR_PRESENT if lifecycle.anchored else ANCHOR_ABSENT
 
     # 3a. every ruled metric is defined, and the baseline cites each definition's gate
@@ -948,13 +1146,15 @@ def resolve_degradation_inputs(
         manifest_hash=manifest_hash,
         baseline_manifest=baseline_manifest,
         window=window,
+        as_of=as_of,
     )
-    prices = _window_bars(catalog, manifest_hash, identity.instruments, window)
+    _check_instruments(
+        identity, catalog, baseline_manifest=baseline_manifest, source_manifest=manifest
+    )
+    bars = _window_bars(catalog, manifest_hash, identity.instruments, window, as_of)
 
     # returns through the provider, then 3b. each definition's validation function
-    returns, execution_payload = _window_returns(
-        execution, descriptor, identity, prices.bars, window
-    )
+    returns, execution_payload = _window_returns(execution, descriptor, identity, bars, window)
     values: dict[str, Decimal] = {}
     for definition in definitions:
         try:
@@ -969,14 +1169,15 @@ def resolve_degradation_inputs(
             values[definition.metric_name] = value
 
     source = SourceIdentity.of(manifest)
-    last_bar = max(prices.bars, key=lambda bar: (bar.interval_start, bar.instrument))
-    observed = max(bar.available_time for bar in prices.bars)
+    last_bar = max(bars, key=lambda bar: (bar.interval_start, bar.instrument))
+    observed = max(bar.available_time for bar in bars)
     set_id = "authority:" + content_hash(
         {
             "dataset_id": dataset_id,
             "manifest_hash": manifest_hash,
             "lifecycle_head": pinned.payload(),
             "window": window.payload(),
+            "as_of": _utc_text(as_of),
         }
     )
     recent_manifest = RecentMetricManifest(
@@ -995,6 +1196,7 @@ def resolve_degradation_inputs(
             ),
         ),
         metrics=values,
+        as_of=as_of,
     )
     recent = RecentMetricSet(
         manifest=recent_manifest, manifest_hash=recent_manifest.content_hash()
@@ -1009,6 +1211,7 @@ def resolve_degradation_inputs(
         source=source,
         baseline_run_id=baseline_run.run_id,
         baseline_manifest_hash=baseline_manifest_hash,
+        baseline_set_hash=baseline.content_hash(),
         validation_report_hash=baseline_report.content_hash(),
         profile_ref=str(profile.ref),
         profile_hash=profile.content_hash(),
@@ -1017,7 +1220,7 @@ def resolve_degradation_inputs(
             {"target_source": identity.payload(), **execution_payload}
         ),
         recent_manifest_hash=recent.manifest_hash,
-        as_of=window.end,
+        as_of=as_of,
         window_start=window.start,
         window_end=window.end,
     )

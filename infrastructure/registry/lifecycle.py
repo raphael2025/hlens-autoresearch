@@ -47,6 +47,15 @@ journal, or the hash at that count differs) is ``UnknownHead``. A strategy's lif
 the replay of its records up to that head; the ACTIVE set at a head is every strategy whose replay
 ends in ``ACTIVE``, so ``ACTIVE → DEGRADED / RETIRED`` removes it naturally.
 
+**Read-only snapshots (ADR-0098 修订 2 §6).** ``LifecycleRegistry.open_snapshot(root, anchor=...)``
+returns a read-only instance for resolvers: it takes **no** lock, creates nothing (``root`` and
+``lifecycle.jsonl`` must exist), never re-anchors the crash window and cannot ``append``. The
+journal is read as a stable snapshot (unchanged across the read) and replayed under the same rules;
+a supplied anchor is only **verified**: every anchored prefix must match and its last record must
+be exactly the journal tip, otherwise ``RegistryCorrupted`` (the writer's one-record crash window
+is refused here, not repaired). The writer API (``LifecycleRegistry(root, anchor=...)``) is
+unchanged.
+
 **Writers.** Only explicit calls (a promotion / lifecycle CLI or function the operator invokes).
 The research loop, the ADR-0074 synthetic operator and the API never open this registry for writing
 (ADR-0098 §1); there is no global singleton.
@@ -355,6 +364,9 @@ class LifecycleRegistry:
         self._root.mkdir(parents=True, exist_ok=True)
         #: Why this instance may no longer be trusted (a write that failed after it began writing).
         self._poisoned: str | None = None
+        #: A read-only snapshot (``open_snapshot``): no lock, no anchor write, no ``append``.
+        self._read_only = False
+        self._closed = False
         self._lock_fd: int | None = os.open(self._root / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -376,9 +388,28 @@ class LifecycleRegistry:
             self.close()
             raise
 
+    @classmethod
+    def open_snapshot(cls, root: Path, *, anchor: Path | None = None) -> Self:
+        """A read-only snapshot instance (module docs, ADR-0098 修订 2 §6): no writer lock, no
+        file created, no anchor crash-recovery write; a supplied anchor is only verified and any
+        mismatch is ``RegistryCorrupted``. Reads work as on a writer instance; ``append`` is
+        refused. ``close()`` (or the context manager) only marks it closed."""
+        root_path, journal, replay, anchor_journal = _read_snapshot(Path(root), anchor)
+        registry = cls.__new__(cls)
+        registry._root = root_path
+        registry._poisoned = None
+        registry._read_only = True
+        registry._closed = False
+        registry._lock_fd = None
+        registry._state = replay
+        registry._journal = journal
+        registry._anchor = anchor_journal
+        return registry
+
     # ---- lifecycle ----------------------------------------------------------------------
 
     def close(self) -> None:
+        self._closed = True
         if self._lock_fd is not None:
             fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
             os.close(self._lock_fd)
@@ -401,7 +432,7 @@ class LifecycleRegistry:
                 f"this lifecycle registry instance is poisoned ({self._poisoned}); open a new "
                 "one to replay and verify the disk"
             )
-        if self._lock_fd is None:
+        if self._closed or (not self._read_only and self._lock_fd is None):
             raise RegistryError("the lifecycle registry is closed")
 
     def _poison(self, reason: str) -> None:
@@ -458,6 +489,8 @@ class LifecycleRegistry:
         ``LifecycleHistory`` (``RegistryRefused``).
         """
         self._require_open()
+        if self._read_only:
+            raise RegistryRefused("a read-only lifecycle registry snapshot cannot append")
         if not isinstance(transition, LifecycleTransition):
             raise RegistryRefused("append needs a LifecycleTransition")
         if not isinstance(expected_head, LifecycleHead):
@@ -505,6 +538,11 @@ class LifecycleRegistry:
     def __len__(self) -> int:
         self._require_open()
         return len(self._journal)
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this instance is a read-only snapshot (``open_snapshot``)."""
+        return self._read_only
 
     @property
     def anchored(self) -> bool:
@@ -580,13 +618,27 @@ def verify_integrity(root: Path, *, anchor: Path | None = None) -> int:
         return len(registry)
 
 
-def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict[str, object]:
-    """Verify a stable Lifecycle Registry snapshot without locks, writes or anchor recovery.
+def _stable_read(path: Path) -> tuple[bytes, tuple[int, int, int, int]]:
+    """``path``'s bytes and stat stamp, refused when the file changed while it was read."""
+    before = path.stat()
+    data = path.read_bytes()
+    after = path.stat()
+    stamp = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if stamp != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+        raise RegistryCorrupted(f"{path} changed while the snapshot was read")
+    return data, stamp
 
-    A supplied anchor must match the journal tip exactly; without one the result is marked
-    ``UNANCHORED`` (whole trailing records cannot be detected). Raises ``RegistryCorrupted``.
+
+def _read_snapshot(
+    root: Path, anchor: Path | None
+) -> tuple[Path, AppendOnlyJournal, _Replay, AppendOnlyJournal | None]:
+    """Replay a stable journal snapshot without locks or writes and verify ``anchor`` (if given)
+    against it exactly: every anchored prefix matches and the last one is the journal tip.
+
+    Returns ``(resolved root, journal, replay, anchor journal or None)``; ``RegistryCorrupted``
+    on any failure. Shared by ``LifecycleRegistry.open_snapshot`` and
+    ``verify_integrity_snapshot``.
     """
-    root = Path(root)
     journal_path = root / JOURNAL_NAME
     if not root.is_dir() or not journal_path.is_file():
         raise RegistryCorrupted(f"the Lifecycle Registry does not exist at {root}")
@@ -595,16 +647,7 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict
     if anchor_path is not None and anchor_path.resolve().is_relative_to(resolved_root):
         raise RegistryCorrupted("the lifecycle registry anchor must be outside its directory")
 
-    def signature(path: Path) -> tuple[bytes, tuple[int, int, int, int]]:
-        before = path.stat()
-        data = path.read_bytes()
-        after = path.stat()
-        stamp = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-        if stamp != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
-            raise RegistryCorrupted(f"{path} changed while the audit snapshot was read")
-        return data, stamp
-
-    journal_signature = signature(journal_path)
+    journal_signature = _stable_read(journal_path)
     try:
         journal = AppendOnlyJournal(journal_path)
     except JournalCorrupted as exc:
@@ -612,12 +655,12 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict
     replay = _Replay()
     replay.replay(journal, "lifecycle")
 
-    anchor_status = "UNANCHORED"
+    anchor_journal: AppendOnlyJournal | None = None
     anchor_signature: tuple[bytes, tuple[int, int, int, int]] | None = None
     if anchor_path is not None:
         if not anchor_path.is_file():
             raise RegistryCorrupted(f"the Lifecycle Registry anchor does not exist: {anchor_path}")
-        anchor_signature = signature(anchor_path)
+        anchor_signature = _stable_read(anchor_path)
         try:
             anchor_journal = AppendOnlyJournal(anchor_path)
         except JournalCorrupted as exc:
@@ -631,12 +674,22 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict
                 )
         if length != len(journal) or (length and journal.entry(length - 1).hash != head):
             raise RegistryCorrupted("the Lifecycle Registry anchor does not match the journal tip")
-        anchor_status = "VERIFIED"
 
-    if signature(journal_path) != journal_signature:
-        raise RegistryCorrupted(f"{journal_path} changed during the audit")
-    if anchor_path is not None and signature(anchor_path) != anchor_signature:
-        raise RegistryCorrupted(f"{anchor_path} changed during the audit")
+    if _stable_read(journal_path) != journal_signature:
+        raise RegistryCorrupted(f"{journal_path} changed during the snapshot read")
+    if anchor_path is not None and _stable_read(anchor_path) != anchor_signature:
+        raise RegistryCorrupted(f"{anchor_path} changed during the snapshot read")
+    return resolved_root, journal, replay, anchor_journal
+
+
+def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict[str, object]:
+    """Verify a stable Lifecycle Registry snapshot without locks, writes or anchor recovery.
+
+    A supplied anchor must match the journal tip exactly; without one the result is marked
+    ``UNANCHORED`` (whole trailing records cannot be detected). Raises ``RegistryCorrupted``.
+    """
+    resolved_root, journal, replay, anchor_journal = _read_snapshot(Path(root), anchor)
+    anchor_status = "UNANCHORED" if anchor_journal is None else "VERIFIED"
     head = _head_of(replay.records, len(replay.records))
     return {
         "status": "OK",
@@ -647,11 +700,10 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict
         "head": head.payload(),
         "active_strategies": [str(ref) for ref in _active_at(replay.records, head).strategies],
         "anchor_status": anchor_status,
-        "anchor_path": None if anchor_path is None else str(anchor_path.resolve()),
+        "anchor_path": None if anchor is None else str(Path(anchor).resolve()),
         "limitations": [
             "rollback of the journal and its external anchor together is not detectable"
         ]
         if anchor_status == "VERIFIED"
         else ["without an external anchor, whole trailing journal records cannot be detected"],
     }
-
