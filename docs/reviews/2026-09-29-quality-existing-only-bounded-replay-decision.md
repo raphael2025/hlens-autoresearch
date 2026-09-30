@@ -1,6 +1,6 @@
 # Quality `existing_only` 有界重放决策包
 
-**状态：ARCHITECTURE_DECISION_REQUIRED**
+**状态：已由 ADR-0093（Accepted，2026-09-29）解决；本文作为问题背景保留，不再是待决事项。**
 **Phase：1 — Market Representation / E1-CAP-1**
 **范围：** `infrastructure/quality/` 的报告事件生成、持久化与重放；不改 `core/` 冻结契约，不改现有表定义。
 
