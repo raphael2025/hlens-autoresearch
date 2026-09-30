@@ -22,7 +22,7 @@ test("the real fixture parses: report-only, no findings, named by its report_has
   const report = payloadOf(fixture.payload);
   assert.equal(report.report_hash, fixture.id);
   assert.equal(report.kind, "retro_audit");
-  assert.equal(report.schema_version, "1.0.0");
+  assert.equal(report.schema_version, "1.1.0");
   assert.equal(report.subjects, 0);
   assert.equal(report.flagged_for_revalidation, 0);
   assert.equal(report.rejected_that_would_now_pass, 0);

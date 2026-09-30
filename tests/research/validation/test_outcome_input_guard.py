@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -86,7 +87,7 @@ def test_run_in_sample_refuses_an_outcome_payload_input_before_any_gate(
     honest = MomentumSignStudy(market, _events(table)).signal_refs
     study = _OutcomeInputStudy((*honest, payload))
     with pytest.raises(OutcomeUsedAsInput, match="C-L2"):
-        run_in_sample(in_sample_input(table, study))  # type: ignore[arg-type]
+        run_in_sample(in_sample_input(table, study))
     assert study.calls == 0  # refused before G0 asked for a single side
 
 
@@ -97,9 +98,9 @@ def test_run_sealed_oos_refuses_an_outcome_payload_input_before_the_vault(
     study = _OutcomeInputStudy((_payloads(table)[0],))
     sealed = SealedOosInput(
         context=context(),
-        vault=_UntouchableVault(),  # type: ignore[arg-type]
+        vault=cast(Any, _UntouchableVault()),
         outcomes=table,
-        study=study,  # type: ignore[arg-type]
+        study=study,
     )
     with pytest.raises(OutcomeUsedAsInput, match="C-L2"):
         run_sealed_oos(sealed)

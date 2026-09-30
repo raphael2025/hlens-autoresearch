@@ -6,9 +6,10 @@ it (``OutcomeUsedAsInput`` is itself a ``ValueError``, so the guard must run fir
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 from core.contracts.outcome import OutcomeUsedAsInput
 from core.contracts.strategy import (
@@ -71,12 +72,10 @@ class _LeakingValidator:
 
 def test_outcome_leak_in_the_strategy_step_is_rejected_not_failed(tmp_path: Path) -> None:
     entry = library_entries()[0]
-    candidate = replace(entry.candidate(), strategy=_LeakingStrategy())
+    candidate = replace(entry.candidate(), strategy=cast(Any, _LeakingStrategy()))
     registry = FailureRegistry(tmp_path / "failures.jsonl")
 
-    result = evaluate_strategy(
-        candidate, _inputs(), backtester=BarBacktester(), registry=registry
-    )
+    result = evaluate_strategy(candidate, _inputs(), backtester=BarBacktester(), registry=registry)
 
     assert result.status is EvaluationStatus.REJECTED
     (record,) = registry.records()

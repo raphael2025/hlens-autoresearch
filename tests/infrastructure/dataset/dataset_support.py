@@ -89,6 +89,60 @@ from tests.infrastructure.revision.rest_store_support import (
 ORIGIN: Final = xs.ORIGIN
 REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 
+__all__ = [
+    "DAY",
+    "END",
+    "ETH_HALT",
+    "FakeChunkWriter",
+    "FakeManifests",
+    "FakePit",
+    "FakeQuality",
+    "FakeUniverse",
+    "GAP_TEXT",
+    "L3",
+    "LocalFileStorageAdapter",
+    "LookupLies",
+    "ORIGIN",
+    "RecordingSink",
+    "SIM",
+    "START",
+    "TRADING",
+    "V3_BINDINGS",
+    "V3_CHUNK_TABLE",
+    "V3_EVENT",
+    "V3_LISTINGS",
+    "V3_LISTING_REPORT",
+    "V3_SLICE_21",
+    "V3_SLICE_22",
+    "V3_TRADES",
+    "World",
+    "episode_of",
+    "evidence_index",
+    "evidence_leaf",
+    "evidence_object_bytes",
+    "evidence_object_path",
+    "evidence_storage",
+    "fake_heads",
+    "listing_lineage",
+    "partition_report",
+    "point_key",
+    "point_scenario",
+    "postgres_world",
+    "publish_bytes",
+    "selected",
+    "sqlite_world",
+    "stream_ref",
+    "symbol_of",
+    "trade_lineage",
+    "utc",
+    "v3_episode",
+    "v3_exclusion",
+    "v3_member",
+    "v3_pit",
+    "v3_request",
+    "v3_sources",
+]
+
 #: Listing observations (exchangeInfo retrieved_at) before the market data of 2023-11-14.
 L1: Final = utc(2023, 11, 10)
 L2: Final = utc(2023, 11, 12)
@@ -489,9 +543,7 @@ def v3_episode(symbol: str) -> DegradedEpisodeKey:
     )
 
 
-def v3_member(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseMember:
+def v3_member(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseMember:
     return UniverseMember(
         episode=v3_episode(symbol),
         listing_revision_id=revision,
@@ -500,9 +552,7 @@ def v3_member(
     )
 
 
-def v3_exclusion(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseExclusion:
+def v3_exclusion(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseExclusion:
     return UniverseExclusion(
         episode=v3_episode(symbol),
         listing_revision_id=revision,

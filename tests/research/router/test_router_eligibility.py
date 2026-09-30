@@ -54,10 +54,12 @@ from tests.research.router.test_router_completion import (
 #: still hold when the test builds every object at 2.1.0 (verified: the unmodified test passes
 #: inside ``contract_schema_version_scope("2.1.0")``). 2.1.0 values (evidence, git history):
 #: d3c8cc3b…, stops 64c34061…, 6528f56b…, cbc771dc…
-TRUST_REPORTS_RUN_HASH = "ed62d7c73313331ae9e429fceec3e9d18c5cb75b661be6e130990e4870aea149"
-TRUST_STOP_FLAT = "bff151b450dd125758410b9ed78e352030d36a27cc58a95f5d2ed8216b630382"
-TRUST_STOP_NO_CANDIDATE = "274b2162f939a8fed92dfa7a39536fbfc35f5e28f13191f9ab51c8799b0abca7"
-TRUST_STOP_FLAT_WITH_REPORTS = "2e8a462646ba73292be204afb568744907d4290979f70c1c3673ceccc409ebe1"
+#: Re-pinned for contract 2.4.0 (ADR-0088, 2026-09-28): trust-mode payload shape is unchanged;
+#: run/stop identities include the new default contract envelope.
+TRUST_REPORTS_RUN_HASH = "0263826c16a6d972e9aca6e339a336924d7af0fe5e1354dbb2755b43472fdfa6"
+TRUST_STOP_FLAT = "b50a6aeb40bc0414eb9082639a6d5945dbabada2c728cb4d356e0577383541fc"
+TRUST_STOP_NO_CANDIDATE = "96f030b2ebba6535b9267335c8da36947c739a44b775a695928c1d2e2d42cbc3"
+TRUST_STOP_FLAT_WITH_REPORTS = "8517a0dcc33b0ce95354861f9b197dd6da0da952c5a43da4f4de0ba1483ae11d"
 CREATED = datetime(2026, 9, 1, tzinfo=UTC)
 
 

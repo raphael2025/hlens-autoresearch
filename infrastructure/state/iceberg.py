@@ -6,7 +6,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pydantic import ValidationError
@@ -25,7 +25,6 @@ from core.contracts.state import (
     StateProviderDescriptor,
     StateRequest,
     StateResult,
-    StateValue,
 )
 from core.domain.base import (
     PUBLISHED_CONTRACT_SCHEMA_VERSIONS,
@@ -108,7 +107,9 @@ def state_rows(
     descriptor: StateProviderDescriptor,
 ) -> list[dict[str, Any]]:
     """The physical rows of one checked StateResult (logical projection + run envelope)."""
-    return state_rows_batch(result, spec, request, descriptor).to_pylist()
+    return cast(
+        list[dict[str, Any]], state_rows_batch(result, spec, request, descriptor).to_pylist()
+    )
 
 
 def state_rows_batch(
@@ -353,9 +354,7 @@ class StateTable:
         snapshot_id: str | None = None,
     ) -> StateResult | None:
         """Load the StateResult, optionally checking its row identity against ``expected_spec``."""
-        stored = self.read(
-            result_hash, expected_spec=expected_spec, snapshot_id=snapshot_id
-        )
+        stored = self.read(result_hash, expected_spec=expected_spec, snapshot_id=snapshot_id)
         return None if stored is None else stored.result
 
     def _rows(self, result_hash: str, snapshot_id: str | None) -> list[dict[str, Any]]:

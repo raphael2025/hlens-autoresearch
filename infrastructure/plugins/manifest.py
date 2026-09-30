@@ -45,9 +45,9 @@ from typing import Final
 
 from core.domain.base import (
     CONTRACT_SCHEMA_MAJOR,
-    FrozenMapping,
     NAME_PATTERN,
     REF_KEY_PATTERN,
+    FrozenMapping,
     parse_semver,
 )
 
@@ -308,11 +308,20 @@ class PluginManifest:
         deterministic = data["deterministic"]
         if not isinstance(deterministic, bool):
             raise PluginManifestError("deterministic must be a bool")
+        name = data["name"]
+        if not isinstance(name, str):
+            raise PluginManifestError("name must be a string")
+        version = data["version"]
+        if not isinstance(version, str):
+            raise PluginManifestError("version must be a string")
+        contract_version = data["contract_version"]
+        if not isinstance(contract_version, str):
+            raise PluginManifestError("contract_version must be a string")
         return cls(
-            name=data["name"],
+            name=name,
             kind=kind,
-            version=data["version"],
-            contract_version=data["contract_version"],
+            version=version,
+            contract_version=contract_version,
             deterministic=deterministic,
             params_schema=FrozenMapping(params_schema),
             inputs=tuple(inputs),
@@ -328,8 +337,10 @@ class PluginManifest:
 
 
 def _string_sequence(value: object, field_name: str) -> tuple[str, ...]:
-    if not isinstance(value, Sequence) or isinstance(value, str) or not all(
-        isinstance(item, str) for item in value
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, str)
+        or not all(isinstance(item, str) for item in value)
     ):
         raise PluginManifestError(f"{field_name} must be an array of strings")
     return tuple(value)

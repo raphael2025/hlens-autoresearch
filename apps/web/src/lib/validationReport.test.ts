@@ -23,7 +23,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("every committed fixture parses: a PASS verdict and their gates", () => {
-  assert.equal(fixtures.length, 3);
+  assert.equal(fixtures.length, 4);
   for (const envelope of fixtures) {
     const report = payloadOf(envelope.payload);
     assert.equal(report.verdict, "PASS");

@@ -18,6 +18,7 @@ from pyiceberg.catalog.sql import SqlCatalog
 
 from core.contracts.catalog import (
     BatchRejected,
+    CommitOutcome,
     CommitRequest,
     UnknownTableDefinition,
 )
@@ -161,6 +162,30 @@ def test_created_table_pins_binding_and_disables_pyiceberg_commit_retries(
     assert properties["hlens.definition.hash"] == ALPHA.definition_hash
     assert properties["hlens.batch.fingerprint-rule"] == RULE.rule_id
     assert properties["write.parquet.compression-codec"] == "zstd"
+
+
+def test_sqlite_catalog_and_warehouse_survive_adapter_reopen(
+    sqlite_harness: SqliteCatalogHarness,
+) -> None:
+    writer = sqlite_harness.open_adapter()
+    created = writer.create_table(ALPHA.binding)
+    batch = make_batch(3, "restart")
+    request = _request(batch)
+    first = writer.commit_batch(request, batch)
+    writer.close()
+
+    reopened = sqlite_harness.open_adapter()
+    try:
+        info = reopened.load_table(ALPHA.table)
+        assert info is not None and info.definition == created.definition
+        assert info.current_snapshot == first.snapshot
+        replay = reopened.commit_batch(request, batch)
+        assert replay.outcome is CommitOutcome.ALREADY_COMMITTED
+        assert replay.snapshot == first.snapshot
+        rows = sqlite_harness.sql_catalog().load_table(("c2test", "alpha")).scan().to_arrow()
+        assert rows.to_pylist() == batch.to_pylist()
+    finally:
+        reopened.close()
 
 
 def test_table_without_persisted_binding_fails_closed(sqlite_harness: SqliteCatalogHarness) -> None:

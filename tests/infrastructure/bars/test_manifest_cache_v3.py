@@ -30,7 +30,7 @@ from infrastructure.catalog.phase1_tables import (
     DATASET_MANIFESTS,
     DATASET_SELECTION_CHUNKS,
 )
-from infrastructure.dataset.builder import DatasetBuilt, DatasetBuildSummary
+from infrastructure.dataset.builder import DatasetBuildSummary, DatasetBuilt
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.feature.dataset import DatasetBindingError, load_any_manifest
 from tests.infrastructure.bars import v3_support as v

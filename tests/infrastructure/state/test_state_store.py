@@ -10,13 +10,22 @@ from typing import Any
 
 import pytest
 
-from infrastructure.state.store import StateResultStore, StateStoreCorrupted
+from core.contracts.state import StateResult
 from infrastructure.state.runner import run_state, state_request
+from infrastructure.state.store import StateResultStore, StateStoreCorrupted
 from plugins.states import VolatilityRegimeProvider
-from tests.fake_states import TEST_CUTS, TEST_MIN_HISTORY, TEST_SEED, TEST_WINDOW, VOL_FEATURE, at, level_inputs
+from tests.fake_states import (
+    TEST_CUTS,
+    TEST_MIN_HISTORY,
+    TEST_SEED,
+    TEST_WINDOW,
+    VOL_FEATURE,
+    at,
+    level_inputs,
+)
 
 
-def _result():
+def _result() -> StateResult:
     spec = VolatilityRegimeProvider.spec(
         VOL_FEATURE,
         cuts=TEST_CUTS,
@@ -59,9 +68,7 @@ def test_concurrent_puts_use_distinct_temporary_paths_and_publish_one_artifact(
     temporary_paths: list[Path] = []
     real_link = os.link
 
-    def synchronized_link(
-        source: str | os.PathLike[str], target: str | os.PathLike[str]
-    ) -> None:
+    def synchronized_link(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
         temporary_paths.append(Path(source))
         barrier.wait(timeout=10)
         real_link(source, target)
@@ -72,8 +79,6 @@ def test_concurrent_puts_use_distinct_temporary_paths_and_publish_one_artifact(
 
     assert results == (store.root / f"{result.result_hash}.json",) * 2
     assert len(temporary_paths) == 2 and len(set(temporary_paths)) == 2
-    assert all(
-        path.parent == store.root and path.name.endswith(".tmp") for path in temporary_paths
-    )
+    assert all(path.parent == store.root and path.name.endswith(".tmp") for path in temporary_paths)
     assert tuple(path.name for path in store.root.iterdir()) == (f"{result.result_hash}.json",)
     assert store.get(result.result_hash) == result

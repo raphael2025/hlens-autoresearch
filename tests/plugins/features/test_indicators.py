@@ -125,8 +125,11 @@ SUITE_TIMES = tuple(T0 + minute * MINUTE for minute in range(0, 17))
 
 def _perturb(item: FeatureObservation) -> FeatureObservation:
     values = dict(item.values)
+    # A uniform affine transform of every bar leaves RSI, ADX, and Bollinger %B invariant. Flatten
+    # the price path so the provider-agnostic sensitivity check exercises normalized indicators,
+    # while preserving each observation's key and availability times.
     for name in ("open", "high", "low", "close"):
-        values[name] = values[name] * 2 + 1  # type: ignore[operator]
+        values[name] = Decimal(100)
     values["volume"] = values["volume"] * 2 + 1  # type: ignore[operator]
     return item.model_copy(update={"values": values})
 

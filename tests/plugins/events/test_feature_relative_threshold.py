@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -27,7 +27,11 @@ def _point(source: Ref, minute: int, value: Decimal | int | None) -> EventInputP
     return EventInputPoint(
         source=source,
         source_lineage_hash=content_hash(
-            {"source": str(source), "minute": minute, "value": None if value is None else str(value)}
+            {
+                "source": str(source),
+                "minute": minute,
+                "value": None if value is None else str(value),
+            }
         ),
         evaluation_time=evaluation_time,
         available_time=evaluation_time + timedelta(seconds=30),
@@ -53,7 +57,9 @@ def _spec(
     multiplier: Decimal = Decimal("3"),
     lag: timedelta = LAG,
 ) -> EventSpec:
-    return FeatureRelativeThresholdCrossProvider.spec(RETURN, VOL, multiplier, direction, observable_lag=lag)
+    return FeatureRelativeThresholdCrossProvider.spec(
+        RETURN, VOL, multiplier, direction, observable_lag=lag
+    )
 
 
 def _detect(
@@ -81,7 +87,7 @@ class TestFeatureRelativeThresholdContract(EventProviderContract):
             spec=spec,
             as_of_times=tuple(T0 + index * STEP + LAG for index in range(1, 8)),
             inputs=inputs,
-            perturb=lambda item: item.model_copy(update={"value": item.value * 2 + 1}),
+            perturb=lambda item: item.model_copy(update={"value": cast(Any, item.value) * 2 + 1}),
         )
 
 
@@ -168,9 +174,7 @@ def test_multiplier_is_required_positive_finite_decimal_and_features_are_distinc
     with pytest.raises(ValueError, match="distinct"):
         FeatureRelativeThresholdCrossProvider.spec(RETURN, RETURN, Decimal("2"), "up")
     with pytest.raises(ValueError, match="direction"):
-        FeatureRelativeThresholdCrossProvider.spec(  # type: ignore[arg-type]
-            RETURN, VOL, Decimal("2"), "sideways"
-        )
+        FeatureRelativeThresholdCrossProvider.spec(RETURN, VOL, Decimal("2"), cast(Any, "sideways"))
 
 
 def test_non_exact_decimal_comparison_fails_closed() -> None:

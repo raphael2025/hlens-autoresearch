@@ -8,7 +8,7 @@
 |---|---|
 | `settings.py` | 类型化运行时设置（03-data.md §6.2）：`file://` warehouse / staging、PostgreSQL catalog DSN、HTTP / Binance base URL |
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
-| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张首切片生产表 + D3B 四张 ADR-0027 REST 表 + E2 一张 ADR-0029 快照表 + QG-1 一张 ADR-0031 证据缺口表 + DS-1 一张 ADR-0033 Research Dataset 选择表（共 15 张）、batch 指纹规则与 partition-spec 演进 |
+| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；原始 15 张表加 ADR-0077 的两张 dataset evidence/chunk 表（共 17 张），以及 batch 指纹规则与 partition-spec 演进 |
 | `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
 | `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
 | `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore`；D3B 的 REST 纯规则（独立身份规则、REST availability / precedence、D-33 通道等价比较） |
@@ -65,7 +65,7 @@
 
 ## Phase 1 生产表（C3）
 
-- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的十五张表（前八张为 C3 首切片且定义哈希不变，中四张为 D3B 追加，第 13 张为 E2 追加，第 14 张为 QG-1 追加，第 15 张为 DS-1 追加），`definition_id` = 表名，`version = 1.0.0`，初始分区按冻结值（`raw.binance_spot_agg_trades` / `canonical.trades` / `research.dataset_selections`：identity `symbol` + day(`event_time`)；`raw.binance_spot_klines_1m` / `canonical.bars_1m`：identity `symbol` + day(`interval_start`)；`quality.availability_evidence_gaps`：identity `subject_symbol` + day(`subject_start`)；其余不分区）。C2 的 test-only 定义只在 `tests/` 中。
+- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的 17 张表（原有 15 张基础表 + ADR-0077 的两张 bounded dataset evidence/chunk 表），`definition_id` = 表名，`version = 1.0.0`，分区按各表定义冻结值；C2 的 test-only 定义只在 `tests/` 中。
 - Schema：字段 ID 在源码中逐个写出并等于 Iceberg 建表时分配的 ID（否则 import 失败）；每列带 Iceberg `doc`；时间一律 `timestamptz`（微秒、UTC），交易所十进制值一律 `decimal(38, 18)`，时长为整数微秒，无浮点。列与契约的映射见 `phase1_tables.py` 模块文档；定义哈希由 C2 的规范定义文档派生，golden 值在 `tests/infrastructure/catalog/test_phase1_tables.py`。任何 Schema / 分区 / 属性 / 规则变化 = 新定义版本。
 - 幂等建表：`ensure_phase1_tables(adapter)`；已存在且绑定相同则只核对、不改动；任何漂移 fail closed。操作入口（不打印 DSN）：
 

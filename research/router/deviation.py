@@ -394,10 +394,7 @@ def validate_scope_bound_payload(
     ):
         raise DeviationError("the P8 ValidationReport must PASS and include sealed OOS G5 evidence")
     scope = payload.get("declared_scope")
-    if (
-        not isinstance(scope, Mapping)
-        or scope.get("scope_schema_version") != SCOPE_SCHEMA_VERSION
-    ):
+    if not isinstance(scope, Mapping) or scope.get("scope_schema_version") != SCOPE_SCHEMA_VERSION:
         raise DeviationError("paper deviation has no supported declared scope")
     scope_hash = scope.get("scope_hash")
     scope_body = {key: value for key, value in scope.items() if key != "scope_hash"}

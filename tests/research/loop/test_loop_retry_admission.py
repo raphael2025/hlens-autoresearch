@@ -532,6 +532,7 @@ def test_a_crash_after_prepare_is_recovered_exactly(
     # the run/report identity is disambiguated by the attempt key, not only the round + hypothesis
     assert all(row["run_id"].endswith(f"#{attempt}") for attempt, row in by_attempt.items())
     assert stages["validation"].status is StageStatus.COMPLETED
+    assert stages["validation"].summary is not None
     reports = stages["validation"].summary["reports"]
     assert {(r["hypothesis"], r["attempt"]) for r in reports} == {
         (str(first.ref), "retry-1"),

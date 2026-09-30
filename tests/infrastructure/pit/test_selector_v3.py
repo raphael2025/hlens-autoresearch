@@ -28,6 +28,7 @@ from infrastructure.pit.selector import (
 )
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import (
+    _WRONG,
     END,
     K_A,
     K_E,
@@ -37,10 +38,9 @@ from tests.infrastructure.pit.test_selector import (
     START,
     _chain,
     _spec,
-    _WRONG,
 )
 from tests.infrastructure.revision import rest_store_support as ss
-from tests.infrastructure.revision.rest_store_support import RestHarness, SYMBOL, StepClock, utc
+from tests.infrastructure.revision.rest_store_support import SYMBOL, RestHarness, StepClock, utc
 
 FAR = utc(2030, 1, 1)
 
@@ -105,9 +105,7 @@ def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> 
         legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
         records = _bounded(h, spec)
         got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
-        expected = sorted(
-            legacy.selections, key=lambda s: (s.observation_key, s.simulation_time)
-        )
+        expected = sorted(legacy.selections, key=lambda s: (s.observation_key, s.simulation_time))
         assert got == expected, cutoff
 
 
@@ -139,7 +137,10 @@ def test_iter_bounded_deduplicates_lineage_across_repeated_selections_of_one_rev
     ]
     assert len(selected_revisions) >= 1
     lineage_hits = [r for r in records if r.lineage is not None]
-    assert len(lineage_hits) == len({item.lineage.canonical_revision_id for item in lineage_hits})
+    assert all(r.lineage is not None for r in lineage_hits)
+    assert len(lineage_hits) == len(
+        {item.lineage.canonical_revision_id for item in lineage_hits if item.lineage is not None}
+    )
 
 
 def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buffer(
@@ -150,7 +151,9 @@ def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buf
     fifth, single-revision REST-only key exercising ordinary (non-spilling) grouping."""
     _chain(h, count=4)
     [other_item] = ss.agg_items(1, first_id=900)
-    [other_response] = c.ingest_rest(h, "agg_trades", [other_item], knowledge=K_R)
+    [other_response] = c.ingest_rest(
+        h, "agg_trades", [other_item], knowledge=K_R, request_id="req-rest-lone-key"
+    )
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, other_response)
 
     spec = _spec(h, cutoff=FAR)

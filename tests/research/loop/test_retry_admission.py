@@ -137,7 +137,7 @@ def test_the_manifest_is_explicit_unique_and_never_takes_a_loop_attempt_key() ->
     with pytest.raises(RetryAdmissionError, match="non-empty"):
         manifest_items([])
     with pytest.raises(RetryAdmissionError, match="unique"):
-        manifest_items([_item(hypothesis, "retry-1"), _item(hypothesis, "retry-1")])
+        manifest_items([_item(hypothesis, "retry-1"), _item(_hypothesis("h_retry_2"), "retry-1")])
     with pytest.raises(RetryAdmissionError, match="reserved"):
         manifest_items([_item(hypothesis, "loop_round:loop-retry:3")])
     with pytest.raises(RetryAdmissionError, match="normalized"):

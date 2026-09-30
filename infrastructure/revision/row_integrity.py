@@ -373,8 +373,7 @@ class _BatchSnapshotLookup:
                 if snapshot.batch_id is None:
                     continue
                 cursor = self._connection.execute(
-                    "UPDATE requested_batches SET match_count = match_count + 1 "
-                    "WHERE batch_id = ?",
+                    "UPDATE requested_batches SET match_count = match_count + 1 WHERE batch_id = ?",
                     (snapshot.batch_id,),
                 )
                 if cursor.rowcount:
@@ -539,7 +538,7 @@ def _iter_indexed_batches(
     """Second pinned pass; yields matching SnapshotInfo one at a time, newest first."""
     if history.head is None:
         return
-    prefixes = set(history.prefixes)
+    prefixes = dict.fromkeys(history.prefixes)
     for snapshot in history_from(adapter, table, history.head):
         batch_id = snapshot.batch_id
         if batch_id is None:
@@ -1237,9 +1236,7 @@ class PersistedRowVerifier:
         self._storage_error = storage_error or (lambda exc: exc)
         #: Verified first-delivery collections, most recent last (immutable checkpoints).
         self._collections: dict[tuple[str, str], CommittedCollection] = {}
-        self._batch_index: dict[
-            tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory
-        ] = {}
+        self._batch_index: dict[tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory] = {}
         #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S): the
         #: archive rows, their objects and parses cannot change under it, so each archive is
         #: proven and parsed once for all the windows of its unit.
@@ -1376,9 +1373,7 @@ class PersistedRowVerifier:
             start = end
         return holders
 
-    def _indexed(
-        self, table: str, prefixes: Mapping[str, str]
-    ) -> _IndexedBatchHistory:
+    def _indexed(self, table: str, prefixes: Mapping[str, str]) -> _IndexedBatchHistory:
         """Constant-space batch summaries, memoised per immutable head (G3-S)."""
         info = self._adapter.load_table(table)
         snapshot = None if info is None else info.current_snapshot
@@ -1723,9 +1718,12 @@ class PersistedRowVerifier:
             bounds[prefix] = [low, high]
         for prefix, lineage in prefixes.items():
             summary = found.summaries[prefix]
-            if seen[prefix] != summary.count or later_rows[prefix] != len(members_by_prefix[prefix]):
+            if seen[prefix] != summary.count or later_rows[prefix] != len(
+                members_by_prefix[prefix]
+            ):
                 raise CatalogIntegrityError(
-                    f"{table}: response revision {lineage} batch history changed during verification"
+                    f"{table}: response revision {lineage} batch history changed during "
+                    "verification"
                 )
             if bounds[prefix][0] > bounds[prefix][1]:
                 raise CatalogIntegrityError(
@@ -2148,7 +2146,7 @@ class PersistedRowVerifier:
                     raise CatalogIntegrityError(
                         f"{table}: row {row['revision_id']} (line {row['archive_line_number']}) "
                         f"is not committed by any batch of archive revision {archive_id}"
-                )
+                    )
                 needed.add(index)
             plans[prefix] = (size, last_size, summary.count, needed)
         checked: dict[str, set[int]] = {prefix: set() for prefix in prefixes}
@@ -2173,9 +2171,7 @@ class PersistedRowVerifier:
                 ),
             )
             current.sort(key=lambda row: (row["archive_line_number"], row["revision_id"]))
-            check_batch_snapshot(
-                definition, _row_batch_id(archive_id, index), snapshot, current
-            )
+            check_batch_snapshot(definition, _row_batch_id(archive_id, index), snapshot, current)
             checked[batch_prefix].add(index)
         for prefix, archive_id in prefixes.items():
             if (

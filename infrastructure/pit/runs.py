@@ -522,7 +522,7 @@ def merge_sorted_runs(
     key: Callable[[Mapping[str, Any]], Any],
     merge_fanout: int,
     limits: RunLimits,
-) -> "_MergeContext":
+) -> _MergeContext:
     """A bounded k-way merge of ``refs`` into one ordered stream (ADR-0077 §6.1.2 / §6.1.3).
 
     At most ``merge_fanout`` run readers are ever open at once. When ``len(refs) >

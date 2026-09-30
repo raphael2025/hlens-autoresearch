@@ -32,6 +32,7 @@ from research.strategies.cross_sectional_momentum import (
     CrossSectionalMomentumProvider,
     xsmom_spec,
 )
+from research.strategies.dual_momentum import DUAL_MOMENTUM_NAME
 from research.strategies.pipeline import CandidateTrialRunner, StrategyCandidate
 from research.strategies.time_series_momentum import tsmom_spec, tsmom_vol_scaled_spec
 from research.strategies.validation import PipelineBacktestValidator, TrialRun, TrialRunner
@@ -77,15 +78,18 @@ def _sha(text: str) -> str:
 #: test passes inside ``contract_schema_version_scope("2.1.0")``).
 #: 2.1.0 values (evidence, git history): d5ca922f…, ab660a9f…, c90fb699…, 679840de…,
 #: e95b1e91…, 4d2a52e5…, c941d036…, 87af742d…
+#: Re-pinned for contract 2.4.0 (ADR-0088, 2026-09-28): the new default envelope changes
+#: content hashes for these freshly built test objects; strategy outputs and assertions are
+#: otherwise unchanged.
 PINNED = {
-    "single_planted_report": "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76",
-    "single_planted_view": "b05266ae6f1c584125a6b694b734d385e9f9e57e1f66b1176fc4df18598ca947",
-    "multi_p,p_report": "8294c4f65b17af845d07e237c00587fae6312d8aa8bc87f520ef7a98d3aa1b00",
-    "multi_p,p_view": "85f8af38585a0b1cb161d35521e37cb318960709a443271b4fc1eac98ebfe793",
-    "multi_p,p_g4": "b726ba317dd27ad129dab8a62ab9798a78f196820d1797e862f26e27cdb42706",
-    "multi_p,n,p_report": "7a89071d1d61c8765ece65b6502cef970561e5c3f1433f76be59a4e3ca3d6a13",
-    "multi_p,n,p_view": "f0ff42635dd6c868ee62e643e544c57457314b22dd88eab30c2caea8c1df1c21",
-    "multi_p,n,p_g4": "a2fcbc5eb3279fd72f1f1b540210aad74702aa99ffad82939e97332d83f99fb9",
+    "single_planted_report": "7438f5c9869d9d9cd38173b81f612e5134d08d493412691b476900ca62513247",
+    "single_planted_view": "a9aa9b34f550806d41ca524db6ab2199f5f41c6fc66b53b780f9c782074905d1",
+    "multi_p,p_report": "70236651c7bdd41ae4d193fe9edeb71f0b560d5491823cd7fbf96c94b1362716",
+    "multi_p,p_view": "e429b0d3bd6471e7943d02361b0952823472fff072530b3ca605e0f986aa3452",
+    "multi_p,p_g4": "51fff11b395fccfe05cc8c103045cd16754b70532ec348697040aea992d55097",
+    "multi_p,n,p_report": "07221cfb4c612e67ca04eb1e31983b47bb552eac25967e8196667b4b47446c31",
+    "multi_p,n,p_view": "462178c25692f325de71a6bbb13f847e578b0be1f070196b71a5aba32250c7ed",
+    "multi_p,n,p_g4": "c690f602e564b3203685de3efcac478859e4b3f4b7fc39d720a1168959361be1",
 }
 
 
@@ -135,7 +139,7 @@ def _candidate(spec: StrategySpec) -> StrategyCandidate:
 
 
 def test_the_declaration_is_a_static_set_of_spec_names() -> None:
-    assert frozenset({XSMOM_NAME}) == CROSS_SECTIONAL_STRATEGIES
+    assert frozenset({XSMOM_NAME, DUAL_MOMENTUM_NAME}) == CROSS_SECTIONAL_STRATEGIES
     assert is_cross_sectional(xsmom_spec())
     assert not is_cross_sectional(tsmom_spec())
     assert not is_cross_sectional(tsmom_vol_scaled_spec())

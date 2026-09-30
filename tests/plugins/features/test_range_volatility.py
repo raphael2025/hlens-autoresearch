@@ -168,7 +168,7 @@ def test_parkinson_is_the_sqrt_trailing_mean_of_range_variance() -> None:
     ln2 = math.log(2)
     terms = [math.log(105 / 95) ** 2 / (4 * ln2), math.log(110 / 90) ** 2 / (4 * ln2)]
     expected = math.sqrt(sum(terms) / 2)
-    assert value.value is not None and value.inputs_used == 2
+    assert isinstance(value.value, Decimal) and value.inputs_used == 2
     assert math.isclose(float(value.value), expected, rel_tol=1e-12)
     assert value.value == value.value.quantize(Decimal("1e-18"))
 

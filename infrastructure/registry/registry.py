@@ -505,10 +505,7 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict
                 or not isinstance(new_head, str)
             ):
                 raise RegistryCorrupted(f"registry anchor record {entry.seq} is invalid")
-            if (
-                new_length > len(journal)
-                or journal.entry(new_length - 1).hash != new_head
-            ):
+            if new_length > len(journal) or journal.entry(new_length - 1).hash != new_head:
                 raise RegistryCorrupted(
                     f"registry anchor record {entry.seq} does not match its journal prefix"
                 )

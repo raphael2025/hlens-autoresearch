@@ -478,8 +478,7 @@ class DurableLoop:
         loop = self.loop
         if loop.recovery_required is None or loop.halted is not None or loop.stopped is not None:
             raise LoopStateInconsistent(
-                "a retry is admitted only while this loop is stopped by its failed experiment "
-                "round"
+                "a retry is admitted only while this loop is stopped by its failed experiment round"
             )
         receipt = state.admit_failed_round_retry(
             packet=packet, reviewer=reviewer, manifest=manifest

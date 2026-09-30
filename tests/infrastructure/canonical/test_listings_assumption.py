@@ -20,6 +20,7 @@ import pytest
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding, PolicyRole
 from core.contracts.universe import TradableInterval
+from core.domain.base import FrozenMapping
 from infrastructure.canonical.listings import ListingPointInTime, UnconstructibleReason
 from infrastructure.universe import listing_assumption as backfill
 from tests.infrastructure.revision import exchange_info_support as xs
@@ -61,7 +62,7 @@ def _pit(simulation: datetime, cutoff: datetime, *, assumed: bool) -> PointInTim
         version="1.0.0",
         simulation_time=simulation,
         knowledge_cutoff=cutoff,
-        snapshot_bindings={"canonical.instrument_listings": "1"},
+        snapshot_bindings=FrozenMapping({"canonical.instrument_listings": "1"}),
         point_in_time_binding=pit_binding,
         availability_bindings=availability,
         precedence_bindings=(precedence,),
@@ -152,7 +153,7 @@ def test_the_assumption_extends_the_first_revision_back_to_the_floor(
     # The underlying revision itself is the real, unmodified first revision (ADR-0051 §1: storage
     # and default behaviour never change).
     assert at_floor.listing is not None
-    assert at_floor.listing.episode.tradable_from == T1
+    assert getattr(at_floor.listing.episode, "tradable_from", None) == T1
     open_interval = (TradableInterval(tradable_from=T1, tradable_until=None),)
     assert at_floor.listing.tradable_intervals == open_interval
 

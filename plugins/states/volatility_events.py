@@ -76,9 +76,11 @@ def _number(item: StateInput) -> Decimal:
     return Decimal(value)
 
 
-def _decimal_text(value: str | Decimal) -> Decimal:
+def _decimal_text(value: str | int | Decimal) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError("state parameter must be a decimal, not a boolean")
     try:
-        parsed = Decimal(value)
+        parsed = Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         raise ValueError(f"{value!r} is not a decimal number") from None
     if not parsed.is_finite():

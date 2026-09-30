@@ -151,7 +151,9 @@ class LiveVenueRegistry:
         return dict(self._adapters)
 
     def register(self, name: str, venue_cls: type) -> None:
-        """Register ``venue_cls`` under ``name``; refuses anything that is not a ``LiveVenuePort``."""
+        """Register ``venue_cls`` under ``name``; refuses anything that is not a
+        ``LiveVenuePort``.
+        """
         if not name:
             raise ValueError("name must be non-empty")
         if not (isinstance(venue_cls, type) and issubclass(venue_cls, LiveVenuePort)):

@@ -39,9 +39,7 @@ __all__ = ["JournalSnapshot", "WriteGate", "detached_entry", "gate_scope", "jour
 class WriteGate(Protocol):
     """The in-process write gate of a durable state a store is bound to (module docs)."""
 
-    def write_scope(
-        self, what: str, token: object | None = None
-    ) -> AbstractContextManager[object]:
+    def write_scope(self, what: str, token: object | None = None) -> AbstractContextManager[object]:
         """Held across one whole store write; raises before anything is written when refused.
 
         ``token``: the store-level credential of an admission lease (the TrialLedger's

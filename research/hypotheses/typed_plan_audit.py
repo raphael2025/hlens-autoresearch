@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from core.domain.base import FrozenMapping, SHA256_PATTERN, canonical_json, content_hash
+from core.domain.base import SHA256_PATTERN, FrozenMapping, canonical_json, content_hash
 from core.domain.research import Hypothesis, HypothesisOrigin
 from research.hypotheses.typed_plan import PlanLimits, PlanRejected, TypedPlan, parse_plan_json
-from research.persistence import AppendOnlyJournal, JournalCorrupted, JournalEntry
+from research.persistence import AppendOnlyJournal, JournalEntry
 
 __all__ = [
     "PLAN_ADMISSION_FORMAT_VERSION",
@@ -64,9 +64,7 @@ _ROUND_KEYS: Final = frozenset(
 )
 _POSITION_KEYS: Final = frozenset({"seq", "hash"})
 _EVIDENCE_KEYS: Final = frozenset({"data", "content_hash"})
-_LEDGER_EVENT_KEYS: Final = frozenset(
-    {"type", "seq", "prev_hash", "hash", "payload_hash"}
-)
+_LEDGER_EVENT_KEYS: Final = frozenset({"type", "seq", "prev_hash", "hash", "payload_hash"})
 _HEADER_KEYS: Final = frozenset({"schema_version", "loop_id", "state_version"})
 
 
@@ -96,7 +94,10 @@ def _json_object(value: object, what: str) -> dict[str, Any]:
     if not _is_json_value(copied):
         raise ValueError(f"{what} must contain only canonical JSON values without floats")
     try:
-        return json.loads(canonical_json(copied))
+        rebuilt = json.loads(canonical_json(copied))
+        if not isinstance(rebuilt, dict):
+            raise ValueError(f"{what} must be a JSON object")
+        return rebuilt
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{what} is not canonical JSON data: {exc}") from exc
 
@@ -214,9 +215,7 @@ def _validate_plan_evidence(evidence: PlanAdmissionEvidence) -> None:
             raise ValueError("stored typed plans must be non-runnable")
         limits_raw = _object(
             payload["limits"],
-            frozenset(
-                {"max_depth", "max_nodes", "max_json_bytes", "max_parameters_per_node"}
-            ),
+            frozenset({"max_depth", "max_nodes", "max_json_bytes", "max_parameters_per_node"}),
             "plan limits",
         )
         limits = PlanLimits(
@@ -266,7 +265,11 @@ class RoundStartedIdentity:
     started_entry_hash: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.loop_id, str) or not self.loop_id or self.loop_id != self.loop_id.strip():
+        if (
+            not isinstance(self.loop_id, str)
+            or not self.loop_id
+            or self.loop_id != self.loop_id.strip()
+        ):
             raise ValueError("loop_id must be non-empty text without surrounding whitespace")
         _positive_int(self.round_index, "round_index", zero_ok=True)
         _positive_int(self.started_entry_seq, "started_entry_seq")
@@ -339,7 +342,9 @@ class PlanAdmissionJournal:
         self, path: Path, *, loop_id: str, create: bool = False, state_version: int = 4
     ) -> None:
         if not isinstance(loop_id, str) or not loop_id or loop_id != loop_id.strip():
-            raise PlanAdmissionError("loop_id must be non-empty text without surrounding whitespace")
+            raise PlanAdmissionError(
+                "loop_id must be non-empty text without surrounding whitespace"
+            )
         if type(state_version) is not int or state_version not in {4, 5}:
             raise PlanAdmissionError("plan admission state_version must be 4 or 5")
         self._loop_id = loop_id
@@ -449,7 +454,10 @@ class PlanAdmissionJournal:
             raise PlanAdmissionError("at least one ExperimentSpec evidence item is required")
         if not isinstance(hypotheses, Sequence) or not hypotheses:
             raise PlanAdmissionError("at least one Hypothesis is required")
-        if any(not isinstance(item, PlanAdmissionEvidence) for item in (*operators, *providers, *inputs, *outputs, *experiment_specs)):
+        if any(
+            not isinstance(item, PlanAdmissionEvidence)
+            for item in (*operators, *providers, *inputs, *outputs, *experiment_specs)
+        ):
             raise PlanAdmissionError("all artifact evidence items must be PlanAdmissionEvidence")
         for category, values in (
             ("operators", operators),
@@ -612,7 +620,9 @@ def _parse_prepare(payload: object, *, seq: int, entry_hash: str) -> PreparedAdm
         for index, evidence in enumerate(values):
             _validate_artifact_evidence(evidence, f"{category}[{index}]")
     if not operators or not providers or not outputs or not experiment_specs:
-        raise PlanAdmissionCorrupted("PREPARE requires compiler, operators, providers, outputs, and ExperimentSpecs")
+        raise PlanAdmissionCorrupted(
+            "PREPARE requires compiler, operators, providers, outputs, and ExperimentSpecs"
+        )
     raw_hypotheses = raw["hypotheses"]
     if not isinstance(raw_hypotheses, list) or not raw_hypotheses:
         raise PlanAdmissionCorrupted("PREPARE hypotheses must be a non-empty list")
@@ -624,10 +634,15 @@ def _parse_prepare(payload: object, *, seq: int, entry_hash: str) -> PreparedAdm
             raise PlanAdmissionCorrupted(f"hypotheses[{index}].hypothesis must be an object")
         hypothesis = Hypothesis.model_validate(hypothesis_raw)
         if hypothesis.model_dump(mode="json") != hypothesis_raw:
-            raise PlanAdmissionCorrupted(f"hypotheses[{index}] is not a canonical Hypothesis payload")
+            raise PlanAdmissionCorrupted(
+                f"hypotheses[{index}] is not a canonical Hypothesis payload"
+            )
         if hypothesis.origin is HypothesisOrigin.LLM:
             raise PlanAdmissionCorrupted("PREPARE contains an LLM-originated Hypothesis")
-        if _hash(pair["content_hash"], f"hypotheses[{index}].content_hash") != hypothesis.content_hash():
+        if (
+            _hash(pair["content_hash"], f"hypotheses[{index}].content_hash")
+            != hypothesis.content_hash()
+        ):
             raise PlanAdmissionCorrupted(f"hypotheses[{index}] content_hash does not match")
         hypotheses.append(hypothesis)
     identities = [(item.name, item.version) for item in hypotheses]
@@ -641,7 +656,9 @@ def _parse_prepare(payload: object, *, seq: int, entry_hash: str) -> PreparedAdm
     batch_payload = {"hypotheses": [item.model_dump(mode="json") for item in hypotheses]}
     batch_hash = _hash(raw["ledger_batch_payload_hash"], "ledger_batch_payload_hash")
     if content_hash(batch_payload) != batch_hash:
-        raise PlanAdmissionCorrupted("ledger_batch_payload_hash does not match the Hypothesis batch")
+        raise PlanAdmissionCorrupted(
+            "ledger_batch_payload_hash does not match the Hypothesis batch"
+        )
 
     base = {
         "schema_version": PLAN_ADMISSION_FORMAT_VERSION,
@@ -695,9 +712,7 @@ def _parse_evidence_list(value: object, what: str) -> tuple[PlanAdmissionEvidenc
     return tuple(_parse_evidence(item, f"{what}[{index}]") for index, item in enumerate(value))
 
 
-def _ledger_event_payload(
-    prepared: PreparedAdmission, event: JournalEntry
-) -> dict[str, Any]:
+def _ledger_event_payload(prepared: PreparedAdmission, event: JournalEntry) -> dict[str, Any]:
     _positive_int(event.seq, "TrialLedger event seq")
     if not isinstance(event.type, str) or not event.type:
         raise PlanAdmissionError("TrialLedger event type must be non-empty text")
@@ -712,8 +727,7 @@ def _ledger_event_payload(
         or event.prev_hash != prepared.ledger_baseline_hash
         or dict(event.payload) != expected_payload
         or content_hash(dict(event.payload)) != prepared.ledger_batch_payload_hash
-        or event.hash
-        != _entry_hash(event.seq, event.type, dict(event.payload), event.prev_hash)
+        or event.hash != _entry_hash(event.seq, event.type, dict(event.payload), event.prev_hash)
     ):
         raise PlanAdmissionError("TrialLedger event does not exactly match the pending PREPARE")
     return {

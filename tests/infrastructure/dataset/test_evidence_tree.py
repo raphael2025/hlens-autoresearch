@@ -155,7 +155,7 @@ def test_limits_have_no_defaults_and_are_validated() -> None:
         {"leaf_max_records": 1, "leaf_max_bytes": 10.0, "fanout": 2},
     ):
         with pytest.raises(EvidenceLimitError):
-            EvidenceTreeLimits(**bad)  # type: ignore[arg-type]
+            EvidenceTreeLimits(**bad)
 
 
 def test_a_record_longer_than_a_leaf_fails_closed(storage: LocalFileStorageAdapter) -> None:

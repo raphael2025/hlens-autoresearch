@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from infrastructure.storage import LocalFileStorageAdapter
 from tests.infrastructure.dataset import dataset_support as ds
 
 
@@ -23,6 +24,6 @@ def w(tmp_path: Path) -> Iterator[ds.World]:
 
 
 @pytest.fixture
-def evidence_store(tmp_path: Path) -> ds.LocalFileStorageAdapter:
+def evidence_store(tmp_path: Path) -> LocalFileStorageAdapter:
     """A real object store for v3 evidence trees (ADR-0077), outside any catalog."""
     return ds.evidence_storage(tmp_path)

@@ -126,6 +126,8 @@ from infrastructure.revision.row_integrity import (
 )
 from infrastructure.revision.row_integrity import (
     batch as _batch,
+)
+from infrastructure.revision.row_integrity import (
     batch_rows as _batch_rows,
 )
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
