@@ -402,19 +402,31 @@ descriptor_hash = "<exact sha256>"
 `enabled=False` 与 `None` 完全相同：不组合、不入指纹，记录 / 指纹 / 状态目录逐字节不变。不新增调度器：只在循环自身轮次中、`every_rounds` 到期的轮次运行；
 失败轮重试轮（ADR-0083）与演化一样永不运行。
 
+- **替换窗口 = 已发布 Profile 版本的封存窗口**（Constitution C-S3；2026-09-30 完整性修复）：窗口以 `window_profiles` 给出——循环 Profile 同一族（同 `name`）的**更新**纯 `major.minor.patch` 版本，
+  状态 `FROZEN` 且在调用方的 `ProfileFreezeRegistry` 中有 ADR-0062 冻结记录（ref + 内容哈希 + 引用的校准报告），冻结时间不晚于窗口起点。`RegisteredSealedWindow` 仅是对该版本的引用（Profile ref + 内容哈希 + 其 `data_split` 定义的边界）。
+  窗口 Profile 除封存窗口字段（`data_split.sealed_oos_boundary` / `sealed_oos_length`）外必须与循环 Profile **逐字段相同**（身份与运行元数据 `name` / `version` / `created_at` / `lineage` / `provenance` / `status` 不比较）：阈值、成本、切分、范围、预算完全一致。
+- **预算**（Constitution C-S2）：每次窗口开封都有审计记录（账本行 + 触发行），并**计入与 G5 族开封相同的全局开封预算**（`DurableUnsealingLedger.count()` 含开封数）。预算与循环 G5 vault 相同：循环 Profile 的
+  `data_split.sealed_oos_max_unsealings`，否则 `OosUnsealBudget.max_unsealings`；两者皆无 → 组合时拒绝。预算用尽时拒绝开封（不写入）；之后的 G5 开封也看得到全部窗口开封。预算写入指纹（`unsealing_budget`）。
 - **输入在循环之外**：`source(round_index, as_of)` → `ReplacementInputs`（`Incumbent`（ACTIVE / DEGRADED）、`ReplacementCandidate`（人工 Promotion 路径给出的生命周期 + 报告哈希）、报告解析器、报告的 Profile）。
-  候选**合格**须：在循环谱系中是某个给定现任的后代、处于 `PAPER` / `PRODUCTION_CANDIDATE`（OOS → PAPER 只能由人工批准）、与某现任的配对尚未进入 `ProposalLedger`、且从未被触发过；不合格者只列在摘要中，不计 trial。
-- **每个合格候选 = 一次触发**：① 先在循环的 `TrialLedger` 登记一个假设（origin `combination`、循环自身的 family，不新建 family），计入族 trial 数与 `LoopBudget`（`estimate` 已声明）；同一候选版本终身只触发一次（账本中的该假设即持久标记）；
-  ② 密封窗口护栏（下）；拒绝时记录 `refused`，不开封；③ 在循环的开封账本写入窗口的唯一一次开封（`sealed_oos.jsonl`，格式 2 的 `replacement_window_opened` 行），**先消耗再使用证据**；
-  ④ 调用现有 `propose_replacements`（提出者为循环自身的自动化身份，`proposed_at` 为本轮计划时刻，`extra_evidence` 附 `loop:` / `loop_round:` / `trial:` / `sealed_window:` / `sealed_window_opening:` 溯源）；
-  提案写入调用方的持久 `ProposalLedger`，恒为 `PENDING_HUMAN_APPROVAL`，从不晋升、不改任何生命周期。作业抛错记录为 `failed`（类型与消息），窗口保持已消耗，不重试、不删除。
-- **密封窗口护栏**：窗口必须**预登记**（`RegisteredSealedWindow`：id、固定 UTC 边界、登记人、登记时间不晚于窗口起点；全部窗口进入配置指纹即锚定的 `loop_state_opened` 头行，换窗口 = 新目录）；
-  **独立**（不与 Profile 的封存窗口重叠——组合时拒绝；窗口之间不重叠；本轮累计研究数据 `research_start` / `research_end` 触及该窗口 → 拒绝）；
-  候选至少一份报告的 Profile 封存窗口**恰好**是该窗口（循环自身窗口或未登记窗口上的证据不算独立证据；跨多个登记窗口 → 拒绝，一次触发只开一个）；
-  **从未开封**（开封账本已记录的窗口——无论为谁，尤其是候选的祖先——一律拒绝：单次使用，后代不得复用密封窗口）；候选历史中的 OOS → PAPER 须由非自动化身份批准。
-- **持久性**（沿用 ADR-0073 / ADR-0083 模式）：trial 登记与窗口开封都是轮内存储写入，在状态的准入门内、由轮次检查点定位并随之锚定；审计记录的 `evolution` 摘要 `replacement_trigger` 键保存每次触发的完整行（trial、窗口、开封、作业载荷及全部提案）。
-  重开时交叉校验 6 额外核对：每行的 trial 在 TrialLedger（内容哈希一致）、每个开封与行一致、账本中每个开封都被其所在轮已完成 `evolution` 阶段的某行命名（该轮 `evolution` 失败时窗口保持已消耗，失败阶段即审计记录）。
-  触发器要求 `DurableUnsealingLedger`（内存账本重启即忘记开封）。开封不计入 Profile 窗口的开封预算（每个替换窗口自身即单次预算）。
-- **格式版本**：开封账本日志格式 2（新增 `replacement_window_opened`，载荷含 `"format_version": 2`；格式 1 行字节不变，旧读取器遇新行 fail closed）；
-  触发器摘要与指纹载荷 `format_version: 1`。状态目录版本（v3–v6）与检查点布局不变：新行位于已被检查点定位的 `sealed_oos.jsonl`。
+  候选**合格**须：在循环谱系中是某个给定现任的后代、处于 `PAPER` / `PRODUCTION_CANDIDATE`（OOS → PAPER 只能由人工批准）、与某现任的配对尚未进入 `ProposalLedger`；不合格者只列在摘要中，不计 trial。
+- **两阶段、两个不同的到期轮次**（在本循环账本开封之前就在密封窗口上评估过的证据属于"在别处消耗"，一律不接受）：
+  - **阶段 1 开封**（候选从未被触发）：① 先在 `TrialLedger` 登记假设（origin `combination`、循环自身 family），计入族 trial 数与 `LoopBudget`；同一候选版本终身只登记一次；
+    ② 窗口护栏（下）；拒绝时记录 `refused`，不开封；③ 按配置顺序开封第一个通过护栏的登记窗口：在开封账本写入唯一一次 `WindowOpening`（`sealed_oos.jsonl` 格式 3，含 `opened_at` = 本轮计划时刻），计入预算；状态 `window_opened`，本轮不使用任何证据。
+  - **阶段 2 评估**（之后的到期轮次；账本有该候选的开封且该窗口尚未消耗）：① 开封必须恰属该候选（subject + 规格哈希、trial + 哈希、本循环、更早轮次、登记哈希一致）；窗口必须在本轮 `as_of` 前**已结束**、仍未被循环看见、尚未消耗；OOS → PAPER 仍须人工批准；
+    所有声明报告必须可解析且其 Profile 已给出。此处拒绝不消耗窗口（证据可以稍后到达）。
+    ② 声明报告中封存窗口恰为该开封窗口的即为该窗口证据；至少一份时，**先**写入窗口唯一一次 `WindowConsumption`（开封哈希 + 这些报告哈希）**再**检查证据——窗口只产出第一次提交的证据（不能在多次评估间挑选）；已为别的窗口消耗的报告拒绝。一份都没有时记录 `refused`，不消耗。
+    ③ 每份声明报告的 Profile 必须除封存窗口字段外与循环 Profile 相同；循环自身窗口与开封窗口以外的窗口上的报告拒绝；开封窗口上的报告必须恰为登记版本（ref + 内容哈希，仍冻结），且 `created_at` 必须晚于开封的 `opened_at`、不早于窗口结束、不晚于本轮 `as_of`（早于开封的 G5 证据是在别处评估的）。
+    ④ 调用现有 `propose_replacements`（提出者为循环自动化身份，`proposed_at` 为本轮计划时刻，`extra_evidence` 附 `loop:` / `loop_round:` / `trial:` / `sealed_window:` / `sealed_window_opening:` / `sealed_window_consumption:` 溯源）；
+    提案写入调用方的持久 `ProposalLedger`，恒为 `PENDING_HUMAN_APPROVAL`，从不晋升、不改任何生命周期。作业抛错记录为 `failed`，窗口保持已消耗，不重试、不删除。
+  - 因此**一个窗口终身至多产出一个被评估的候选**：只开封一次（一个 subject），证据只消耗一次（同一 subject）。
+- **窗口护栏**（阶段 1）：**预登记**（全部窗口及其冻结记录进入配置指纹即锚定的 `loop_state_opened` 头行，换窗口 = 新目录；每个窗口起点必须**严格晚于循环首个计划 `as_of`**（epoch），
+  写入头行时检查、记录为 `epoch_check`（规则、epoch、各窗口 id 与起点），每次重开按记录值复核）；**独立**（不与循环 Profile 自身封存窗口重叠——组合时拒绝；窗口之间不重叠；
+  循环已摄入的**任何**数据触及该窗口 → 拒绝：取所有已记录轮次与本轮的并集——各轮 ingest 的 `data_window`（数据集路径）、每个生成市场的完整 bar 区间与累计研究片段（合成路径）、本轮 segment；
+  已运行但未记录数据窗口的轮次或未绑定审计 → 视为已见、拒绝）；**从未开封**（无论为谁，尤其是候选的祖先）；**此前未评估**（候选已声明任一登记窗口上的报告 → 拒绝）；**预算未用尽**；OOS → PAPER 须由非自动化身份批准。
+- **持久性**（沿用 ADR-0073 / ADR-0083 模式）：trial 登记、窗口开封与证据消耗都是轮内存储写入，在状态的准入门内、由轮次检查点定位并随之锚定；审计记录的 `evolution` 摘要 `replacement_trigger` 键保存每次触发的完整行（阶段、trial、窗口、开封、消耗、作业载荷及全部提案）。
+  重开时交叉校验 6 额外核对：每行的 trial 在 TrialLedger（内容哈希一致）、每个开封 / 消耗与行一致、账本中每个开封与消耗都被某个已完成 `evolution` 阶段的行命名（写入后该轮 `evolution` 失败时窗口保持已开封 / 已消耗，失败阶段即审计记录）。
+  触发器要求 `DurableUnsealingLedger`（内存账本重启即忘记开封）。`ProposalLedger` 与 `ProfileFreezeRegistry` 位于状态目录之外。
+- **格式版本**：开封账本日志格式 3（`replacement_window_opened` 含 `opened_at`，新增 `replacement_window_consumed`，载荷含 `"format_version": 3`；格式 1 行字节不变；首版的格式 2 开封行重放时拒绝，fail closed）；
+  触发器摘要与指纹载荷 `format_version: 2`。状态目录版本（v3–v6）与检查点布局不变：新行位于已被检查点定位的 `sealed_oos.jsonl`。
+- 诚实边界：报告的 `created_at` 是生产方的声明；与开封的绑定强度等同于该声明（及覆盖它的报告内容哈希）。
 - 未经测试（DEBUG_PENDING）：开启前需补齐单元 / 端到端测试（含重开、崩溃、复用、预算与指纹拒绝）。

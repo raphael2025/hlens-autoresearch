@@ -41,21 +41,34 @@ refused before writing while the state does not accept writes. The backing journ
 out (its ``append`` would bypass the gate and the replayed state): cross-file checks read
 ``journal_head()`` or ``journal_snapshot()``.
 
-Pre-registered replacement windows (ADR-0100 item 7, 2026-09-30; additive, journal format 2): the
-research loop's optional replacement proposal trigger (``research.loop.replacement``) may only
-evaluate on an **independent** sealed window — not the Profile's window above — that was
-**pre-registered** (``RegisteredSealedWindow``: an id, fixed UTC bounds, who registered it and
-when; the registration must not be after the window's first instant, so nobody saw its data when
-it was declared) and that has **never been opened**. Opening one is recorded in the same unsealing
-ledger as a ``replacement_window_opened`` line (``WindowOpening``: window id, registration hash,
-the subject it was opened for, the trial that counts it, the loop and round); a window opens
-**once**, for one subject, and is never reusable — not by the same subject, not by its
-descendants, not by any other subject (``SealedWindowAlreadyOpened``). Openings do **not** count
-against the Profile window's unsealing budget (``count()`` stays the number of family unsealings):
-each replacement window is its own single-use budget. Journal format: format 1 is the ``unseal`` /
-``mark_evaluated`` lines (unchanged bytes); format 2 adds ``replacement_window_opened``, whose
-payload carries ``"format_version": 2``. A format-1 reader refuses the new line type (fail
-closed); a ledger without openings is byte-identical to before.
+Replacement windows (ADR-0100 item 7, 2026-09-30; additive; journal format 3 since the
+2026-09-30 integrity fixes): the research loop's optional replacement proposal trigger
+(``research.loop.replacement``) may only evaluate on an **independent** sealed window that has
+**never been opened**. Constitution C-S3 fixes every sealed boundary in a Profile and allows
+rotation only by publishing a new Profile version, so a replacement window is exactly the sealed
+OOS window of one published Profile version: ``RegisteredSealedWindow`` is only a reference to that
+version (Profile ref + content hash) and the bounds its ``data_split`` defines
+(``RegisteredSealedWindow.of(profile)``); that the version is published and frozen (ADR-0062
+freeze record) is checked by the trigger against the ``ProfileFreezeRegistry``. Opening one is
+recorded in the same unsealing ledger as a ``replacement_window_opened`` line (``WindowOpening``:
+window id, registration hash, the subject it was opened for, the trial that counts it, the loop,
+round and the round's scheduled time ``opened_at``); a window opens **once**, for one subject, and
+is never reusable — not by the same subject, not by its descendants, not by any other subject
+(``SealedWindowAlreadyOpened``). The evidence evaluated under that opening is bound to it by a
+single ``replacement_window_consumed`` line (``WindowConsumption``: window id, opening hash, the
+claimed report hashes, subject, round): one consumption per window, only for its opening's
+subject, in a later round, and a report consumed for one window can never be consumed again
+(``SealedWindowAlreadyConsumed``).
+
+**Budget (C-S2).** Every opening is audited (the ledger line) **and counted toward the same global
+unsealing budget as the family unsealings**: ``count()`` is the number of family unsealings plus
+the number of window openings, so a ``SealedOosVault.unseal`` after an opening sees it, and
+``open_window(..., max_unsealings=)`` refuses (``OosBudgetExhausted``) before writing when the
+count has reached the budget. Journal format: format 1 is the ``unseal`` / ``mark_evaluated`` lines
+(unchanged bytes); format 3 adds ``replacement_window_opened`` and ``replacement_window_consumed``,
+whose payloads carry ``"format_version": 3``. The format-2 opening line of the first
+implementation (no ``opened_at``) is refused on replay, like any unknown shape (fail closed); a
+ledger without openings is byte-identical to before.
 """
 
 from __future__ import annotations
@@ -70,7 +83,7 @@ from typing import Any, Final, Protocol
 
 from core.contracts.profile_selection import OosUnsealing
 from core.contracts.validation_profile import ValidationProfile
-from core.domain.base import content_hash
+from core.domain.base import SHA256_PATTERN, Kind, Ref, content_hash
 from research.persistence import (
     AppendOnlyJournal,
     JournalCorrupted,
@@ -83,6 +96,7 @@ from research.validation.gates import sourced_parameter
 from research.validation.splits import LabeledSpan, midnight_utc
 
 __all__ = [
+    "REPLACEMENT_WINDOW_CONSUMED",
     "REPLACEMENT_WINDOW_OPENED",
     "UNSEALING_LEDGER_FORMAT",
     "DurableUnsealingLedger",
@@ -90,7 +104,9 @@ __all__ = [
     "OosAlreadyUnsealed",
     "OosBudgetExhausted",
     "RegisteredSealedWindow",
+    "SealedWindowAlreadyConsumed",
     "SealedWindowAlreadyOpened",
+    "WindowConsumption",
     "WindowOpening",
     "SealedOosAlreadyEvaluated",
     "SealedOosLocked",
@@ -118,14 +134,20 @@ class SealedOosAlreadyEvaluated(Exception):
 
 
 class SealedWindowAlreadyOpened(Exception):
-    """A pre-registered replacement window was opened before (single use; module docs)."""
+    """A replacement window was opened before (single use; module docs)."""
 
 
-#: Unsealing ledger journal format (module docs, **Pre-registered replacement windows**).
-UNSEALING_LEDGER_FORMAT: Final = 2
-#: The format-2 line type of one replacement window opening.
+class SealedWindowAlreadyConsumed(Exception):
+    """A replacement window's evidence (or one of its reports) was consumed before (module docs)."""
+
+
+#: Unsealing ledger journal format of the replacement-window lines (module docs).
+UNSEALING_LEDGER_FORMAT: Final = 3
+#: The line type of one replacement window opening.
 REPLACEMENT_WINDOW_OPENED: Final = "replacement_window_opened"
-_WINDOW_ID: Final = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
+#: The line type of the single consumption of a replacement window's evidence.
+REPLACEMENT_WINDOW_CONSUMED: Final = "replacement_window_consumed"
+_SHA256: Final = re.compile(SHA256_PATTERN)
 _OPENING_FIELDS: Final = frozenset(
     {
         "format_version",
@@ -136,6 +158,17 @@ _OPENING_FIELDS: Final = frozenset(
         "trial",
         "trial_hash",
         "loop_id",
+        "round_index",
+        "opened_at",
+    }
+)
+_CONSUMPTION_FIELDS: Final = frozenset(
+    {
+        "format_version",
+        "window_id",
+        "opening_hash",
+        "subject",
+        "report_hashes",
         "round_index",
     }
 )
@@ -167,52 +200,72 @@ class SealedWindow:
 
 @dataclass(frozen=True)
 class RegisteredSealedWindow:
-    """An independent sealed evaluation window, pre-registered (module docs).
+    """A replacement window: the sealed OOS window of one published Profile version (module docs,
+    C-S3). Only a reference — ``profile_ref`` + ``profile_hash`` — and the ``[start, end)`` bounds
+    that Profile's ``data_split`` defines; build it with ``of(profile)``. Whether that version is
+    published and frozen is the caller's check against the ADR-0062 freeze registry.
+    ``registration_hash`` covers the whole reference."""
 
-    ``start`` / ``end`` are fixed UTC instants (``[start, end)``); ``registered_at`` must not be
-    after ``start`` (the window's data did not exist when it was declared); ``registered_by`` is
-    the declaring human. ``registration_hash`` covers the whole registration.
-    """
-
-    window_id: str
+    profile_ref: Ref
+    profile_hash: str
     start: datetime
     end: datetime
-    registered_by: str
-    registered_at: datetime
 
     def __post_init__(self) -> None:
-        if not isinstance(self.window_id, str) or _WINDOW_ID.fullmatch(self.window_id) is None:
-            raise ValueError(
-                "window_id must be 1-128 chars of [a-z0-9_.-], starting with a letter or digit"
-            )
-        for name in ("start", "end", "registered_at"):
+        if not isinstance(self.profile_ref, Ref) or self.profile_ref.kind is not Kind.PROFILE:
+            raise ValueError("a registered window references a Profile (kind profile)")
+        if not isinstance(self.profile_hash, str) or _SHA256.fullmatch(self.profile_hash) is None:
+            raise ValueError("profile_hash must be a lowercase SHA-256 content hash")
+        for name in ("start", "end"):
             object.__setattr__(self, name, _aware(getattr(self, name), name))
         if self.end <= self.start:
             raise ValueError(f"window {self.window_id!r} must end after it starts")
-        if self.registered_at > self.start:
-            raise ValueError(
-                f"window {self.window_id!r} was registered at {self.registered_at.isoformat()}, "
-                f"after it started ({self.start.isoformat()}): a pre-registered window is "
-                "declared before any of its data exists"
-            )
-        if not isinstance(self.registered_by, str) or not self.registered_by.strip():
-            raise ValueError("a registered window needs a non-empty registered_by")
+
+    @classmethod
+    def of(cls, profile: ValidationProfile) -> RegisteredSealedWindow:
+        """The sealed OOS window of ``profile`` (its fixed boundary and length, C-S3)."""
+        sealed = SealedWindow.from_profile(profile)
+        return cls(
+            profile_ref=profile.ref,
+            profile_hash=profile.content_hash(),
+            start=sealed.start,
+            end=sealed.end,
+        )
+
+    @property
+    def window_id(self) -> str:
+        """The Profile version's ref (one window per published version)."""
+        return str(self.profile_ref)
 
     @property
     def window(self) -> SealedWindow:
         return SealedWindow(start=self.start, end=self.end)
 
+    def describes(self, profile: ValidationProfile) -> bool:
+        """``profile`` is exactly the referenced version (ref + hash) and defines these bounds."""
+        return (
+            profile.ref.target_identity() == self.profile_ref.target_identity()
+            and profile.content_hash() == self.profile_hash
+            and self.same_bounds(SealedWindow.from_profile(profile))
+        )
+
     def payload(self) -> dict[str, Any]:
         return {
             "window_id": self.window_id,
+            "profile_ref": str(self.profile_ref),
+            "profile_hash": self.profile_hash,
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
-            "registered_by": self.registered_by,
-            "registered_at": self.registered_at.isoformat(),
         }
 
     def registration_hash(self) -> str:
-        return content_hash({"kind": "registered_sealed_window", **self.payload()})
+        return content_hash(
+            {
+                "kind": "registered_sealed_window",
+                "format_version": UNSEALING_LEDGER_FORMAT,
+                **self.payload(),
+            }
+        )
 
     def overlaps(self, start: datetime, end: datetime) -> bool:
         """``[start, end)`` shares an instant with this window."""
@@ -235,8 +288,11 @@ class WindowOpening:
     trial_hash: str
     loop_id: str
     round_index: int
+    #: the opening round's scheduled time (the loop's clock; UTC)
+    opened_at: datetime
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "opened_at", _aware(self.opened_at, "opened_at"))
         for name in (
             "window_id",
             "registration_hash",
@@ -267,6 +323,7 @@ class WindowOpening:
             "trial_hash": self.trial_hash,
             "loop_id": self.loop_id,
             "round_index": self.round_index,
+            "opened_at": self.opened_at.isoformat(),
         }
 
     def opening_hash(self) -> str:
@@ -288,10 +345,113 @@ class WindowOpening:
             trial_hash=payload["trial_hash"],
             loop_id=payload["loop_id"],
             round_index=payload["round_index"],
+            opened_at=datetime.fromisoformat(payload["opened_at"]),
         )
         if opening.payload() != dict(payload):
             raise ValueError("the window opening does not round-trip")
         return opening
+
+
+@dataclass(frozen=True)
+class WindowConsumption:
+    """The single consumption of a replacement window's evidence (module docs; the ledger's
+    ``replacement_window_consumed`` line): the reports evaluated under that window's opening.
+    ``consumption_hash`` covers the whole payload."""
+
+    window_id: str
+    opening_hash: str
+    subject: str
+    report_hashes: tuple[str, ...]
+    round_index: int
+
+    def __post_init__(self) -> None:
+        for name in ("window_id", "opening_hash", "subject"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"a window consumption needs a non-empty {name}")
+        hashes = self.report_hashes
+        if (
+            not isinstance(hashes, tuple)
+            or not hashes
+            or not all(isinstance(h, str) and _SHA256.fullmatch(h) for h in hashes)
+            or list(hashes) != sorted(set(hashes))
+        ):
+            raise ValueError("report_hashes must be a non-empty sorted tuple of distinct SHA-256")
+        if (
+            isinstance(self.round_index, bool)
+            or not isinstance(self.round_index, int)
+            or self.round_index < 0
+        ):
+            raise ValueError("round_index must be a non-negative int")
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "format_version": UNSEALING_LEDGER_FORMAT,
+            "window_id": self.window_id,
+            "opening_hash": self.opening_hash,
+            "subject": self.subject,
+            "report_hashes": list(self.report_hashes),
+            "round_index": self.round_index,
+        }
+
+    def consumption_hash(self) -> str:
+        return content_hash({"kind": REPLACEMENT_WINDOW_CONSUMED, **self.payload()})
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> WindowConsumption:
+        """Rebuild one recorded consumption; any other shape or format is refused."""
+        if set(payload) != _CONSUMPTION_FIELDS:
+            raise ValueError("a window consumption has exactly the recorded fields")
+        if payload["format_version"] != UNSEALING_LEDGER_FORMAT:
+            raise ValueError(f"unknown window consumption format {payload['format_version']!r}")
+        consumption = cls(
+            window_id=payload["window_id"],
+            opening_hash=payload["opening_hash"],
+            subject=payload["subject"],
+            report_hashes=tuple(payload["report_hashes"]),
+            round_index=payload["round_index"],
+        )
+        if consumption.payload() != dict(payload):
+            raise ValueError("the window consumption does not round-trip")
+        return consumption
+
+
+def _check_consumption(
+    consumption: WindowConsumption,
+    openings: Mapping[str, WindowOpening],
+    consumptions: Mapping[str, WindowConsumption],
+) -> None:
+    """The one rule set of a consumption, on write and on replay (``SealedWindowAlreadyConsumed``
+    for a reuse, ``ValueError`` for a consumption not bound to its window's opening)."""
+    opening = openings.get(consumption.window_id)
+    if opening is None:
+        raise ValueError(f"window {consumption.window_id!r} was never opened")
+    if opening.opening_hash() != consumption.opening_hash or opening.subject != consumption.subject:
+        raise ValueError(
+            f"the consumption of window {consumption.window_id!r} is not bound to its opening "
+            f"(opened for {opening.subject})"
+        )
+    if consumption.round_index <= opening.round_index:
+        raise ValueError("a window's evidence is consumed in a round after its opening")
+    known = consumptions.get(consumption.window_id)
+    if known is not None:
+        raise SealedWindowAlreadyConsumed(
+            f"window {consumption.window_id!r} was already consumed in round {known.round_index}"
+        )
+    used = {h for c in consumptions.values() for h in c.report_hashes}
+    reused = sorted(used.intersection(consumption.report_hashes))
+    if reused:
+        raise SealedWindowAlreadyConsumed(f"reports {reused} were consumed for another window")
+
+
+def _check_budget(count: int, max_unsealings: int) -> None:
+    if isinstance(max_unsealings, bool) or not isinstance(max_unsealings, int) or max_unsealings < 1:
+        raise ValueError("max_unsealings must be a positive int")
+    if count >= max_unsealings:
+        raise OosBudgetExhausted(
+            f"the global sealed OOS unsealing budget ({max_unsealings}) is used up: {count} "
+            "unsealings and replacement window openings are recorded"
+        )
 
 
 class UnsealingLedger(Protocol):
@@ -315,6 +475,7 @@ class InMemoryUnsealingLedger:
         self._records: dict[str, OosUnsealing] = {}
         self._evaluated: set[str] = set()
         self._openings: dict[str, WindowOpening] = {}
+        self._consumptions: dict[str, WindowConsumption] = {}
 
     def get(self, family_id: str) -> OosUnsealing | None:
         return self._records.get(family_id)
@@ -330,17 +491,30 @@ class InMemoryUnsealingLedger:
     def window_openings(self) -> tuple[WindowOpening, ...]:
         return tuple(self._openings.values())
 
-    def open_window(self, opening: WindowOpening) -> None:
-        """Record a replacement window's single opening (module docs)."""
+    def open_window(self, opening: WindowOpening, *, max_unsealings: int) -> None:
+        """Record a replacement window's single opening, counted in the budget (module docs)."""
         known = self._openings.get(opening.window_id)
         if known is not None:
             raise SealedWindowAlreadyOpened(
                 f"window {opening.window_id!r} was already opened for {known.subject}"
             )
+        _check_budget(self.count(), max_unsealings)
         self._openings[opening.window_id] = opening
 
+    def window_consumption(self, window_id: str) -> WindowConsumption | None:
+        return self._consumptions.get(window_id)
+
+    def window_consumptions(self) -> tuple[WindowConsumption, ...]:
+        return tuple(self._consumptions.values())
+
+    def consume_window(self, consumption: WindowConsumption) -> None:
+        """Record a replacement window's single evidence consumption (module docs)."""
+        _check_consumption(consumption, self._openings, self._consumptions)
+        self._consumptions[consumption.window_id] = consumption
+
     def count(self) -> int:
-        return len(self._records)
+        """Family unsealings plus replacement window openings: one global budget (C-S2)."""
+        return len(self._records) + len(self._openings)
 
     def mark_evaluated(self, family_id: str) -> None:
         if family_id not in self._records:
@@ -371,6 +545,7 @@ class DurableUnsealingLedger:
         self._records: dict[str, OosUnsealing] = {}
         self._evaluated: set[str] = set()
         self._openings: dict[str, WindowOpening] = {}
+        self._consumptions: dict[str, WindowConsumption] = {}
         for entry in self._journal.entries:
             if entry.type == "unseal":
                 family_id = entry.payload["family_id"]
@@ -391,7 +566,7 @@ class DurableUnsealingLedger:
                         f"{path}: family {family_id!r} was marked evaluated twice"
                     )
                 self._evaluated.add(family_id)
-            elif entry.type == REPLACEMENT_WINDOW_OPENED:  # format 2 (module docs)
+            elif entry.type == REPLACEMENT_WINDOW_OPENED:  # format 3 (module docs)
                 try:
                     opening = WindowOpening.from_payload(entry.payload)
                 except (KeyError, TypeError, ValueError) as exc:
@@ -403,6 +578,15 @@ class DurableUnsealingLedger:
                         f"{path}: window {opening.window_id!r} was opened twice in the journal"
                     )
                 self._openings[opening.window_id] = opening
+            elif entry.type == REPLACEMENT_WINDOW_CONSUMED:  # format 3 (module docs)
+                try:
+                    consumption = WindowConsumption.from_payload(entry.payload)
+                    _check_consumption(consumption, self._openings, self._consumptions)
+                except (KeyError, TypeError, ValueError, SealedWindowAlreadyConsumed) as exc:
+                    raise JournalCorrupted(
+                        f"{path}:{entry.seq} is not a valid replacement window consumption: {exc}"
+                    ) from exc
+                self._consumptions[consumption.window_id] = consumption
             else:
                 raise JournalCorrupted(f"{path}: unknown record type {entry.type!r}")
 
@@ -441,7 +625,8 @@ class DurableUnsealingLedger:
             self._records[family_id] = unsealing
 
     def count(self) -> int:
-        return len(self._records)
+        """Family unsealings plus replacement window openings: one global budget (C-S2)."""
+        return len(self._records) + len(self._openings)
 
     def mark_evaluated(self, family_id: str) -> None:
         with gate_scope(self._gate, f"marking {family_id!r} sealed-OOS evaluated"), self._lock:
@@ -463,8 +648,9 @@ class DurableUnsealingLedger:
     def window_openings(self) -> tuple[WindowOpening, ...]:
         return tuple(self._openings.values())
 
-    def open_window(self, opening: WindowOpening) -> None:
-        """Journal a replacement window's single opening (module docs), inside the write gate."""
+    def open_window(self, opening: WindowOpening, *, max_unsealings: int) -> None:
+        """Journal a replacement window's single opening (module docs), inside the write gate;
+        refused before writing when the global unsealing budget is used up (C-S2)."""
         with (
             gate_scope(self._gate, f"opening the replacement window {opening.window_id!r}"),
             self._lock,
@@ -474,8 +660,25 @@ class DurableUnsealingLedger:
                 raise SealedWindowAlreadyOpened(
                     f"window {opening.window_id!r} was already opened for {known.subject}"
                 )
+            _check_budget(self.count(), max_unsealings)
             self._journal.append(REPLACEMENT_WINDOW_OPENED, opening.payload())
             self._openings[opening.window_id] = opening
+
+    def window_consumption(self, window_id: str) -> WindowConsumption | None:
+        return self._consumptions.get(window_id)
+
+    def window_consumptions(self) -> tuple[WindowConsumption, ...]:
+        return tuple(self._consumptions.values())
+
+    def consume_window(self, consumption: WindowConsumption) -> None:
+        """Journal a replacement window's single evidence consumption, inside the write gate."""
+        with (
+            gate_scope(self._gate, f"consuming the replacement window {consumption.window_id!r}"),
+            self._lock,
+        ):
+            _check_consumption(consumption, self._openings, self._consumptions)
+            self._journal.append(REPLACEMENT_WINDOW_CONSUMED, consumption.payload())
+            self._consumptions[consumption.window_id] = consumption
 
 
 class SealedEvaluation:
