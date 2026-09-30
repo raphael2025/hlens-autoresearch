@@ -1050,6 +1050,41 @@ def test_normalizer_refuses_unusable_scratch_before_any_catalog_access(tmp_path:
         CanonicalNormalizer(object(), object(), scratch_directory=first)  # type: ignore[arg-type]
 
 
+def test_positions_closes_reader_when_scratch_index_initialization_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Reader:
+        closed = False
+
+        def __iter__(self) -> Any:
+            raise AssertionError("reader must not be consumed if index initialization fails")
+
+        def close(self) -> None:
+            self.closed = True
+
+    reader = Reader()
+
+    class Catalog:
+        def scan_column_batches(self, *_args: Any, **_kwargs: Any) -> Reader:
+            return reader
+
+    def fail_index(_scratch_directory: Path) -> Any:
+        raise OSError("scratch index initialization failed")
+
+    monkeypatch.setattr(nz, "_PositionIndex", fail_index)
+    normalizer = CanonicalNormalizer(
+        object(),
+        object(),
+        scratch_directory=tmp_path / "scratch",  # type: ignore[arg-type]
+    )
+    pin = type("Pin", (), {"catalog": Catalog()})()
+
+    with pytest.raises(OSError, match="scratch index initialization failed"):
+        normalizer._positions(pin, rules.raw_channel_of(c.ARCHIVE_AGGS.table), "unit")  # type: ignore[arg-type]
+
+    assert reader.closed
+
+
 def test_batch_windows_are_rank_slices_of_the_positions() -> None:
     positions = [2, 3, 5, 8, 9]
     assert [nz._batch_window(positions, 2, i) for i in range(3)] == [

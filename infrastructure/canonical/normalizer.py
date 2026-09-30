@@ -1329,9 +1329,13 @@ class CanonicalNormalizer:
             row_filter=_equals(channel.lineage_column, source_revision_id),
         )
         offset = 0 if channel.name == "archive" else 1
-        index = _PositionIndex(self._scratch_directory)
+        index: _PositionIndex | None = None
+        reader_closed = False
         symbol: str | None = None
         try:
+            # Index creation can fail (for example, scratch storage becoming unavailable).
+            # Keep it inside the reader's cleanup boundary so that failure cannot leak a cursor.
+            index = _PositionIndex(self._scratch_directory)
             try:
                 for record_batch in reader:
                     values = record_batch.column(record_batch.schema.get_field_index(column))
@@ -1366,15 +1370,25 @@ class CanonicalNormalizer:
                         close()
                     except Exception:
                         pass
+                reader_closed = True
                 raise
             else:
                 close = getattr(reader, "close", None)
                 if close is not None:
                     close()
+                reader_closed = True
             index.finalize()
             return index, symbol
         except BaseException:
-            index.close()
+            if not reader_closed:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            if index is not None:
+                index.close()
             raise
 
     def _check_positions(
