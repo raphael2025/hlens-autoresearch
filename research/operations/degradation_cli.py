@@ -14,9 +14,13 @@ given reports root at a time; the report writer does not provide a cross-process
   evidence keeps the caller-declared scope texts and has no ``authority`` field; stdout adds
   ``evidence=caller-declared``.
 - *authority*: ``--authority-registry <root> --authority-head <hash>|latest --dataset-id <id>
-  --manifest-hash <sha256>``. The lifecycle comes from the ADR-0098 Lifecycle Registry at that
-  head (the registry must already exist: this CLI never creates one) and the recent metrics from
-  ``research.operations.authority.resolve_degradation_inputs``; stdout adds ``evidence=authority``.
+  --manifest-hash <sha256> --authority-as-of <UTC ISO-8601>``. The lifecycle comes from the
+  ADR-0098 Lifecycle Registry at that head, opened as a **read-only snapshot**
+  (``LifecycleRegistry.open_snapshot``: no writer lock, no anchor crash-recovery write, nothing
+  created; the registry must already exist) and truncated to ``--authority-as-of``; the recent
+  metrics come from ``research.operations.authority.resolve_degradation_inputs`` as of that time
+  (ADR-0098 修订 2: ``as_of`` must not be before ``--window-end``; the window's last bar only
+  becomes available after the window ends). stdout adds ``evidence=authority``.
   The resolver also needs a ``DatasetCatalog`` (a live Iceberg catalog, storage and builder), the
   admitted strategy's decision pipeline, the backtest provider and the baseline run / dataset —
   none of which the command line constructs from flags. They come from exactly one of
@@ -33,10 +37,11 @@ given reports root at a time; the report writer does not provide a cross-process
   verifying the pinned head, before any report; a factory that cannot be loaded, fails, or does
   not produce an ``AuthorityEnvironment`` is refused with the same code.
 
-  ``--authority-anchor <path>`` (optional, an existing file outside the registry root) opens the
-  Lifecycle Registry with its external anchor, so a rollback of whole trailing records is refused
-  on open. Without it (also with ``--authority-head latest``) the check still runs and the
-  evidence records ``authority.lifecycle.anchor = "absent"``; stdout adds ``anchor=...``.
+  ``--authority-anchor <path>`` (optional, an existing file outside the registry root) verifies
+  the snapshot against its external anchor; any mismatch (including the writer's one-record crash
+  window, which only a writer repairs) is refused as ``lifecycle_unavailable``. Without it (also
+  with ``--authority-head latest``) the check still runs and the evidence records
+  ``authority.lifecycle.anchor = "absent"``; stdout adds ``anchor=...``.
 
 Mixing the two modes, or giving only part of one, is a usage error. Any refusal writes no report.
 """
@@ -83,7 +88,13 @@ AUTHORITY_ENVIRONMENT_UNAVAILABLE: Final = "authority_environment_unavailable"
 #: ``--authority-head`` value selecting the registry's latest head (read once, then pinned).
 LATEST_HEAD: Final = "latest"
 _EXPLICIT_OPTIONS: Final = ("lifecycle", "recent_manifest")
-_AUTHORITY_OPTIONS: Final = ("authority_registry", "authority_head", "dataset_id", "manifest_hash")
+_AUTHORITY_OPTIONS: Final = (
+    "authority_registry",
+    "authority_head",
+    "dataset_id",
+    "manifest_hash",
+    "authority_as_of",
+)
 #: Optional authority-mode flags (a usage error in the caller-declared mode).
 _AUTHORITY_OPTIONAL: Final = ("authority_environment", "authority_anchor")
 
@@ -266,12 +277,10 @@ def _separate_report_root(registry_root: Path, reports_root: Path) -> None:
 
 
 def _existing_lifecycle_registry(root: Path, others: tuple[Path, ...]) -> None:
-    """Refuse a missing Lifecycle Registry before its constructor could create one, and one that
-    shares a directory with the reports root or the freeze registry."""
+    """Refuse a missing Lifecycle Registry (the read-only snapshot needs its journal; nothing is
+    ever created) and one that shares a directory with the reports root or the freeze registry."""
     if not root.is_dir():
         raise _InputError("authority registry root must already exist")
-    if not (root / ".lock").is_file():
-        raise _InputError("authority registry lock file must already exist")
     if not (root / LIFECYCLE_JOURNAL).is_file():
         raise _InputError("authority registry journal must already exist")
     resolved = root.resolve()
@@ -293,7 +302,8 @@ def _mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
         return "authority"
     parser.error(
         "give either --lifecycle and --recent-manifest (caller-declared) or all of "
-        "--authority-registry, --authority-head, --dataset-id and --manifest-hash (authority)"
+        "--authority-registry, --authority-head, --dataset-id, --manifest-hash and "
+        "--authority-as-of (authority)"
     )
 
 
@@ -397,6 +407,13 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="authority mode, optional: existing external Lifecycle Registry anchor file",
     )
+    parser.add_argument(
+        "--authority-as-of",
+        help=(
+            "authority mode: UTC ISO-8601 evaluation time, not before --window-end (data and "
+            "lifecycle transitions are used only up to this time)"
+        ),
+    )
     parser.add_argument("--window-start", required=True, help="UTC ISO-8601 start, inclusive")
     parser.add_argument("--window-end", required=True, help="UTC ISO-8601 end, exclusive")
     parser.add_argument("--window-label", required=True, help="stable report label for this window")
@@ -474,9 +491,13 @@ def main(
                 args.authority_registry,
                 (args.reports_root, args.freeze_registry),
             )
+            as_of = _utc_datetime(args.authority_as_of, "authority as-of")
+            if as_of < window.end:
+                raise _InputError("authority as-of must not be before the window end")
             # imported only in this mode: the resolver pulls in the dataset / catalog stack
             from research.operations.authority import (
                 LIFECYCLE_HEAD_UNKNOWN,
+                LIFECYCLE_UNAVAILABLE,
                 AuthorityEnvironment,
                 AuthorityRefused,
                 resolve_degradation_inputs,
@@ -484,9 +505,16 @@ def main(
 
             stage = "authority"
             with ExitStack() as stack:
-                registry = stack.enter_context(
-                    LifecycleRegistry(args.authority_registry, anchor=args.authority_anchor)
-                )
+                try:  # read-only: no writer lock, no anchor crash-recovery write (修订 2 §6)
+                    snapshot = LifecycleRegistry.open_snapshot(
+                        args.authority_registry, anchor=args.authority_anchor
+                    )
+                except RegistryError as exc:
+                    raise AuthorityRefused(
+                        LIFECYCLE_UNAVAILABLE,
+                        f"the Lifecycle Registry snapshot does not verify ({type(exc).__name__})",
+                    ) from exc
+                registry = stack.enter_context(snapshot)
                 freezes = stack.enter_context(
                     ProfileFreezeRegistry(args.freeze_registry, anchor=args.freeze_anchor)
                 )
@@ -518,6 +546,7 @@ def main(
                     manifest_hash=args.manifest_hash,
                     execution=authority_environment.execution,
                     window=window,
+                    as_of=as_of,
                 )
                 stage = "operation"
                 result = run_degradation_check(
