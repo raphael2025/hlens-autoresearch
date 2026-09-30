@@ -323,3 +323,24 @@ def test_early_close_releases_run_readers_and_prevents_ordinal_gap(
             detail="must not continue",
         ):
             pytest.fail("failed projector accepted another event")
+
+
+def test_normal_exit_without_consuming_revisions_raises_integrity_error(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    instance = projector(storage)
+    with pytest.raises(
+        CanonicalPartitionProjectionError, match="revision records were not fully consumed"
+    ):
+        with instance.project_event(
+            event_type="competing_heads",
+            table="canonical.trades",
+            observation_key="key",
+            revision_ids=["rev-a", "rev-b"],
+            event_start=None,
+            event_end=None,
+            detail="heads not read",
+        ):
+            pass
+    assert instance.next_event_ordinal == 0
+    assert instance.next_revision_ordinal == 0

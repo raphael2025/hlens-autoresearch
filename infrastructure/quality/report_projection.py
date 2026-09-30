@@ -360,6 +360,7 @@ class CanonicalPartitionV3Projector:
                     rows = rows_context.__enter__()
                     revision_rows = _revision_records(rows, event_ordinal=event_ordinal)
                     close_rows = rows
+                body_raised = False
                 try:
 
                     class _CountedRevisionIterator(Iterator[Mapping[str, Any]]):
@@ -382,6 +383,7 @@ class CanonicalPartitionV3Projector:
                             revision_records=_CountedRevisionIterator(),
                         )
                     except BaseException:
+                        body_raised = True
                         self._failed = True
                         raise
                 finally:
@@ -396,6 +398,10 @@ class CanonicalPartitionV3Projector:
                         rows_context.__exit__(None, None, None)
                     if not exhausted or emitted != revision_count or self._failed:
                         self._failed = True
+                        if not body_raised:
+                            raise CanonicalPartitionProjectionError(
+                                "revision records were not fully consumed"
+                            )
                     else:
                         self._event_ordinal = event_ordinal + 1
                         self._revision_ordinal = revision_first_ordinal + revision_count
