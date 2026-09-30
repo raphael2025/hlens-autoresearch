@@ -181,10 +181,10 @@ def listing_history_prefix_run(
                     )
                 snapshot = history_row["snapshot"]
                 ordinal = root_row["snapshot_ordinal"]
-                if snapshot.get("total_rows") != ordinal + 1:
-                    raise CatalogIntegrityError(
-                        "listing batch Raw snapshot ordinal disagrees with its total_rows"
-                    )
+                # ``ordinal`` counts Raw snapshots, while ``total_rows`` counts derived Listing
+                # revisions. One exchange-info observation may produce revisions for multiple
+                # symbols (or none), so these quantities are not interchangeable. Exact Listing
+                # row totals and append deltas are proved by the bounded replay verifier below.
                 joined = {
                     "snapshot_ordinal": ordinal,
                     "raw_snapshot_id": raw_id,

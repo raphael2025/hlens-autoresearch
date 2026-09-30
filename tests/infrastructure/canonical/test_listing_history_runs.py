@@ -149,6 +149,45 @@ def test_listing_history_join_is_ordinal_ordered_and_names_exact_raw_prefixes(
         scratch.close()
 
 
+def test_listing_history_join_allows_many_listing_rows_from_one_raw_snapshot(
+    h: Harness,
+) -> None:
+    h.observe(
+        "listing-history-many-symbols",
+        {"BTCUSDT": "TRADING", "ETHUSDT": "TRADING"},
+        T1,
+    )
+    deriver = h.deriver()
+    try:
+        derived = deriver.derive()
+        assert derived.commit is not None and derived.commit.row_count == 2
+    finally:
+        deriver.close()
+
+    scratch = _scratch(h)
+    try:
+        joined = listing_history_prefix_run(
+            h.adapter,
+            h.head(LISTINGS.table),
+            _prefixes(h, scratch),
+            storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+        )
+        assert joined is not None
+        with iter_run(scratch, joined) as reader:
+            [row] = list(reader)
+        assert row["snapshot_ordinal"] == 0
+        assert row["snapshot"]["added_rows"] == 2
+        assert row["snapshot"]["total_rows"] == 2
+        assert row["observation_count"] == 1
+    finally:
+        scratch.close()
+
+
 def test_listing_history_join_rejects_missing_raw_snapshot_prefix(h: Harness) -> None:
     for index, status in enumerate(("TRADING", "HALT")):
         h.observe(
