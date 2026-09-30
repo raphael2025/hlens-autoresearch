@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, In
 
@@ -632,9 +631,8 @@ def test_recovery_follows_the_committed_plan_whatever_the_configuration(
     ]
     assert unit_batch_id(archive, 5, 2, 1).endswith(".0000000005.000002.00000001")
     assert len(h.rows(c.TRADES)) == 5
-    verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
-        c.ARCHIVE_AGGS.table, archive
-    )
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    verified = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
     assert [row["revision_id"] for row in verified] == list(n.iter_revision_ids(out))
 
 
@@ -923,10 +921,14 @@ def test_another_writer_mid_proof_restarts_the_unit_without_double_writes(h: Res
 
 
 def test_proof_windows_never_split_a_position_and_cover_all() -> None:
-    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [(1, 2), (3, 4), (5, 5)]
-    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1)]
+    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [
+        (1, 2, 3),
+        (3, 4, 2),
+        (5, 5, 1),
+    ]
+    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1, 3)]
     assert list(nz._proof_windows([], 2)) == []
-    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40)]
+    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40, 3)]
 
 
 @pytest.mark.parametrize(
@@ -947,9 +949,12 @@ def test_same_index_numbers(values: list[int | None], expected: list[int], ok: b
     try:
         index.add_batch(value for value in values if value is not None)
         index.finalize()
-        assert nz._same_index_numbers(
-            index, len(values), any(value is None for value in values), expected
-        ) is ok
+        assert (
+            nz._same_index_numbers(
+                index, len(values), any(value is None for value in values), expected
+            )
+            is ok
+        )
     finally:
         index.close()
 
@@ -996,9 +1001,9 @@ def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
     assert out.arrival_seq_base is not None
     assert row["arrival_seq"] == out.arrival_seq_base + 3 and row["venue_trade_id"] == "103"
     assert n.normalize_unit(c.REST_AGGS.table, b.response_revision_id).replayed
-    assert [
-        r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)
-    ] == [revision_id]
+    assert [r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)] == [
+        revision_id
+    ]
 
 
 def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
