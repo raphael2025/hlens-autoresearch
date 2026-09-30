@@ -24,6 +24,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 | `recovery_review.py` | `failed_round_review_packet(DurableState)`：只对最后记录的 failed experiment stage 生成纯内存、hash-bound 证据投影；不打开目录、不触发写路径，不等于恢复操作 |
+| `replacement.py` | 可选的循环内替换提案触发（ADR-0100 第 7 项，默认关闭）：`ReplacementTrigger`（显式 `enabled=True`、`every_rounds`、预登记的独立密封窗口、调用方的 `source` 与 `ProposalLedger`）、`ReplacementInputs`、`ReplacementTriggerStage`（包装 `EvolutionStage`，同名 `evolution`）；见下「循环内替换提案触发」 |
 
 要点：
 
@@ -42,7 +43,8 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   `result_hash`，否则该项 INCONCLUSIVE。基准与反向对照是同一试验的回测，不增加 trial。TEST ONLY 夹具 Profile 使用
   `buy_and_hold_equal_weight` + `inverse_control_reported=True`。
 - 生命周期最多到 OOS；OOS → PAPER 需要人工批准，循环在结构上无法产生 PAPER / ACTIVE。
-  因此替换提案不在循环内：`research/evolution/replacement_job.py` 是调用方显式运行的作业，只读循环的 `lineage.jsonl`（ADR-0045 实施说明 2026-09-26）。
+  替换提案默认不在循环内：`research/evolution/replacement_job.py` 是调用方显式运行的作业，只读循环的 `lineage.jsonl`（ADR-0045 实施说明 2026-09-26）；
+  可选的循环内触发见下「循环内替换提案触发」（ADR-0100 第 7 项，默认关闭）。
 - 封存 OOS 默认永不开封；只有显式 `OosUnsealBudget`（全局次数 + 逐族批准人名单，自动化身份被拒）列出的族才开封，每族一次；
   开封即消耗该族唯一的一次评估（即使之后没有结果），之后无人能再读该窗口。
   **开封账本必须持久**（review fixes 4）：`OosUnsealBudget` 只与 `DurableUnsealingLedger`（`state_dir` 的 `sealed_oos.jsonl`，或显式传入
@@ -392,3 +394,27 @@ descriptor_hash = "<exact sha256>"
 ```
 
 成功运行前仍必须通过所有 path / artifact / provider / Profile freeze 检查。state 只新建或以相同 identity 重开 v5；不接管 v3 / v4，不自动修复中断轮。每次打开先从已验证 audit 幂等补齐 `research_loop_round` 报告，再执行一轮、立即写一份报告；不写 Phase 6 matrix。SIGINT / SIGTERM 在当前轮完成并报告后退出。退出码为 0（完成 / 边界停止）、2（命令或配置拒绝）、3（预算或 loop halt）、4（中断 / 人工恢复审查）、5（损坏、锁、锚点或报告 I/O 故障）。
+
+## 循环内替换提案触发（ADR-0100 第 7 项，2026-09-30，CODE_COMPLETE / DEBUG_PENDING，默认关闭）
+
+`replacement.py`。`LoopWiring.replacement_trigger` 默认 `None`；只有显式 `ReplacementTrigger(enabled=True, ...)` 才会被组合，
+且需要 `EvolutionPlan`（触发器在 `evolution` 阶段内运行：`ReplacementTriggerStage` 包装 `EvolutionStage`，阶段名与顺序契约不变）。
+`enabled=False` 与 `None` 完全相同：不组合、不入指纹，记录 / 指纹 / 状态目录逐字节不变。不新增调度器：只在循环自身轮次中、`every_rounds` 到期的轮次运行；
+失败轮重试轮（ADR-0083）与演化一样永不运行。
+
+- **输入在循环之外**：`source(round_index, as_of)` → `ReplacementInputs`（`Incumbent`（ACTIVE / DEGRADED）、`ReplacementCandidate`（人工 Promotion 路径给出的生命周期 + 报告哈希）、报告解析器、报告的 Profile）。
+  候选**合格**须：在循环谱系中是某个给定现任的后代、处于 `PAPER` / `PRODUCTION_CANDIDATE`（OOS → PAPER 只能由人工批准）、与某现任的配对尚未进入 `ProposalLedger`、且从未被触发过；不合格者只列在摘要中，不计 trial。
+- **每个合格候选 = 一次触发**：① 先在循环的 `TrialLedger` 登记一个假设（origin `combination`、循环自身的 family，不新建 family），计入族 trial 数与 `LoopBudget`（`estimate` 已声明）；同一候选版本终身只触发一次（账本中的该假设即持久标记）；
+  ② 密封窗口护栏（下）；拒绝时记录 `refused`，不开封；③ 在循环的开封账本写入窗口的唯一一次开封（`sealed_oos.jsonl`，格式 2 的 `replacement_window_opened` 行），**先消耗再使用证据**；
+  ④ 调用现有 `propose_replacements`（提出者为循环自身的自动化身份，`proposed_at` 为本轮计划时刻，`extra_evidence` 附 `loop:` / `loop_round:` / `trial:` / `sealed_window:` / `sealed_window_opening:` 溯源）；
+  提案写入调用方的持久 `ProposalLedger`，恒为 `PENDING_HUMAN_APPROVAL`，从不晋升、不改任何生命周期。作业抛错记录为 `failed`（类型与消息），窗口保持已消耗，不重试、不删除。
+- **密封窗口护栏**：窗口必须**预登记**（`RegisteredSealedWindow`：id、固定 UTC 边界、登记人、登记时间不晚于窗口起点；全部窗口进入配置指纹即锚定的 `loop_state_opened` 头行，换窗口 = 新目录）；
+  **独立**（不与 Profile 的封存窗口重叠——组合时拒绝；窗口之间不重叠；本轮累计研究数据 `research_start` / `research_end` 触及该窗口 → 拒绝）；
+  候选至少一份报告的 Profile 封存窗口**恰好**是该窗口（循环自身窗口或未登记窗口上的证据不算独立证据；跨多个登记窗口 → 拒绝，一次触发只开一个）；
+  **从未开封**（开封账本已记录的窗口——无论为谁，尤其是候选的祖先——一律拒绝：单次使用，后代不得复用密封窗口）；候选历史中的 OOS → PAPER 须由非自动化身份批准。
+- **持久性**（沿用 ADR-0073 / ADR-0083 模式）：trial 登记与窗口开封都是轮内存储写入，在状态的准入门内、由轮次检查点定位并随之锚定；审计记录的 `evolution` 摘要 `replacement_trigger` 键保存每次触发的完整行（trial、窗口、开封、作业载荷及全部提案）。
+  重开时交叉校验 6 额外核对：每行的 trial 在 TrialLedger（内容哈希一致）、每个开封与行一致、账本中每个开封都被其所在轮已完成 `evolution` 阶段的某行命名（该轮 `evolution` 失败时窗口保持已消耗，失败阶段即审计记录）。
+  触发器要求 `DurableUnsealingLedger`（内存账本重启即忘记开封）。开封不计入 Profile 窗口的开封预算（每个替换窗口自身即单次预算）。
+- **格式版本**：开封账本日志格式 2（新增 `replacement_window_opened`，载荷含 `"format_version": 2`；格式 1 行字节不变，旧读取器遇新行 fail closed）；
+  触发器摘要与指纹载荷 `format_version: 1`。状态目录版本（v3–v6）与检查点布局不变：新行位于已被检查点定位的 `sealed_oos.jsonl`。
+- 未经测试（DEBUG_PENDING）：开启前需补齐单元 / 端到端测试（含重开、崩溃、复用、预算与指纹拒绝）。

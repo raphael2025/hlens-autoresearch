@@ -28,6 +28,11 @@ from research.loop.dataset_source import (
 from research.loop.durable import FileAnchor, LoopStateInconsistent, StateAnchor, StateHead
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.memory import ResearchMemory, ReviewApproval, ReviewQueue
+from research.loop.replacement import (
+    ReplacementInputs,
+    ReplacementTrigger,
+    ReplacementTriggerStage,
+)
 from research.loop.segment import RoundData
 from research.loop.stages import (
     HypothesisStage,
@@ -65,6 +70,9 @@ __all__ = [
     "LoopWiring",
     "MemoryStage",
     "OosUnsealBudget",
+    "ReplacementInputs",
+    "ReplacementTrigger",
+    "ReplacementTriggerStage",
     "ResearchMemory",
     "ReviewApproval",
     "ReviewQueue",
