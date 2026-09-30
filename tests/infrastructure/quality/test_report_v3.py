@@ -19,6 +19,7 @@ from infrastructure.catalog.phase1_tables import (
     DATA_QUALITY_REPORT_MANIFESTS,
 )
 from infrastructure.pit.selector import PIT_BINDING, REQUIRED_BINDINGS, PitRunParams
+from infrastructure.quality import report_v3
 from infrastructure.quality.report_projection import CANONICAL_PARTITION_V3_RULE_HASH
 from infrastructure.quality.report_streams import (
     QualityReportStreamLimits,
@@ -26,6 +27,7 @@ from infrastructure.quality.report_streams import (
 )
 from infrastructure.quality.report_v3 import QualityReporterV3, QualityReportV3Error
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.rest_identity import PAGE_LIMIT
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.streaming.runs import RunLimits, RunSetBuilder
 from tests.infrastructure.canonical import canonical_support as c
@@ -360,6 +362,67 @@ def test_incomplete_rest_response_page_fails_reporter_gate(
     )
     with pytest.raises(CanonicalUnitIncomplete, match="stopped half-way"):
         reporter._check_rest_pages("klines_1m", SYMBOL, DAY, bindings)
+
+
+def test_rest_page_count_above_rule_limit_fails_before_collecting_indexes(
+    harness: RestHarness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _populate(harness)
+    scratch = LocalFileStorageAdapter(
+        (tmp_path / "scratch-warehouse").as_uri(), (tmp_path / "scratch-stage").as_uri()
+    )
+    reporter = _reporter(harness, scratch, StepClock(start=utc(2023, 12, 20)))
+    bindings = reporter._pin(
+        (
+            rules.CANONICAL_TABLES["klines_1m"].table,
+            c.ARCHIVE_KLINES.table,
+            c.REST_KLINES.table,
+            c.ARCHIVES.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
+        )
+    )
+    original_scan = report_v3._scan_rows
+
+    def oversized_count_scan(adapter: Any, table: str, columns: Any, **kwargs: Any) -> Any:
+        for row in original_scan(adapter, table, columns, **kwargs):
+            if table == BINANCE_SPOT_REST_RESPONSES.table:
+                row["element_count"] = PAGE_LIMIT + 1
+            yield row
+
+    monkeypatch.setattr(report_v3, "_scan_rows", oversized_count_scan)
+    with pytest.raises(CatalogIntegrityError, match=rf"\[1, {PAGE_LIMIT}\]"):
+        reporter._check_rest_pages("klines_1m", SYMBOL, DAY, bindings)
+
+
+def test_complete_rest_page_still_runs_persisted_verifier(
+    harness: RestHarness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _populate(harness)
+    scratch = LocalFileStorageAdapter(
+        (tmp_path / "scratch-warehouse").as_uri(), (tmp_path / "scratch-stage").as_uri()
+    )
+    reporter = _reporter(harness, scratch, StepClock(start=utc(2023, 12, 20)))
+    bindings = reporter._pin(
+        (
+            rules.CANONICAL_TABLES["klines_1m"].table,
+            c.ARCHIVE_KLINES.table,
+            c.REST_KLINES.table,
+            c.ARCHIVES.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
+        )
+    )
+    original_check = report_v3.check_rest_page
+    checked: list[str] = []
+
+    def observe_check(view: Any, verifier: Any, channel: Any, revision: str, own: Any) -> None:
+        checked.append(revision)
+        original_check(view, verifier, channel, revision, own)
+
+    monkeypatch.setattr(report_v3, "check_rest_page", observe_check)
+    reporter._check_rest_pages("klines_1m", SYMBOL, DAY, bindings)
+    assert len(checked) == 1
 
 
 def test_rest_gate_accepts_multiple_responses_with_elements_held_by_first_page(

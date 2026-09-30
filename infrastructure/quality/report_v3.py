@@ -70,6 +70,7 @@ from infrastructure.quality.report_streams import (
 )
 from infrastructure.quality.reporter import RawNotDerived
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.rest_identity import PAGE_LIMIT
 from infrastructure.revision.row_integrity import ACCEPTED, PersistedRowVerifier, history_from
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
@@ -633,6 +634,12 @@ class QualityReporterV3:
             snapshot_id=snapshot,
         ):
             revision, count = page["revision_id"], page["element_count"]
+            valid_count = isinstance(count, int) and not isinstance(count, bool)
+            if not valid_count or not 1 <= count <= PAGE_LIMIT:
+                raise CatalogIntegrityError(
+                    f"REST page {revision} has invalid element_count {count!r}; "
+                    f"expected an integer in [1, {PAGE_LIMIT}]"
+                )
             own: set[int] = set()
             element_snapshot = bindings.get(channel.element.table)
             if element_snapshot is not None:
@@ -650,8 +657,10 @@ class QualityReporterV3:
                             f"REST page {revision} duplicates element index {index}"
                         )
                     own.add(index)
-            if len(own) == count and all(0 <= index < count for index in own):
-                continue
+                    if len(own) > count:
+                        raise CatalogIntegrityError(
+                            f"REST page {revision} has more element indexes than element_count"
+                        )
             check_rest_page(view, verifier, channel, revision, own)
 
     def _canonical_runs(
