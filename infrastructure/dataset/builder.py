@@ -1,7 +1,9 @@
-"""Research Dataset + ``ResearchDatasetManifest`` (Phase 1 F3; ADR-0023 §5 / §6, ADR-0024 §6).
+"""Research Dataset builders (Phase 1 F3; ADR-0023 §5 / §6, ADR-0024 §6, ADR-0077).
 
-``DatasetBuilder.select(universe, pit, data_type, start, end)`` is the read-only, deterministic
-part; ``build`` materializes it and persists the manifest. Under ``hlens.dataset.pit-selection
+``DatasetBuilder.select(universe, pit, data_type, start, end)`` is the legacy v2 read-only,
+deterministic derivation; ``build`` is retained only to replay a selection whose v2 manifest
+already exists. New writes use ``DatasetEvidenceBuilder`` through ``DatasetBuildPipeline`` with
+explicit ADR-0077 resource parameters. Under ``hlens.dataset.pit-selection
 @1.0.0``:
 
 1. **bindings** (fail closed) — every availability / precedence / parser binding of the PIT spec
@@ -377,6 +379,10 @@ class DatasetBuilder:
         end: datetime,
     ) -> DatasetBuilt:
         selection = self.select(universe, pit, data_type, start, end)
+        # ADR-0077 DQ-10: the materializing v2 path is retained only to replay a v2
+        # manifest that already exists. In particular, do not commit a v2 selection batch
+        # and then discover that its manifest would be a new v2 write.
+        self._require_existing_v2_manifest(selection.selection_id)
         if not selection.rows:
             raise DatasetEmpty(
                 f"{data_type} [{start.isoformat()}, {end.isoformat()}) selects nothing for the "
@@ -418,6 +424,27 @@ class DatasetBuilder:
         verifier = _JustSelected(self._adapter, self._table, selection)
         persisted = ManifestStore(self._adapter, verifier).persist(manifest)
         return DatasetBuilt(selection, manifest, commit, persisted)
+
+    def _require_existing_v2_manifest(self, selection_id: str) -> None:
+        rows = self._adapter.scan_columns(
+            DATASET_MANIFESTS.table,
+            columns=("manifest_content_hash",),
+            row_filter=EqualTo("selection_id", selection_id),  # type: ignore[call-arg, arg-type]
+        ).to_pylist()
+        if not rows:
+            raise DatasetSpecError(
+                "creating a new v2 Research Dataset is disabled by ADR-0077 DQ-10; "
+                "use DatasetBuildPipeline to create a v3 dataset"
+            )
+        if len(rows) != 1:
+            raise CatalogIntegrityError(
+                f"v2 selection {selection_id} has {len(rows)} persisted manifests"
+            )
+        manifest = self.manifests().load(rows[0]["manifest_content_hash"])
+        if manifest is None or manifest.selection_id != selection_id:
+            raise CatalogIntegrityError(
+                f"v2 manifest row for selection {selection_id} is missing or mismatched"
+            )
 
     def manifests(self) -> ManifestStore:
         """The ``ManifestStore`` whose manifests this builder verifies (persist and load)."""
