@@ -94,8 +94,42 @@ CANONICAL_PARTITION_V3_RULE_SPEC: Final[dict[str, Any]] = {
             "fit RunLimits.leaf_max_bytes minus the 512-byte header reserve"
         ),
     },
-    "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of the rule hashes used "
-    "(this set, the PIT rule, its required policies) and the bound snapshots>",
+    "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of rule hashes and "
+    "the exact subject and bound snapshots>",
+    "report_identity": {
+        "algorithm": "SHA-256(domain_separator || canonical_identity_utf8)",
+        "domain_separator": {
+            "ascii_prefix": "hlens.quality.report-identity/v1",
+            "terminal_byte_hex": "00",
+        },
+        "canonical_encoding": (
+            "canonical_json UTF-8 with sorted object keys, compact separators, ensure_ascii=False; "
+            "no terminal LF; helper hashes incrementally without materializing encoded bytes"
+        ),
+        "identity_fields": [
+            "quality_rule_id",
+            "quality_rule_version",
+            "quality_rule_hash",
+            "identity_rule_hashes",
+            "subject.table",
+            "subject.snapshot_id",
+            "subject.symbol",
+            "subject.start",
+            "subject.end",
+            "snapshot_bindings (complete normalized list sorted by table)",
+        ],
+        "identity_rule_hashes": (
+            "finite caller mapping of registered rule labels to lowercase SHA-256; quality is "
+            "required and equals the manifest quality_rule_hash"
+        ),
+        "max_identity_rule_hashes": "positive caller input; no default",
+        "max_identity_bytes": (
+            "positive caller input; bounds canonical identity UTF-8 bytes excluding the domain "
+            "separator; counted and hashed in chunks"
+        ),
+        "output": "<rule>@<version>.<table>.<venue symbol>.<day>.<lowercase SHA-256>",
+        "commit_metadata_excluded": ["knowledge_time", "stream roots"],
+    },
     "knowledge_time": "first commit's clock reading, reused by every replay",
     "legacy_compatibility": "v1/v2 inline reports and their report/event hashes remain unchanged",
     "event_projection": {

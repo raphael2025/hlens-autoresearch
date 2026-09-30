@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Final, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -50,11 +51,39 @@ _REPORT_ID_DOMAIN = b"hlens.quality.report-identity/v1\x00"
 _UTC = UTC
 
 
+def _normalize_identity_rule_hashes(
+    values: Mapping[str, str], *, maximum: int, quality_rule_hash: str
+) -> dict[str, str]:
+    if not isinstance(values, Mapping):
+        raise CatalogIntegrityError("identity_rule_hashes must be a finite mapping")
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+        raise CatalogIntegrityError("max_identity_rule_hashes must be a positive integer")
+    if len(values) > maximum:
+        raise CatalogIntegrityError("identity_rule_hashes exceeds max_identity_rule_hashes")
+    normalized: dict[str, str] = {}
+    for raw_name, raw_hash in values.items():
+        name = _text("identity_rule_hashes key", raw_name)
+        digest = _text("identity_rule_hashes value", raw_hash)
+        assert name is not None and digest is not None
+        if _SHA256_RE.fullmatch(digest) is None:
+            raise CatalogIntegrityError("identity_rule_hashes values must be lowercase SHA-256")
+        if name in normalized:
+            raise CatalogIntegrityError(f"identity_rule_hashes repeats {name}")
+        normalized[name] = digest
+    if normalized.get("quality") != quality_rule_hash:
+        raise CatalogIntegrityError(
+            "identity_rule_hashes must contain quality equal to quality_rule_hash"
+        )
+    return dict(sorted(normalized.items()))
+
+
 def derive_quality_report_id(
     *,
     quality_rule_id: str,
     quality_rule_version: str,
     quality_rule_hash: str,
+    identity_rule_hashes: Mapping[str, str],
+    max_identity_rule_hashes: int,
     subject_table: str,
     subject_snapshot_id: str | None,
     subject_symbol: str | None,
@@ -66,13 +95,20 @@ def derive_quality_report_id(
     """Derive a stable ID from rule hash, subject metadata, and exact pinned inputs.
 
     This code-owned algorithm is intentionally not an injectable callback. Callers provide only
-    normalized identity data. ``knowledge_time`` and stream roots are commit/output metadata and
-    therefore do not participate in report identity.
+    normalized identity data, including a complete rule-hash mapping and table-sorted snapshot
+    bindings. ``knowledge_time`` and stream roots are commit/output metadata and therefore do not
+    participate in report identity.
     """
+    rule_hashes = _normalize_identity_rule_hashes(
+        identity_rule_hashes,
+        maximum=max_identity_rule_hashes,
+        quality_rule_hash=quality_rule_hash,
+    )
     identity = {
         "quality_rule_id": quality_rule_id,
         "quality_rule_version": quality_rule_version,
         "quality_rule_hash": quality_rule_hash,
+        "identity_rule_hashes": rule_hashes,
         "subject": {
             "table": subject_table,
             "snapshot_id": subject_snapshot_id,
@@ -284,7 +320,9 @@ class QualityReportManifestStore:
 
     ``allowed_snapshot_tables`` is a finite collection supplied by the report rule. Its size is the
     runtime maximum binding count; the required subset is an explicit constructor input and may be
-    empty. Stream limits are explicit and validate the canonical root depth and object shape.
+    empty. ``identity_rule_hashes`` is the finite, rule-owned set of quality, PIT, and required
+    policy hashes; its quality entry must equal the manifest's rule hash. Stream limits are explicit
+    and validate the canonical root depth and object shape.
     """
 
     def __init__(
@@ -296,6 +334,8 @@ class QualityReportManifestStore:
         quality_rule_hash: str,
         allowed_snapshot_tables: Collection[str],
         required_snapshot_tables: Collection[str],
+        identity_rule_hashes: Mapping[str, str],
+        max_identity_rule_hashes: int,
         stream_limits: QualityReportStreamLimits,
         max_manifest_record_bytes: int,
     ) -> None:
@@ -315,6 +355,11 @@ class QualityReportManifestStore:
             or _SHA256_RE.fullmatch(quality_rule_hash) is None
         ):
             raise CatalogIntegrityError("quality_rule_hash must be lowercase SHA-256 hex")
+        normalized_identity_hashes = _normalize_identity_rule_hashes(
+            identity_rule_hashes,
+            maximum=max_identity_rule_hashes,
+            quality_rule_hash=quality_rule_hash,
+        )
         allowed = self._table_collection("allowed_snapshot_tables", allowed_snapshot_tables)
         required = self._table_collection(
             "required_snapshot_tables", required_snapshot_tables, allow_empty=True
@@ -333,6 +378,8 @@ class QualityReportManifestStore:
         self._quality_rule_id = quality_rule_id
         self._quality_rule_version = quality_rule_version
         self._quality_rule_hash = quality_rule_hash
+        self._identity_rule_hashes = MappingProxyType(normalized_identity_hashes)
+        self._max_identity_rule_hashes = max_identity_rule_hashes
         self._allowed_snapshot_tables = allowed
         self._required_snapshot_tables = required
         self._stream_limits = stream_limits
@@ -491,6 +538,8 @@ class QualityReportManifestStore:
             quality_rule_id=self._quality_rule_id,
             quality_rule_version=self._quality_rule_version,
             quality_rule_hash=self._quality_rule_hash,
+            identity_rule_hashes=self._identity_rule_hashes,
+            max_identity_rule_hashes=self._max_identity_rule_hashes,
             subject_table=subject_table,
             subject_snapshot_id=subject_snapshot_id,
             subject_symbol=subject_symbol,

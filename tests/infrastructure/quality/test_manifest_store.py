@@ -19,6 +19,7 @@ from infrastructure.quality.manifest_store import (
     _canonical_jsonl_size,
     derive_quality_report_id,
 )
+from infrastructure.quality.report_projection import CANONICAL_PARTITION_V3_RULE_HASH
 from infrastructure.quality.report_streams import (
     QUALITY_REPORT_STREAM_FORMAT,
     QualityReportStreamLimits,
@@ -29,7 +30,13 @@ from tests.infrastructure.revision.rest_store_support import RestHarness, sqlite
 
 RULE_ID = "hlens.quality.canonical-partition"
 RULE_VERSION = "3.0.0"
-RULE_HASH = "a" * 64
+RULE_HASH = CANONICAL_PARTITION_V3_RULE_HASH
+IDENTITY_RULE_HASHES = {
+    "quality": RULE_HASH,
+    "pit.maximal-head@1.0.0": "b" * 64,
+    "policy.required@1.0.0": "c" * 64,
+}
+MAX_IDENTITY_RULE_HASHES = 4
 STREAM_LIMITS = QualityReportStreamLimits(leaf_max_records=3, leaf_max_bytes=4096, fanout=2)
 ALLOWED_TABLES = ("canonical.bars_1m", "raw.binance_spot_klines_1m")
 REQUIRED_TABLES = ("canonical.bars_1m",)
@@ -52,6 +59,8 @@ def store(
         quality_rule_hash=RULE_HASH,
         allowed_snapshot_tables=ALLOWED_TABLES,
         required_snapshot_tables=REQUIRED_TABLES,
+        identity_rule_hashes=IDENTITY_RULE_HASHES,
+        max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
         stream_limits=STREAM_LIMITS,
         max_manifest_record_bytes=max_record_bytes,
     )
@@ -95,6 +104,8 @@ def manifest_row(
         quality_rule_id=RULE_ID,
         quality_rule_version=RULE_VERSION,
         quality_rule_hash=RULE_HASH,
+        identity_rule_hashes=IDENTITY_RULE_HASHES,
+        max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
         subject_table=row["subject_table"],
         subject_snapshot_id=row["subject_snapshot_id"],
         subject_symbol=row["subject_symbol"],
@@ -165,11 +176,19 @@ def test_report_id_binds_rule_hash_subject_and_exact_snapshot_bindings(
     with pytest.raises(CatalogIntegrityError, match="does not match its rule, subject"):
         store(harness).commit(dict(row, snapshot_bindings=changed_bindings))
 
-    def derived(*, rule_hash: str, symbol: str, bindings: list[dict[str, str]]) -> str:
+    def derived(
+        *,
+        rule_hash: str,
+        symbol: str,
+        bindings: list[dict[str, str]],
+        hashes: dict[str, str] | None = None,
+    ) -> str:
         return derive_quality_report_id(
             quality_rule_id=RULE_ID,
             quality_rule_version=RULE_VERSION,
             quality_rule_hash=rule_hash,
+            identity_rule_hashes=hashes or {**IDENTITY_RULE_HASHES, "quality": rule_hash},
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
             subject_table=row["subject_table"],
             subject_snapshot_id=row["subject_snapshot_id"],
             subject_symbol=symbol,
@@ -181,6 +200,15 @@ def test_report_id_binds_rule_hash_subject_and_exact_snapshot_bindings(
 
     original = derived(rule_hash=RULE_HASH, symbol="BTCUSDT", bindings=row["snapshot_bindings"])
     assert (
+        derived(
+            rule_hash=RULE_HASH,
+            symbol="BTCUSDT",
+            bindings=row["snapshot_bindings"],
+            hashes=dict(reversed(tuple(IDENTITY_RULE_HASHES.items()))),
+        )
+        == original
+    )
+    assert (
         derived(rule_hash="b" * 64, symbol="BTCUSDT", bindings=row["snapshot_bindings"]) != original
     )
     assert (
@@ -188,11 +216,33 @@ def test_report_id_binds_rule_hash_subject_and_exact_snapshot_bindings(
         != original
     )
     assert derived(rule_hash=RULE_HASH, symbol="BTCUSDT", bindings=changed_bindings) != original
+    changed_pit_hashes = dict(IDENTITY_RULE_HASHES, **{"pit.maximal-head@1.0.0": "d" * 64})
+    changed_policy_hashes = dict(IDENTITY_RULE_HASHES, **{"policy.required@1.0.0": "e" * 64})
+    assert (
+        derived(
+            rule_hash=RULE_HASH,
+            symbol="BTCUSDT",
+            bindings=row["snapshot_bindings"],
+            hashes=changed_pit_hashes,
+        )
+        != original
+    )
+    assert (
+        derived(
+            rule_hash=RULE_HASH,
+            symbol="BTCUSDT",
+            bindings=row["snapshot_bindings"],
+            hashes=changed_policy_hashes,
+        )
+        != original
+    )
     with pytest.raises(CatalogIntegrityError, match="max_identity_bytes"):
         derive_quality_report_id(
             quality_rule_id=RULE_ID,
             quality_rule_version=RULE_VERSION,
             quality_rule_hash=RULE_HASH,
+            identity_rule_hashes=IDENTITY_RULE_HASHES,
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
             subject_table=row["subject_table"],
             subject_snapshot_id=row["subject_snapshot_id"],
             subject_symbol=row["subject_symbol"],
@@ -415,6 +465,8 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_hash="bad",
             allowed_snapshot_tables=ALLOWED_TABLES,
             required_snapshot_tables=(),
+            identity_rule_hashes=IDENTITY_RULE_HASHES,
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
         )
@@ -426,6 +478,8 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_hash=RULE_HASH,
             allowed_snapshot_tables="canonical.bars_1m",
             required_snapshot_tables=(),
+            identity_rule_hashes=IDENTITY_RULE_HASHES,
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
         )
@@ -437,6 +491,8 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_hash=RULE_HASH,
             allowed_snapshot_tables=ALLOWED_TABLES,
             required_snapshot_tables=("raw.not_allowed",),
+            identity_rule_hashes=IDENTITY_RULE_HASHES,
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
         )
@@ -448,8 +504,36 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_hash=RULE_HASH,
             allowed_snapshot_tables=ALLOWED_TABLES,
             required_snapshot_tables=(),
+            identity_rule_hashes=IDENTITY_RULE_HASHES,
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=0,
+        )
+    with pytest.raises(CatalogIntegrityError, match="max_identity_rule_hashes"):
+        QualityReportManifestStore(
+            harness.adapter,
+            quality_rule_id=RULE_ID,
+            quality_rule_version=RULE_VERSION,
+            quality_rule_hash=RULE_HASH,
+            allowed_snapshot_tables=ALLOWED_TABLES,
+            required_snapshot_tables=(),
+            identity_rule_hashes=IDENTITY_RULE_HASHES,
+            max_identity_rule_hashes=2,
+            stream_limits=STREAM_LIMITS,
+            max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
+        )
+    with pytest.raises(CatalogIntegrityError, match="contain quality equal"):
+        QualityReportManifestStore(
+            harness.adapter,
+            quality_rule_id=RULE_ID,
+            quality_rule_version=RULE_VERSION,
+            quality_rule_hash=RULE_HASH,
+            allowed_snapshot_tables=ALLOWED_TABLES,
+            required_snapshot_tables=(),
+            identity_rule_hashes={**IDENTITY_RULE_HASHES, "quality": "f" * 64},
+            max_identity_rule_hashes=MAX_IDENTITY_RULE_HASHES,
+            stream_limits=STREAM_LIMITS,
+            max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
         )
 
 

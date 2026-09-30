@@ -14,6 +14,7 @@ from core.contracts.storage import StorageAdapter
 from core.domain.base import canonical_json
 from infrastructure.quality.report_projection import (
     CANONICAL_PARTITION_V3_RULE_HASH,
+    CANONICAL_PARTITION_V3_RULE_SPEC,
     CanonicalPartitionProjectionError,
     CanonicalPartitionV3EvidenceGapProjector,
     CanonicalPartitionV3Projector,
@@ -26,6 +27,20 @@ from infrastructure.quality.report_streams import (
 )
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.streaming.runs import RunLimits
+
+
+def test_rule_hash_covers_versioned_report_identity_derivation() -> None:
+    assert (
+        CANONICAL_PARTITION_V3_RULE_HASH
+        == hashlib.sha256(
+            canonical_json(CANONICAL_PARTITION_V3_RULE_SPEC).encode("utf-8")
+        ).hexdigest()
+    )
+    identity_spec = CANONICAL_PARTITION_V3_RULE_SPEC["report_identity"]
+    assert identity_spec["domain_separator"]["terminal_byte_hex"] == "00"
+    assert "identity_rule_hashes" in identity_spec["identity_fields"]
+    assert "max_identity_rule_hashes" in identity_spec
+    assert "max_identity_bytes" in identity_spec
 
 
 @pytest.fixture
