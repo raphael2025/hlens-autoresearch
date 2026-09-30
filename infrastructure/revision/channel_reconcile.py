@@ -103,7 +103,7 @@ from infrastructure.revision.row_integrity import (
     VerifiedArchive,
     history_from,
 )
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import BatchCommit, RevisionCatalog, scan_rows
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = [
@@ -1486,17 +1486,21 @@ class ChannelReconciler:
             raise CatalogIntegrityError("a REST row was read from a table without a snapshot")
         start = datetime.combine(day, time(), tzinfo=UTC)
         column = _TIME_COLUMNS[data_type]
-        rows = self._adapter.scan_columns(
-            _REST_TABLES[data_type].table,
-            columns=("observation_key",),
-            row_filter=_all(
-                _equals("symbol", symbol),
-                _at_least(column, start),
-                _below(column, start + _DAY),
-            ),
-            snapshot_id=rest_snapshot,
-        ).to_pylist()
-        return sorted({row["observation_key"] for row in rows})
+        # Streamed at the pinned snapshot (ADR-0075): only the distinct keys are ever held.
+        keys = {
+            row["observation_key"]
+            for row in self._scan_batch_rows(
+                _REST_TABLES[data_type],
+                _all(
+                    _equals("symbol", symbol),
+                    _at_least(column, start),
+                    _below(column, start + _DAY),
+                ),
+                rest_snapshot,
+                columns=("observation_key",),
+            )
+        }
+        return sorted(keys)
 
     def _day_keys_run(
         self,
@@ -1552,15 +1556,14 @@ class ChannelReconciler:
             return unique.finish()
 
     def _rows_at(self, keys: Sequence[str], snapshot_id: str) -> dict[str, Mapping[str, Any]]:
-        columns = tuple(field.name for field in BINANCE_SPOT_PRECEDENCE_EVIDENCE.arrow_schema)
+        """Evidence rows of ``keys`` at one fixed snapshot, streamed chunk by chunk (ADR-0075)."""
         rows: dict[str, Mapping[str, Any]] = {}
         for offset in range(0, len(keys), _KEY_CHUNK):
-            for row in self._adapter.scan_columns(
-                EVIDENCE_TABLE,
-                columns=columns,
-                row_filter=_member("observation_key", keys[offset : offset + _KEY_CHUNK]),
-                snapshot_id=snapshot_id,
-            ).to_pylist():
+            for row in self._scan_batch_rows(
+                BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                _member("observation_key", keys[offset : offset + _KEY_CHUNK]),
+                snapshot_id,
+            ):
                 rows[row["edge_id"]] = row
         return rows
 
@@ -2647,11 +2650,14 @@ class ChannelReconciler:
     def _scan(
         self, definition: RegisteredTableDefinition, row_filter: BooleanExpression
     ) -> list[Mapping[str, Any]]:
+        """Matching rows at the current head, streamed (ADR-0075 bounded scan).
+
+        Not ``scan_columns``: PyIceberg's high-level planner grows with the table's file count.
+        The pinned read's before / after head comparison is unchanged: the reader pins the head
+        current when it opens, exactly as ``scan_columns`` did.
+        """
         columns = tuple(field.name for field in definition.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            definition.table, columns=columns, row_filter=row_filter
-        ).to_pylist()
-        return rows
+        return scan_rows(self._adapter, definition.table, columns=columns, row_filter=row_filter)
 
     def _scan_batch_rows(
         self,
