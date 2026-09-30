@@ -8,20 +8,41 @@ time without retaining all observations.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import replace
+from itertools import chain, groupby, islice
 from typing import Any
 
 from core.contracts.storage import StorageAdapter
+from core.contracts.universe import (
+    DegradedEpisodeKey,
+    EpisodeIdentityBasis,
+    ListingStatus,
+    TradableInterval,
+)
+from core.domain.specs import Instrument, InstrumentType
 from infrastructure.canonical import listing_rules as lr
+from infrastructure.canonical.rules import SYMBOLS
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.revision.exchange_info_store import ExchangeInfoRowVerifier
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
-__all__ = ["listing_observations_run"]
+__all__ = ["iter_planned_listing_revisions", "listing_observations_run"]
 
 
 def _observation_key(row: Mapping[str, Any]) -> tuple[str, Any, str]:
     return (row["venue_symbol"], row["retrieved_at"], row["snapshot_revision_id"])
+
+
+def _tie_ids(rows: Iterable[Mapping[str, Any]], state: dict[str, Any]) -> Iterator[str]:
+    for row in rows:
+        state["count"] += 1
+        yield row["snapshot_revision_id"]
+    state["exhausted"] = True
+
+
+def _fixed_detail(message: str) -> Callable[[int], str]:
+    return lambda _count: message
 
 
 def listing_observations_run(
@@ -112,3 +133,179 @@ def listing_observations_run(
                 ExchangeInfoRowVerifier._check_bounded_row(observation, max_record_bytes)
                 builder.add(observation)
         return builder.finish()
+
+
+def iter_planned_listing_revisions(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    max_record_bytes: int,
+    finding_sink: Callable[[str, str, Any, Iterable[str], Callable[[int], str]], None],
+) -> Iterator[lr.PlannedListing]:
+    """Derive the current chain one record at a time from sorted observation rows.
+
+    ``rows`` must be ordered by ``(venue_symbol, retrieved_at, snapshot_revision_id)`` as emitted
+    by :func:`listing_observations_run`. Findings are delivered synchronously to ``finding_sink``;
+    its revision-ID iterable must be consumed before the callback returns. This is what lets a
+    caller feed event/revision writers without collecting tie heads or findings in a tuple.
+
+    The current plan retains one interval list, bounded by the mandatory maximum canonical listing
+    row size. Its predecessor link is pruned to one node because the next revision only needs the
+    preceding revision ID and observation for its precedence evidence.
+    """
+    if (
+        isinstance(max_record_bytes, bool)
+        or not isinstance(max_record_bytes, int)
+        or max_record_bytes <= 0
+    ):
+        raise ValueError("max_record_bytes must be a positive integer")
+
+    def as_observation(row: Mapping[str, Any]) -> lr.Observation:
+        return lr.Observation(
+            venue_symbol=row["venue_symbol"],
+            snapshot_revision_id=row["snapshot_revision_id"],
+            requested_at=row["requested_at"],
+            retrieved_at=row["retrieved_at"],
+            raw_knowledge_time=row["raw_knowledge_time"],
+            status=row["status"],
+            base_asset=row["base_asset"],
+            quote_asset=row["quote_asset"],
+        )
+
+    def emit_plan(planned: lr.PlannedListing) -> lr.PlannedListing:
+        row = lr.listing_columns(
+            planned,
+            arrival_seq=0,
+            knowledge_time=planned.observation.raw_knowledge_time,
+        )
+        ExchangeInfoRowVerifier._check_bounded_row(row, max_record_bytes)
+        return planned
+
+    for venue_symbol, symbol_rows in groupby(rows, key=lambda row: row["venue_symbol"]):
+        if venue_symbol not in lr.FIRST_SLICE_ASSETS:
+            raise CatalogIntegrityError(
+                f"listing observations contain unknown symbol {venue_symbol!r}"
+            )
+        base, quote = lr.FIRST_SLICE_ASSETS[venue_symbol]
+        canonical = SYMBOLS[venue_symbol].symbol
+        instrument = Instrument(
+            venue="binance",
+            symbol=canonical,
+            instrument_type=InstrumentType.SPOT,
+            base=base,
+            quote=quote,
+        )
+        current: lr.PlannedListing | None = None
+        stopped = False
+        for instant, instant_rows in groupby(symbol_rows, key=lambda row: row["retrieved_at"]):
+            instant_iterator = iter(instant_rows)
+            first_two = list(islice(instant_iterator, 2))
+            first_row = first_two[0] if first_two else None
+            if first_row is None:
+                continue
+            if len(first_two) == 2:
+                tied_rows = chain(first_two, instant_iterator)
+                tie_state = {"count": 0, "exhausted": False}
+                ids = _tie_ids(tied_rows, tie_state)
+
+                def tie_detail(count: int, symbol: str = venue_symbol, at: Any = instant) -> str:
+                    return (
+                        f"{count} snapshots observed {symbol} at {at.isoformat()}: "
+                        f"{lr.LISTING_OBSERVATION_ID}@{lr.LISTING_OBSERVATION_VERSION} cannot "
+                        "order them; the chain stops here (fail closed)"
+                    )
+
+                finding_sink(lr.FINDING_OBSERVATION_TIE, venue_symbol, instant, ids, tie_detail)
+                if not tie_state["exhausted"] or tie_state["count"] < 2:
+                    raise CatalogIntegrityError("listing finding sink did not consume tied IDs")
+                stopped = True
+                break
+
+            observation = as_observation(first_row)
+            kind, code = lr.classify(observation)
+            if kind is lr.ObservationClass.UNRESOLVED:
+                assert code is not None
+                detail = (
+                    f"{venue_symbol} at {instant.isoformat()}: "
+                    + {
+                        lr.FINDING_SYMBOL_MISSING: "absent from the snapshot",
+                        lr.FINDING_INSTRUMENT_MISMATCH: (
+                            "base / quote assets are not the frozen ones"
+                        ),
+                        lr.FINDING_STATUS_UNKNOWN: f"status {observation.status!r} has no mapping",
+                    }[code]
+                    + "; no inference, universe fails closed until the next resolved observation"
+                )
+                finding_sink(
+                    code,
+                    venue_symbol,
+                    instant,
+                    iter((observation.snapshot_revision_id,)),
+                    _fixed_detail(detail),
+                )
+                continue
+
+            status = (
+                ListingStatus.LISTED
+                if kind is lr.ObservationClass.LISTED
+                else ListingStatus.SUSPENDED
+            )
+            if current is None:
+                if status is ListingStatus.SUSPENDED:
+                    detail = (
+                        f"{venue_symbol} observed {observation.status} at {instant.isoformat()} "
+                        "before any TRADING observation: no episode exists yet"
+                    )
+                    finding_sink(
+                        lr.FINDING_SUSPENDED_BEFORE_TRADING,
+                        venue_symbol,
+                        instant,
+                        iter((observation.snapshot_revision_id,)),
+                        _fixed_detail(detail),
+                    )
+                    continue
+                episode = DegradedEpisodeKey(
+                    basis=EpisodeIdentityBasis.DEGRADED_SYMBOL_START,
+                    venue="binance",
+                    instrument_type=InstrumentType.SPOT,
+                    symbol=canonical,
+                    tradable_from=instant,
+                )
+                planned = lr._plan(
+                    observation,
+                    episode,
+                    instrument,
+                    (TradableInterval(tradable_from=instant, tradable_until=None),),
+                    status,
+                    lr._reason("first", observation, instant),
+                    None,
+                )
+                current = emit_plan(planned)
+                yield current
+                continue
+
+            if status is current.status:
+                continue
+            episode = current.episode
+            if status is ListingStatus.SUSPENDED:
+                last = current.intervals[-1]
+                intervals = (
+                    *current.intervals[:-1],
+                    TradableInterval(tradable_from=last.tradable_from, tradable_until=instant),
+                )
+                reason = lr._reason("suspended", observation, episode.tradable_from)
+            else:
+                intervals = (
+                    *current.intervals,
+                    TradableInterval(tradable_from=instant, tradable_until=None),
+                )
+                reason = lr._reason("relisted", observation, episode.tradable_from)
+            previous = replace(current, previous=None)
+            planned = lr._plan(
+                observation, episode, instrument, intervals, status, reason, previous
+            )
+            current = emit_plan(planned)
+            yield current
+        if stopped:
+            # Drain this symbol's unread rows so the outer groupby advances to the next symbol.
+            for _ in symbol_rows:
+                pass
