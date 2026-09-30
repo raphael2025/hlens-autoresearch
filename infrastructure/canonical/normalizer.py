@@ -1048,52 +1048,70 @@ class CanonicalNormalizer:
         plan: _CommittedPlan,
         wanted_root: RunRef,
     ) -> Iterator[tuple[int, SnapshotInfo]]:
-        """Merge newest-first batch requests with the pinned reverse snapshot history."""
+        """Merge newest-first batch requests with the pinned reverse snapshot history.
+
+        As in ``_plan_snapshots``, the merge (and the history walk, which keeps the table's whole
+        loaded metadata referenced) completes before the first pair is yielded; the matched
+        pairs are replayed in the same order from scratch disk, so the caller's per-batch scans
+        never load their metadata copy while the walk's copy is still alive.
+        """
         changed = (
             f"{channel.canonical.table}: the batches of unit {source_revision_id} no longer read "
             "as the plan proven at the pinned head"
         )
-        with iter_run(self._storage, wanted_root) as rows:
-            wanted = next(rows, None)
-            wanted_index = None if wanted is None else wanted["batch_index"]
-            expected = plan.count - 1
-            missing = False
-            previous_wanted: int | None = None
-            for unit_rows, chunk, index, snapshot in self._unit_batches(
-                pin, channel, source_revision_id
-            ):
-                if (unit_rows, chunk) != (plan.unit_rows, plan.chunk) or index != expected:
-                    raise CatalogIntegrityError(changed)
-                expected -= 1
-                while wanted_index is not None and wanted_index > index:
-                    if previous_wanted is not None and wanted_index >= previous_wanted:
-                        raise CatalogIntegrityError(
-                            f"{channel.canonical.table}: bounded batch requests are not descending"
-                        )
-                    previous_wanted = wanted_index
-                    missing = True
-                    wanted = next(rows, None)
-                    wanted_index = None if wanted is None else wanted["batch_index"]
-                if wanted_index == index:
-                    yield index, snapshot
-                    previous_wanted = index
-                    wanted = next(rows, None)
-                    wanted_index = None if wanted is None else wanted["batch_index"]
-                    if wanted_index is None:
-                        return
-            while wanted_index is not None:
-                if previous_wanted is not None and wanted_index >= previous_wanted:
-                    raise CatalogIntegrityError(
-                        f"{channel.canonical.table}: bounded batch requests are not descending"
-                    )
-                previous_wanted = wanted_index
-                missing = True
+        spool = _SnapshotSpool(self._scratch_directory)
+        try:
+            with iter_run(self._storage, wanted_root) as rows:
                 wanted = next(rows, None)
                 wanted_index = None if wanted is None else wanted["batch_index"]
-            if missing:
-                raise CatalogIntegrityError(
-                    f"{channel.canonical.table}: requested batch snapshot is missing"
-                )
+                expected = plan.count - 1
+                missing = False
+                complete = False
+                previous_wanted: int | None = None
+                walk = self._unit_batches(pin, channel, source_revision_id)
+                try:
+                    for unit_rows, chunk, index, snapshot in walk:
+                        if (unit_rows, chunk) != (plan.unit_rows, plan.chunk) or index != expected:
+                            raise CatalogIntegrityError(changed)
+                        expected -= 1
+                        while wanted_index is not None and wanted_index > index:
+                            if previous_wanted is not None and wanted_index >= previous_wanted:
+                                raise CatalogIntegrityError(
+                                    f"{channel.canonical.table}: bounded batch requests are not "
+                                    "descending"
+                                )
+                            previous_wanted = wanted_index
+                            missing = True
+                            wanted = next(rows, None)
+                            wanted_index = None if wanted is None else wanted["batch_index"]
+                        if wanted_index == index:
+                            spool.add(index, snapshot)
+                            previous_wanted = index
+                            wanted = next(rows, None)
+                            wanted_index = None if wanted is None else wanted["batch_index"]
+                            if wanted_index is None:
+                                complete = True
+                                break
+                finally:
+                    walk.close()
+                if not complete:
+                    while wanted_index is not None:
+                        if previous_wanted is not None and wanted_index >= previous_wanted:
+                            raise CatalogIntegrityError(
+                                f"{channel.canonical.table}: bounded batch requests are not "
+                                "descending"
+                            )
+                        previous_wanted = wanted_index
+                        missing = True
+                        wanted = next(rows, None)
+                        wanted_index = None if wanted is None else wanted["batch_index"]
+                    if missing:
+                        raise CatalogIntegrityError(
+                            f"{channel.canonical.table}: requested batch snapshot is missing"
+                        )
+            yield from spool
+        finally:
+            spool.close()
 
     def _unit_facts(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
