@@ -11,7 +11,10 @@ carries no ``authority`` field — that absence is how the two evidence strength
 **explicit** head (the latest ``registry.head`` or one the caller pinned; a head not on the chain is
 ``lifecycle_head_unknown``). The subject must be in the ACTIVE set at that head
 (``lifecycle_not_active`` otherwise); its replayed history is the ``LifecycleHistory`` handed to the
-operation, and the head identity plus the replayed record hashes go into the provenance.
+operation, and the head identity plus the replayed record hashes go into the provenance, with
+``anchor`` = ``present`` when the registry was opened with its external anchor (a rollback of whole
+trailing records would have been refused on open) or ``absent`` (not detectable; recorded, not
+refused — ADR-0098 修订 1).
 
 **2. Source (ADR-0098 §2).** The only non-synthetic source is one ADR-0077 v3
 ``ResearchDatasetEvidenceManifest``, read through the ``DatasetCatalog`` (its ``evidence_verifier``
@@ -75,9 +78,10 @@ written. The ADR-0074 operator and the API do not import this module (ADR-0098 �
 
 **Honest boundary.** The decision pipeline (``WindowTargetSource``) is caller code bound by its
 declared identities, not re-derived here; the Lifecycle Registry's actors are declared names. The
-command line has no approved way to construct the catalog or the decision pipeline, so
-``degradation_cli`` refuses the authority mode unless an embedding caller supplies an
-``AuthorityEnvironment`` (see that module).
+command line cannot construct the catalog or the decision pipeline itself, so
+``degradation_cli`` refuses the authority mode unless a deployment-trusted
+``--authority-environment MODULE:CALLABLE`` factory or an embedding caller supplies an
+``AuthorityEnvironment`` (ADR-0098 修订 1; see that module).
 
 Code completion (2026-09-30, CODE_COMPLETE / DEBUG_PENDING; not run, not tested).
 """
@@ -143,6 +147,8 @@ from research.validation.returns import PeriodReturns, from_backtest
 from research.validation.robustness import cost_stress_check
 
 __all__ = [
+    "ANCHOR_ABSENT",
+    "ANCHOR_PRESENT",
     "AUTHORITY_FORMAT",
     "BASELINE_BINDING_MISMATCH",
     "EXECUTION_MISMATCH",
@@ -172,6 +178,11 @@ __all__ = [
 
 #: Identity of the provenance payload (part of the report's hash-bound evidence).
 AUTHORITY_FORMAT: Final = "hlens.p11.authority-provenance@1.0.0"
+#: ``authority.lifecycle.anchor``: the Lifecycle Registry was verified against an external anchor
+#: (``present``) or opened without one (``absent``: a rollback of whole trailing records cannot be
+#: detected; ADR-0098 修订 1 — recorded, not refused).
+ANCHOR_PRESENT: Final = "present"
+ANCHOR_ABSENT: Final = "absent"
 #: Identity and version of the closed metric registry below (the recent manifest's ``method_id``).
 METRIC_REGISTRY_ID: Final = "hlens.p11.monitoring-metrics@1.0.0"
 
@@ -741,6 +752,7 @@ class AuthorityProvenance:
 
     subject: Ref
     lifecycle_head: LifecycleHead
+    lifecycle_anchor: str
     lifecycle_history_hash: str
     lifecycle_record_hashes: tuple[str, ...]
     source: SourceIdentity
@@ -774,6 +786,7 @@ class AuthorityProvenance:
             "subject": str(self.subject),
             "lifecycle": {
                 "head": self.lifecycle_head.payload(),
+                "anchor": self.lifecycle_anchor,
                 "history_hash": self.lifecycle_history_hash,
                 "record_hashes": list(self.lifecycle_record_hashes),
             },
@@ -912,6 +925,7 @@ def resolve_degradation_inputs(
 
     # 1. lifecycle at the explicit head
     pinned, history, record_hashes = _resolve_lifecycle(lifecycle, head, subject)
+    anchor = ANCHOR_PRESENT if lifecycle.anchored else ANCHOR_ABSENT
 
     # 3a. every ruled metric is defined, and the baseline cites each definition's gate
     definitions = _ruled_definitions(profile)
@@ -989,6 +1003,7 @@ def resolve_degradation_inputs(
         _token=_PROVENANCE_TOKEN,
         subject=subject,
         lifecycle_head=pinned,
+        lifecycle_anchor=anchor,
         lifecycle_history_hash=history.content_hash(),
         lifecycle_record_hashes=record_hashes,
         source=source,

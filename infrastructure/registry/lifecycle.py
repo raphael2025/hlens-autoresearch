@@ -507,6 +507,13 @@ class LifecycleRegistry:
         return len(self._journal)
 
     @property
+    def anchored(self) -> bool:
+        """Whether this instance was opened with (and verified against) an external anchor.
+        Without one, whole trailing records dropped by a rollback cannot be detected."""
+        self._require_open()
+        return self._anchor is not None
+
+    @property
     def head(self) -> LifecycleHead:
         """The latest head (``(0, GENESIS_HASH)`` for an empty registry)."""
         self._require_open()

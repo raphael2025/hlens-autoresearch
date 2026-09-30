@@ -107,7 +107,9 @@ RECENT_METRICS_SCOPE: Final = (
 #: What the authority-resolved lifecycle binding proves (ADR-0098 §1 / §4).
 AUTHORITY_LIFECYCLE_SCOPE: Final = (
     "the lifecycle history is the ADR-0098 Lifecycle Registry's replay of this subject at the head "
-    "recorded in authority.lifecycle; the registry's declared actors are not authenticated"
+    "recorded in authority.lifecycle (authority.lifecycle.anchor records whether an external anchor "
+    "was verified; without one a rollback of whole trailing records is not detectable); the "
+    "registry's declared actors are not authenticated"
 )
 #: What the authority-resolved recent metrics prove (ADR-0098 §2 / §3 / §4).
 AUTHORITY_RECENT_METRICS_SCOPE: Final = (
