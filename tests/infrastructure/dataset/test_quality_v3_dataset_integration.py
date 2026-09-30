@@ -164,7 +164,6 @@ def _quality_params(scratch: StorageAdapter) -> BoundedQualitySourceParams:
         run_capacity=2,
         merge_fanout=2,
         max_run_object_bytes=8192,
-        max_legacy_report_record_bytes=65536,
         identity_registry=SimpleNamespace(
             canonical_v3_hashes=_identity_hashes(),
             max_identity_rule_hashes=16,

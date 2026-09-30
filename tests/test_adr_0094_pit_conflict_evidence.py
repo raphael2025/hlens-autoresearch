@@ -24,13 +24,16 @@ from tests.test_adr_0077_evidence_manifest import evidence, stream_ref, v3
 def test_contract_250_registers_only_the_new_pit_conflict_models_and_value() -> None:
     assert CONTRACT_SCHEMA_VERSION == ADR_0094_VERSION == "2.5.0"
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
-        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+        "2.0.0",
+        "2.1.0",
+        "2.2.0",
+        "2.3.0",
+        "2.4.0",
+        "2.5.0",
     )
     assert PitConflictHeadEvidence._MODEL_SINCE == "2.5.0"
     assert PitConflictEvidenceResult._MODEL_SINCE == "2.5.0"
-    assert EvidenceStreamRef._VALUES_SINCE == {
-        "stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}
-    }
+    assert EvidenceStreamRef._VALUES_SINCE == {"stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}}
 
 
 def test_old_envelopes_reject_the_new_stream_and_record_model() -> None:
@@ -60,7 +63,16 @@ def test_manifest_shapes_are_selected_by_recorded_envelope() -> None:
         assert EvidenceStream.PIT_CONFLICTS not in {ref.stream for ref in manifest.evidence}
 
     refs = (*evidence(3), stream_ref(EvidenceStream.PIT_CONFLICTS, 0))
-    current = v3(schema_version="2.5.0", evidence=refs)
+    legacy_pit = v3(schema_version="2.4.0").point_in_time
+    current_pit = legacy_pit.model_copy(
+        update={
+            "snapshot_bindings": {
+                **legacy_pit.snapshot_bindings,
+                "quality.data_quality_report_manifests": "9104",
+            }
+        }
+    )
+    current = v3(schema_version="2.5.0", evidence=refs, point_in_time=current_pit)
     current_row = evidence_manifest_row(current)
     assert len(current.evidence) == len(current_row["evidence"]) == 7
     assert current.evidence_for(EvidenceStream.PIT_CONFLICTS).record_count == 0

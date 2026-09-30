@@ -13,24 +13,15 @@ from pyiceberg.expressions import EqualTo
 
 from core.contracts.revision import PointInTimeSpec
 from core.contracts.storage import StorageAdapter
-from core.domain.base import canonical_json
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_EXCHANGE_INFO,
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORT_MANIFESTS,
-    DATA_QUALITY_REPORTS,
-    QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.dataset.builder import DatasetQualityError
 from infrastructure.pit.view import PinnedCatalogView
-from infrastructure.quality.listing_report import (
-    LISTING_QUALITY_RULE_HASH,
-    LISTING_QUALITY_RULE_ID,
-    LISTING_QUALITY_RULE_VERSION,
-    listing_quality_report_id,
-)
 from infrastructure.quality.listing_report_v2 import (
     _IDENTITY_HASHES as _LISTING_V2_IDENTITY_HASHES,
 )
@@ -51,15 +42,6 @@ from infrastructure.quality.report_streams import (
     iter_quality_report_stream,
 )
 from infrastructure.quality.report_v3 import _INPUT_TABLES as _CANONICAL_V3_INPUTS
-from infrastructure.quality.reporter import (
-    _INPUT_TABLES as _LEGACY_CANONICAL_INPUTS,
-)
-from infrastructure.quality.reporter import (
-    QUALITY_RULE_HASH,
-    QUALITY_RULE_ID,
-    QUALITY_RULE_VERSION,
-    quality_report_id,
-)
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.settings import local_file_uri_to_path
 from infrastructure.storage.local import LocalFileStorageAdapter
@@ -95,7 +77,6 @@ class BoundedQualitySourceParams:
     run_capacity: int
     merge_fanout: int
     max_run_object_bytes: int
-    max_legacy_report_record_bytes: int
     identity_registry: QualityIdentityRegistry
 
 
@@ -265,7 +246,6 @@ class BoundedQualityEvidence:
             ("run_capacity", params.run_capacity, 1),
             ("merge_fanout", params.merge_fanout, 2),
             ("max_run_object_bytes", params.max_run_object_bytes, 1),
-            ("max_legacy_report_record_bytes", params.max_legacy_report_record_bytes, 1),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise DatasetQualityError(f"{name} must be an integer >= {minimum}")
@@ -285,7 +265,6 @@ class BoundedQualityEvidence:
         self._max_run_object_bytes = params.max_run_object_bytes
         self._active_report: str | None = None
         self._active_manifest: Mapping[str, Any] | None = None
-        self._active_legacy: Mapping[str, Any] | None = None
         self._claims: RunSetBuilder | None = None
 
     @property
@@ -298,7 +277,6 @@ class BoundedQualityEvidence:
             _LISTINGS: self._pit.snapshot_bindings[_LISTINGS],
             _RAW: self._pit.snapshot_bindings[_RAW],
         }
-        legacy_id = listing_quality_report_id(bindings)
         manifest_id = derive_quality_report_id(
             quality_rule_id=LISTING_HISTORY_V2_RULE_ID,
             quality_rule_version=LISTING_HISTORY_V2_RULE_VERSION,
@@ -315,43 +293,13 @@ class BoundedQualityEvidence:
             ],
             max_identity_bytes=self._params.identity_registry.max_identity_bytes,
         )
-        legacy = self._read_one(
-            DATA_QUALITY_REPORTS.table,
-            legacy_id,
-            (
-                "report_id",
-                "quality_rule_id",
-                "quality_rule_version",
-                "quality_rule_hash",
-                "subject_table",
-                "subject_snapshot_id",
-                "subject_symbol",
-                "subject_start",
-                "subject_end",
-                "knowledge_time",
-                "events",
-                "evidence_gaps",
-            ),
-        )
         manifest = self._read_one(
             DATA_QUALITY_REPORT_MANIFESTS.table, manifest_id, self._manifest_columns()
         )
         return self._select_report(
-            legacy_id,
             manifest_id,
-            legacy,
             manifest,
-            legacy_identity=(
-                LISTING_QUALITY_RULE_ID,
-                LISTING_QUALITY_RULE_VERSION,
-                LISTING_QUALITY_RULE_HASH,
-                _LISTINGS,
-                bindings[_LISTINGS],
-                None,
-                None,
-                None,
-            ),
-            manifest_identity=(
+            identity=(
                 LISTING_HISTORY_V2_RULE_ID,
                 LISTING_HISTORY_V2_RULE_VERSION,
                 LISTING_HISTORY_V2_RULE_HASH,
@@ -368,11 +316,6 @@ class BoundedQualityEvidence:
         if not isinstance(day, date) or isinstance(day, datetime):
             raise DatasetQualityError("Quality partition day must be a date")
         canonical = rules.CANONICAL_TABLES[self._data_type].table
-        legacy_bindings = {
-            table: sid
-            for table in _LEGACY_CANONICAL_INPUTS[self._data_type]
-            if (sid := self._pit.snapshot_bindings.get(table)) is not None
-        }
         manifest_bindings = {
             table: sid
             for table in _CANONICAL_V3_INPUTS[self._data_type]
@@ -380,7 +323,6 @@ class BoundedQualityEvidence:
         }
         start = datetime.combine(day, time(), tzinfo=UTC)
         end = start + timedelta(days=1)
-        legacy_id = quality_report_id(canonical, venue_symbol, day, legacy_bindings)
         manifest_id = derive_quality_report_id(
             quality_rule_id=CANONICAL_PARTITION_V3_RULE_ID,
             quality_rule_version=CANONICAL_PARTITION_V3_RULE_VERSION,
@@ -398,26 +340,13 @@ class BoundedQualityEvidence:
             ],
             max_identity_bytes=self._params.identity_registry.max_identity_bytes,
         )
-        legacy = self._read_one(DATA_QUALITY_REPORTS.table, legacy_id, self._legacy_columns())
         manifest = self._read_one(
             DATA_QUALITY_REPORT_MANIFESTS.table, manifest_id, self._manifest_columns()
         )
         return self._select_report(
-            legacy_id,
             manifest_id,
-            legacy,
             manifest,
-            legacy_identity=(
-                QUALITY_RULE_ID,
-                QUALITY_RULE_VERSION,
-                QUALITY_RULE_HASH,
-                canonical,
-                self._pit.snapshot_bindings.get(canonical),
-                venue_symbol,
-                start,
-                end,
-            ),
-            manifest_identity=(
+            identity=(
                 CANONICAL_PARTITION_V3_RULE_ID,
                 CANONICAL_PARTITION_V3_RULE_VERSION,
                 CANONICAL_PARTITION_V3_RULE_HASH,
@@ -428,23 +357,6 @@ class BoundedQualityEvidence:
                 end,
                 manifest_bindings,
             ),
-        )
-
-    @staticmethod
-    def _legacy_columns() -> tuple[str, ...]:
-        return (
-            "report_id",
-            "quality_rule_id",
-            "quality_rule_version",
-            "quality_rule_hash",
-            "subject_table",
-            "subject_snapshot_id",
-            "subject_symbol",
-            "subject_start",
-            "subject_end",
-            "knowledge_time",
-            "events",
-            "evidence_gaps",
         )
 
     @staticmethod
@@ -481,34 +393,14 @@ class BoundedQualityEvidence:
 
     def _select_report(
         self,
-        legacy_id: str,
         manifest_id: str,
-        legacy: Mapping[str, Any] | None,
         manifest: Mapping[str, Any] | None,
         *,
-        legacy_identity: tuple[Any, ...],
-        manifest_identity: tuple[Any, ...],
+        identity: tuple[Any, ...],
     ) -> str:
-        # Prefer the rule version registered for the bounded 2.5+ path. A prior committed
-        # legacy row can coexist for the same subject and is not a duplicate of the v3 report.
-        if manifest is None and legacy is None:
-            raise DatasetQualityError("no committed Quality report matches the Dataset subject")
         if manifest is None:
-            assert legacy is not None
-            ident = legacy_identity
-            self._validate_row(legacy, legacy_id, ident[:8])
-            try:
-                size = len(canonical_json(dict(legacy)).encode("utf-8"))
-            except (TypeError, ValueError, UnicodeError) as exc:
-                raise CatalogIntegrityError("legacy Quality row is not canonical JSON") from exc
-            if size > self._params.max_legacy_report_record_bytes:
-                raise DatasetQualityError(
-                    "legacy Quality report row exceeds its explicit byte limit"
-                )
-            self._activate(legacy_id, None, legacy)
-            return legacy_id
-        assert manifest is not None
-        ident = manifest_identity
+            raise DatasetQualityError("no bounded v3 Quality manifest matches the Dataset subject")
+        ident = identity
         self._validate_row(manifest, manifest_id, ident[:8])
         expected = ident[8]
         _check_manifest(
@@ -523,7 +415,7 @@ class BoundedQualityEvidence:
             pit=self._pit,
         )
         self._validate_manifest_streams(manifest, manifest_id)
-        self._activate(manifest_id, manifest, None)
+        self._activate(manifest_id, manifest)
         return manifest_id
 
     @staticmethod
@@ -570,9 +462,7 @@ class BoundedQualityEvidence:
         raise DatasetQualityError("bounded Quality gaps require the external ordered-join path")
 
     def claim_gap(self, report_id: str, table: str, revision_id: str, gap: str) -> None:
-        if report_id != self._active_report or (
-            self._active_manifest is None and self._active_legacy is None
-        ):
+        if report_id != self._active_report or self._active_manifest is None:
             raise DatasetQualityError("gap claim does not name the active verified report")
         if not all(isinstance(value, str) and value for value in (table, revision_id, gap)):
             raise DatasetQualityError("Dataset Quality gap claim is malformed")
@@ -596,97 +486,26 @@ class BoundedQualityEvidence:
             self._claims = None
         self._active_report = None
         self._active_manifest = None
-        self._active_legacy = None
 
-    def _activate(
-        self,
-        report_id: str,
-        manifest: Mapping[str, Any] | None,
-        legacy: Mapping[str, Any] | None,
-    ) -> None:
+    def _activate(self, report_id: str, manifest: Mapping[str, Any]) -> None:
         if self._active_report is not None and self._active_report != report_id:
             self._finish_active()
-        self._active_report, self._active_manifest, self._active_legacy = (
-            report_id,
-            manifest,
-            legacy,
-        )
-
-    def _legacy_gaps(self, report_id: str, row: Mapping[str, Any]) -> RunRef | None:
-        builder = RunSetBuilder(
-            self._scratch,
-            key=lambda item: (item["table"], item["revision_id"]),
-            capacity=self._capacity,
-            merge_fanout=self._fanout,
-            limits=self._run_limits,
-        )
-        try:
-            for gap in row.get("evidence_gaps", ()):
-                if not isinstance(gap, Mapping):
-                    raise CatalogIntegrityError("legacy Quality row contains a malformed gap")
-                builder.add(
-                    {
-                        "quality_report_id": report_id,
-                        "table": gap.get("table"),
-                        "revision_id": gap.get("revision_id"),
-                        "gap": gap.get("gap"),
-                    }
-                )
-            # The old partition rule stores gaps in the separate ADR-0031 table.
-            if self._pit.snapshot_bindings.get(QUALITY_EVIDENCE_GAPS.table) is not None:
-                batches = self._view.scan_column_batches(
-                    QUALITY_EVIDENCE_GAPS.table,
-                    columns=("quality_report_id", "table", "revision_id", "gap"),
-                    row_filter=EqualTo("quality_report_id", report_id),  # type: ignore[call-arg, arg-type]
-                )
-                try:
-                    for batch in batches:
-                        for gap in batch.to_pylist():
-                            builder.add(dict(gap))
-                finally:
-                    close = getattr(batches, "close", None)
-                    if callable(close):
-                        close()
-            return builder.finish()
-        finally:
-            builder.close()
+        self._active_report, self._active_manifest = report_id, manifest
 
     def _finish_active(self) -> None:
-        report_id, manifest, legacy = (
-            self._active_report,
-            self._active_manifest,
-            self._active_legacy,
-        )
-        if report_id is None or (manifest is None and legacy is None):
+        report_id, manifest = self._active_report, self._active_manifest
+        if report_id is None or manifest is None:
             return
         builder, self._claims = self._claims, None
         claims: RunRef | None = None
-        actual: RunRef | None = None
         try:
             if builder is not None:
                 claims = builder.finish()
-            if manifest is not None:
-                actual_ref = _manifest_ref("evidence_gaps", manifest["evidence_gaps"])
-                actual_cm = cast(
-                    Any,
-                    iter_quality_report_stream(
-                        self._storage, actual_ref, limits=self._stream_limits
-                    ),
-                )
-            else:
-                actual = self._legacy_gaps(report_id, cast(Mapping[str, Any], legacy))
-                actual_cm = cast(
-                    Any,
-                    (
-                        iter_run(
-                            self._scratch,
-                            actual,
-                            max_object_bytes=self._max_run_object_bytes,
-                        )
-                        if actual is not None
-                        else nullcontext(iter(()))
-                    ),
-                )
+            actual_ref = _manifest_ref("evidence_gaps", manifest["evidence_gaps"])
+            actual_cm = cast(
+                Any,
+                iter_quality_report_stream(self._storage, actual_ref, limits=self._stream_limits),
+            )
             with actual_cm as actual_rows:
                 claim_cm = cast(
                     Any,
@@ -703,7 +522,6 @@ class BoundedQualityEvidence:
                 builder.close()
         self._active_report = None
         self._active_manifest = None
-        self._active_legacy = None
 
     def _compare_gaps(
         self,
