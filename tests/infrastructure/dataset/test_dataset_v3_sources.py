@@ -32,6 +32,7 @@ from core.contracts.universe import (
     AvailabilityEvidenceGap,
     DatasetQualityReportRef,
     EvidenceStream,
+    PitConflictEvidenceResult,
     PitConflictHeadEvidence,
     SelectedRevisionLineage,
     UniverseExclusion,
@@ -47,7 +48,7 @@ from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
     DatasetEvidenceSources,
-    PinnedQualityEvidence,
+    DatasetSpecError,
     dataset_evidence_rule,
 )
 from infrastructure.dataset.chunks import IcebergChunkWriter
@@ -73,7 +74,7 @@ from infrastructure.pit.selector import (
     PitSelector,
 )
 from infrastructure.storage import LocalFileStorageAdapter
-from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
+from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseBuilder
 from infrastructure.universe.run_params import UniverseRunParams as SharedUniverseRunParams
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.dataset import dataset_support as ds
@@ -159,6 +160,7 @@ def _sources_factory(w: World) -> Any:
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
+            quality=ds.FakeQuality(accept_any_gap=True),
         )
 
     return factory
@@ -201,6 +203,35 @@ def _point_world(w: World) -> PointInTimeSpec:
     w.trades()
     w.report()
     return w.spec()
+
+
+def test_v3_source_factory_rejects_legacy_quality_before_opening_universe(
+    evidence_store: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class LegacyQuality:
+        def listing_report(self) -> str:
+            return ds.V3_LISTING_REPORT
+
+        def partition_report(self, _symbol: str, _day: Any) -> str:
+            return "legacy-report"
+
+        def recorded_gap(self, _report_id: str, _table: str, _revision: str) -> str | None:
+            return None
+
+    def forbidden_cursor(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("Universe traversal must not start before bounded Quality validation")
+
+    monkeypatch.setattr(UniverseBuilder, "cursor", forbidden_cursor)
+    with pytest.raises(DatasetSpecError, match="bounded ADR-0093"):
+        dataset_evidence_sources(
+            ds.fake_heads(),
+            evidence_store,
+            ds.v3_request(),
+            market_data_base_url=ds.ORIGIN,
+            pit_params=PIT_PARAMS,
+            universe_params=UNIVERSE_PARAMS,
+            quality=LegacyQuality(),  # type: ignore[arg-type]
+        )
 
 
 def _interval_world(w: World) -> PointInTimeSpec:
@@ -248,9 +279,14 @@ def test_v3_build_over_the_real_upstreams_selects_what_v2_selects(w: World, worl
     def gap_order(gap: AvailabilityEvidenceGap) -> tuple[str, str]:
         return gap.table, gap.revision_id
 
-    assert sorted(gaps, key=gap_order) == sorted(v2.evidence_gaps, key=gap_order)
+    assert sorted((gap.table, gap.revision_id, gap.gap) for gap in gaps) == sorted(
+        (gap.table, gap.revision_id, gap.gap) for gap in v2.evidence_gaps
+    )
     reports = cast(list[DatasetQualityReportRef], _stream(b, manifest, REPORTS))
-    assert sorted(item.report_id for item in reports) == sorted(v2.quality_report_ids)
+    assert len(reports) == len(v2.quality_report_ids)
+    assert reports[0].subject.value == "listing"
+    assert [item.sort_key() for item in reports] == sorted(item.sort_key() for item in reports)
+    assert {gap.quality_report_id for gap in gaps} <= {item.report_id for item in reports}
 
 
 def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> None:
@@ -347,9 +383,7 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
         pit=PitSelectorKeySource(
             _KeysReversed(w.h.adapter, w.h.storage), storage=w.h.storage, params=PIT_PARAMS
         ),
-        quality=PinnedQualityEvidence(
-            w.h.adapter, w.h.storage, spec, "agg_trades", market_data_base_url=ds.ORIGIN
-        ),
+        quality=ds.FakeQuality(accept_any_gap=True),
     )
     chunks = ds.FakeChunkWriter()
     with pytest.raises(CatalogIntegrityError, match="out of order"):
@@ -851,7 +885,7 @@ def test_first_interval_conflict_does_not_pull_the_next_conflict_instant(
     assert pulled == [H0]
 
     # A Dataset conflict is terminal. Closing the group stream must not advance it to H1.
-    groups.close()
+    cast(Any, groups).close()
     assert pulled == [H0]
 
 
@@ -936,7 +970,7 @@ def test_dataset_conflict_seals_only_first_interval_evaluation_and_closes_select
             manifests=ds.FakeManifests(),
         )
 
-    result = caught.value.result
+    result = cast(PitConflictEvidenceResult | None, caught.value.result)
     assert result is not None and result.simulation_time == start
     assert emitted == [start]
     assert selector.active == 0

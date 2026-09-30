@@ -14,9 +14,9 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, In
+from pyiceberg.expressions import AlwaysFalse, And, EqualTo, GreaterThanOrEqual, In
 
-from core.contracts.catalog import CommitRequest
+from core.contracts.catalog import CommitRequest, SnapshotNotFound
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
 from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
 from infrastructure.canonical import normalizer as nz
@@ -27,7 +27,9 @@ from infrastructure.canonical.normalizer import (
     CanonicalUnitIncomplete,
     unit_batch_id,
 )
+from infrastructure.catalog import iceberg_adapter as iceberg_adapter_module
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveIngested, RawRevisionStore
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
@@ -134,6 +136,196 @@ def test_iter_revision_ids_early_close_releases_disk_backed_position_index(
     assert created and any(not index._closed for index in created)
     ids.close()
     assert created and all(index._closed for index in created)
+
+
+def test_normalizer_pin_uses_one_stable_bounded_pointer_and_streams_exact_history(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    normalizer = c.normalizer(h, clock=StepClock(start=K_NORM))
+    normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    expected_head = h.head(c.TRADES.table)
+    assert expected_head is not None
+    expected_history = list(h.adapter.history(c.TRADES.table, expected_head))
+    expected_rows = h.adapter.scan_columns(
+        c.ARCHIVE_AGGS.table, columns=("archive_line_number", "symbol")
+    ).to_pylist()
+
+    def reject_eager_load(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the bounded normalizer pin loaded eager table metadata")
+
+    pinned_pointers: list[tuple[str, str | None]] = []
+    pin_metadata = h.adapter.pin_bounded_metadata
+
+    def capture_pin(table: str, *, storage: Any, limits: Any) -> Any:
+        handle = pin_metadata(table, storage=storage, limits=limits)
+        pinned_pointers.append((handle.metadata_location, handle.selected_snapshot_id))
+        return handle
+
+    monkeypatch.setattr(h.adapter, "pin_bounded_metadata", capture_pin)
+    monkeypatch.setattr(h.adapter._catalog, "load_table", reject_eager_load)
+    pin = normalizer._pin(channel, archive)
+
+    assert pin.canonical_head == expected_head
+    assert list(pin.catalog.history(c.TRADES.table, expected_head)) == expected_history
+    handles = pin.catalog._bounded_metadata
+    assert len(pinned_pointers) == 6
+    assert pinned_pointers[:3] == pinned_pointers[3:]
+    assert set(handles) == {channel.element.table, channel.source.table, channel.canonical.table}
+    assert all(handle.metadata_location for handle in handles.values())
+    assert all(handle.snapshot_count <= handle._limits.max_snapshots for handle in handles.values())
+    assert all(not handle.metadata.snapshots for handle in handles.values())
+
+    batches = pin.catalog.scan_column_batches(
+        channel.element.table, columns=("archive_line_number", "symbol")
+    )
+    try:
+        assert [row for batch in batches for row in batch.to_pylist()] == expected_rows
+    finally:
+        batches.close()
+
+    early = pin.catalog.scan_column_batches(
+        channel.element.table, columns=("archive_line_number", "symbol")
+    )
+    next(early)
+    stream = early
+    assert not stream._closed
+    stream.close()
+    assert stream._closed
+
+
+def test_normalizer_bounded_pin_rejects_a_missing_exact_snapshot(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    bindings = {
+        channel.element.table: "999999999999999999",
+        channel.source.table: h.head(channel.source.table),
+        channel.canonical.table: h.head(channel.canonical.table),
+    }
+    view = PinnedCatalogView(h.adapter, bindings)
+    normalizer = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=view)
+
+    with pytest.raises(SnapshotNotFound):
+        normalizer._pin(channel, archive)
+
+
+def test_bounded_pinned_view_can_be_nested_without_eager_reads(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    writer = c.normalizer(h, clock=StepClock(start=K_NORM))
+    writer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    tables = (channel.element.table, channel.source.table, channel.canonical.table)
+    bindings = {table: h.head(table) for table in tables}
+    inner = PinnedCatalogView(h.adapter, bindings)
+    reader = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=inner)
+    expected = list(h.adapter.history(c.TRADES.table, h.head(c.TRADES.table)))
+
+    pin = reader._pin(channel, archive)
+    assert pin.catalog.load_table(channel.element.table) is not None
+    assert list(pin.catalog.history(c.TRADES.table, pin.canonical_head)) == expected
+    batches = pin.catalog.scan_column_batches(
+        channel.element.table, columns=("archive_line_number", "symbol")
+    )
+    try:
+        assert sum(batch.num_rows for batch in batches) == 3
+    finally:
+        batches.close()
+
+
+def test_bounded_scan_columns_keeps_pointer_limit_and_empty_schema_after_metadata_moves(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    normalizer = c.normalizer(h, clock=StepClock(start=K_NORM))
+    normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    pin = normalizer._pin(channel, archive)
+    columns = ("arrival_seq", "revision_id")
+
+    before_batches = pin.catalog.scan_column_batches(c.TRADES.table, columns=columns)
+    try:
+        expected = [row for batch in before_batches for row in batch.to_pylist()]
+    finally:
+        before_batches.close()
+    assert expected
+
+    empty_inner = PinnedCatalogView(h.adapter, {c.TRADES.table: None})
+    empty_handle = empty_inner.pin_bounded_metadata(
+        c.TRADES.table, storage=h.storage, limits=normalizer._metadata_limits
+    )
+    empty_view = PinnedCatalogView(
+        h.adapter, {c.TRADES.table: None}, bounded_metadata={c.TRADES.table: empty_handle}
+    )
+    empty_expected = h.adapter.scan_columns(
+        c.TRADES.table, columns=columns, row_filter=AlwaysFalse()
+    )
+    empty_bounded = empty_view.scan_columns(c.TRADES.table, columns=columns)
+    assert empty_bounded.num_rows == 0
+    assert empty_bounded.schema == empty_expected.schema
+
+    second_items = ss.agg_items(1, first_id=200, first_ms=ss.T0 + 60_000)
+    second_archive = c.ingest_archive(
+        h,
+        "agg_trades",
+        ss.archive_agg_lines(second_items),
+        knowledge=K_ARCHIVE + timedelta(days=1),
+        request_id="archive-after-pin",
+    )
+    normalizer.normalize_unit(c.ARCHIVE_AGGS.table, second_archive)
+
+    def reject_current_pointer(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("bounded scan_columns reloaded the moved catalog pointer")
+
+    monkeypatch.setattr(h.adapter, "scan_columns", reject_current_pointer)
+    bounded_all = pin.catalog.scan_columns(c.TRADES.table, columns=columns)
+    assert bounded_all.to_pylist() == expected
+    bounded_limited = pin.catalog.scan_columns(c.TRADES.table, columns=columns, limit=2)
+    assert bounded_limited.to_pylist() == expected[:2]
+
+    no_rows = pin.catalog.scan_columns(
+        c.TRADES.table, columns=columns, row_filter=EqualTo("arrival_seq", -1)
+    )
+    assert no_rows.num_rows == 0
+    empty_stream = pin.catalog.scan_column_batches(
+        c.TRADES.table, columns=columns, row_filter=EqualTo("arrival_seq", -1)
+    )
+    try:
+        assert no_rows.schema == empty_stream.schema
+        assert list(empty_stream) == []
+    finally:
+        empty_stream.close()
+
+
+def test_bounded_scan_closes_reader_and_source_after_read_error() -> None:
+    closed: list[str] = []
+
+    class BrokenReader:
+        def __init__(self, source: Any) -> None:
+            self.source = source
+
+        def __iter__(self) -> BrokenReader:
+            return self
+
+        def __next__(self) -> Any:
+            next(self.source)
+            raise RuntimeError("scan failed")
+
+        def close(self) -> None:
+            closed.append("reader")
+
+    def source() -> Any:
+        try:
+            yield
+        finally:
+            closed.append("source")
+
+    iterator = source()
+    stream = iceberg_adapter_module._SnapshotBatchStream(BrokenReader(iterator), iterator)
+    with pytest.raises(RuntimeError, match="scan failed"):
+        next(stream)
+    assert stream._closed
+    assert closed == ["reader", "source"]
 
 
 def test_the_trade_payload_is_exactly_the_documented_document() -> None:

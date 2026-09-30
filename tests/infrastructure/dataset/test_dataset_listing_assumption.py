@@ -236,6 +236,7 @@ def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, 
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
+            quality=ds.FakeQuality(accept_any_gap=True),
         )
 
     chunks = IcebergChunkWriter(w.h.adapter, DATASET_SELECTION_CHUNKS)

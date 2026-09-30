@@ -20,6 +20,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
 
+import pyarrow as pa  # type: ignore[import-untyped]
+
+from core.contracts.catalog import CommitRequest
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import ObjectRef, StorageAdapter
 from core.contracts.universe import (
@@ -46,6 +49,7 @@ from infrastructure.canonical import rules
 from infrastructure.catalog.definitions import TableDefinitionRegistry
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
+    DATA_QUALITY_REPORT_MANIFESTS,
     DATASET_MANIFESTS,
     DATASET_SELECTIONS,
     PHASE1_TABLES,
@@ -64,6 +68,10 @@ from infrastructure.dataset.evidence import publish_evidence_object
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality.listing_report import ListingQualityReporter
+from infrastructure.quality.report_streams import (
+    QualityReportStreamLimits,
+    QualityReportStreamWriter,
+)
 from infrastructure.quality.reporter import QualityReporter
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
@@ -209,7 +217,59 @@ class World:
                 .report()
                 .report_id
             )
+        self._ensure_quality_manifest_binding_snapshot()
         return ids
+
+    def _ensure_quality_manifest_binding_snapshot(self) -> None:
+        """Give legacy-source Dataset v3 fixtures a pinned manifest-table snapshot.
+
+        The bounded Quality integration tests commit real reporter rows separately; this marker
+        only lets older source fixtures exercise Dataset's new mandatory PIT table binding.
+        """
+        table = DATA_QUALITY_REPORT_MANIFESTS.table
+        if self.h.head(table) is not None:
+            return
+        limits = QualityReportStreamLimits(leaf_max_records=1, leaf_max_bytes=4096, fanout=2)
+        streams = {}
+        for name in ("events", "event_revisions", "evidence_gaps"):
+            streams[name] = QualityReportStreamWriter(self.h.storage, name, limits=limits).finish()
+        subject_table = rules.CANONICAL_TABLES["agg_trades"].table
+        row: dict[str, Any] = {
+            "report_id": "test.dataset-quality-binding-marker",
+            "quality_rule_id": "test.dataset-quality-binding",
+            "quality_rule_version": "1.0.0",
+            "quality_rule_hash": "0" * 64,
+            "subject_table": subject_table,
+            "subject_snapshot_id": self.h.head(subject_table),
+            "subject_symbol": None,
+            "subject_start": None,
+            "subject_end": None,
+            "knowledge_time": K_Q,
+            "snapshot_bindings": [],
+            **{
+                name: {
+                    "format_id": ref.format,
+                    "record_count": ref.record_count,
+                    "leaf_count": ref.leaf_count,
+                    "depth": ref.depth,
+                    "root_key": ref.root_key,
+                    "root_sha256": ref.root_sha256,
+                    "root_size": ref.root_size,
+                }
+                for name, ref in streams.items()
+            },
+        }
+        batch = pa.Table.from_pylist([row], schema=DATA_QUALITY_REPORT_MANIFESTS.arrow_schema)
+        self.h.adapter.commit_batch(
+            CommitRequest(
+                table=table,
+                batch_id="test-quality-manifest-binding",
+                batch_fingerprint=DATA_QUALITY_REPORT_MANIFESTS.fingerprint_rule.fingerprint(batch),
+                row_count=1,
+                expected_parent_snapshot_id=None,
+            ),
+            batch,
+        )
 
     def bindings(self, *, skip: tuple[str, ...] = ()) -> dict[str, str]:
         """Current heads of every Phase 1 input table with a snapshot (not the manifests)."""
@@ -310,6 +370,7 @@ V3_TRADES: Final = "canonical.trades"
 V3_LISTINGS: Final = "canonical.instrument_listings"
 V3_CHUNK_TABLE: Final = "research.dataset_selection_chunks"
 V3_LISTING_REPORT: Final = "report-listing"
+V3_QUALITY_MANIFESTS: Final = "quality.data_quality_report_manifests"
 V3_TRADABLE_FROM: Final = utc(2023, 1, 1)
 V3_EVENT: Final = utc(2023, 11, 14, 22, 14)
 V3_SLICE_21, V3_SLICE_22 = utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)
@@ -319,6 +380,7 @@ V3_BINDINGS: Final[Mapping[str, str]] = {
     "canonical.bars_1m": "1",
     V3_LISTINGS: "1",
     "quality.data_quality_reports": "1",
+    V3_QUALITY_MANIFESTS: "1",
     "quality.availability_evidence_gaps": "1",
     "raw.binance_spot_exchange_info": "1",
     "raw.binance_spot_agg_trades": "1",
@@ -663,10 +725,11 @@ class FakePit:
 
 @dataclass
 class FakeQuality:
-    """``QualityEvidenceSource``: every partition has a report; gaps as given."""
+    """Test double for the bounded Quality source protocol; gaps as given."""
 
     gaps: Mapping[tuple[str, str, str], str] = dataclass_field(default_factory=dict)
     asked: list[tuple[str, date]] = dataclass_field(default_factory=list)
+    accept_any_gap: bool = False
 
     def listing_report(self) -> str:
         return V3_LISTING_REPORT
@@ -675,8 +738,17 @@ class FakeQuality:
         self.asked.append((venue_symbol, day))
         return partition_report(venue_symbol, day)
 
-    def recorded_gap(self, report_id: str, table: str, revision_id: str) -> str | None:
-        return self.gaps.get((report_id, table, revision_id))
+    def claim_gap(self, report_id: str, table: str, revision_id: str, gap: str) -> None:
+        if self.accept_any_gap:
+            return
+        if self.gaps.get((report_id, table, revision_id)) != gap:
+            raise ValueError(f"unconfigured Quality gap claim: {report_id}/{table}/{revision_id}")
+
+    def finish_reports(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
 
 
 def _jsonable(row: Mapping[str, Any]) -> dict[str, Any]:

@@ -183,9 +183,15 @@ from core.contracts.catalog import CommitRequest, CommitResult
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalNormalizer, unit_batch_id
 from infrastructure.catalog import PHASE1_REGISTRY, PyIcebergCatalogAdapter, ensure_phase1_tables
+from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
+    BINANCE_SPOT_EXCHANGE_INFO,
+    BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+    BINANCE_SPOT_REST_AGG_TRADES,
+    BINANCE_SPOT_REST_RESPONSES,
+    CANONICAL_INSTRUMENT_LISTINGS,
     CANONICAL_TRADES,
     DATASET_SELECTION_CHUNKS,
 )
@@ -196,23 +202,30 @@ from infrastructure.dataset.builder import (
     dataset_evidence_rule,
 )
 from infrastructure.dataset.chunks import IcebergChunkWriter
+from infrastructure.dataset.quality import BoundedQualityEvidence
 from infrastructure.dataset.sources import UniverseRunParams, dataset_evidence_sources
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
-from infrastructure.pit.selector import PitRunParams
+from infrastructure.pit.selector import PIT_BINDING, REQUIRED_BINDINGS, PitRunParams
 from infrastructure.pit.view import PinnedCatalogView
+from infrastructure.quality.listing_report_v2 import ListingHistoryQualityReporterV2
+from infrastructure.quality.report_projection import CANONICAL_PARTITION_V3_RULE_HASH
+from infrastructure.quality.report_streams import QualityReportStreamLimits
+from infrastructure.quality.report_v3 import QualityReporterV3
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
+from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
 from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.streaming.content_key_tree import KeyTreeParams
 from infrastructure.tools.capacity_probe import (
     _KNOWLEDGE_INGEST,
     _KNOWLEDGE_NORMALIZE,
     DATA_TYPE,
+    OTHER_SYMBOL,
     REST_BASE,
     SYMBOL,
     _agg_trade_lines,
     _dataset_pit_spec,
-    _prepare_dataset_quality,
     _prepare_listings,
     _publish_archive,
 )
@@ -626,7 +639,7 @@ def _prepare_dataset_v3_fixture(workdir: Path) -> dict[str, Any]:
     """Prepare the full-day Dataset's listing and quality inputs outside the measured child."""
     with _opened(workdir) as (adapter, storage):
         _prepare_listings(adapter, storage)
-        _prepare_dataset_quality(adapter, storage)
+        _prepare_bounded_dataset_quality(adapter, storage, workdir / "quality-seed-scratch")
         pit = _dataset_pit_spec(adapter)
         return {
             "window_start": DATASET_V3_DAY_START.isoformat(),
@@ -636,6 +649,246 @@ def _prepare_dataset_v3_fixture(workdir: Path) -> dict[str, Any]:
             "pit_spec_hash": pit.content_hash(),
             "listing_and_quality_inputs_prepared": True,
         }
+
+
+def _quality_identity_hashes() -> dict[str, str]:
+    hashes = {"quality": CANONICAL_PARTITION_V3_RULE_HASH, "pit": PIT_BINDING.policy_hash}
+    bindings = (
+        *REQUIRED_BINDINGS["availability_bindings"],
+        *REQUIRED_BINDINGS["precedence_bindings"],
+        *REQUIRED_BINDINGS["parser_bindings"],
+        DELIVERY_CHANNEL_BINDING,
+        rules.PRECEDENCE_MAP_BINDING,
+    )
+    for binding in bindings:
+        hashes[f"{binding.policy_id}@{binding.version}"] = binding.policy_hash
+    return hashes
+
+
+def _canonical_reporter(
+    view: PinnedCatalogView,
+    evidence: LocalFileStorageAdapter,
+    scratch: LocalFileStorageAdapter,
+) -> QualityReporterV3:
+    run_limits = RunLimits(leaf_max_records=256, leaf_max_bytes=4 * 1024 * 1024, fanout=8)
+    return QualityReporterV3(
+        view,
+        evidence,
+        scratch_storage=scratch,
+        clock=lambda: DATASET_V3_DAY_END + timedelta(days=2),
+        identity_rule_hashes=_quality_identity_hashes(),
+        max_identity_rule_hashes=16,
+        allowed_snapshot_tables=(
+            CANONICAL_TRADES.table,
+            BINANCE_SPOT_AGG_TRADES.table,
+            BINANCE_SPOT_REST_AGG_TRADES.table,
+            BINANCE_SPOT_ARCHIVES.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
+        ),
+        required_snapshot_tables=(
+            CANONICAL_TRADES.table,
+            BINANCE_SPOT_AGG_TRADES.table,
+            BINANCE_SPOT_ARCHIVES.table,
+        ),
+        pit_params=PitRunParams(
+            row_batch_rows=256,
+            edge_batch_rows=256,
+            merge_fanout=8,
+            key_history_buffer=256,
+            limits=run_limits,
+        ),
+        run_capacity=256,
+        merge_fanout=8,
+        run_limits=run_limits,
+        stream_limits=QualityReportStreamLimits(
+            leaf_max_records=128, leaf_max_bytes=1 * 1024 * 1024, fanout=8
+        ),
+        max_event_record_bytes=16 * 1024,
+        max_revision_record_bytes=4096,
+        max_gap_record_bytes=16 * 1024,
+        max_input_record_bytes=64 * 1024,
+        max_manifest_record_bytes=128 * 1024,
+        max_identity_bytes=64 * 1024,
+        retries=2,
+    )
+
+
+def _listing_reporter(
+    view: PinnedCatalogView,
+    evidence: LocalFileStorageAdapter,
+    scratch: LocalFileStorageAdapter,
+) -> ListingHistoryQualityReporterV2:
+    run_limits = RunLimits(leaf_max_records=256, leaf_max_bytes=4 * 1024 * 1024, fanout=8)
+    return ListingHistoryQualityReporterV2(
+        view,
+        evidence,
+        scratch_storage=scratch,
+        market_data_base_url=REST_BASE,
+        clock=lambda: DATASET_V3_DAY_END + timedelta(days=3),
+        metadata_limits=BoundedMetadataLimits(
+            max_metadata_bytes=64 * 1024 * 1024,
+            max_item_bytes=256 * 1024,
+            max_retained_json_bytes=4 * 1024 * 1024,
+            read_chunk_bytes=64 * 1024,
+            max_small_array_items=1024,
+            max_map_items=1024,
+            max_snapshots=100_000,
+            run_capacity=256,
+            run_limits=run_limits,
+            run_merge_fanout=8,
+            key_tree_params=KeyTreeParams(
+                page_max_bytes=4 * 1024 * 1024, leaf_max_records=256, fanout=8
+            ),
+        ),
+        capacity=256,
+        merge_fanout=8,
+        run_limits=run_limits,
+        stream_limits=QualityReportStreamLimits(
+            leaf_max_records=128, leaf_max_bytes=1 * 1024 * 1024, fanout=8
+        ),
+        max_record_bytes=64 * 1024,
+        max_run_object_bytes=4 * 1024 * 1024,
+        prefix_leaf_max_records=8,
+        prefix_fanout=2,
+        prefix_max_node_bytes=256 * 1024,
+        prefix_max_record_bytes=16 * 1024,
+        row_chunk_capacity=256,
+        max_hash_chunk_bytes=1 * 1024 * 1024,
+        max_event_record_bytes=16 * 1024,
+        max_revision_record_bytes=4096,
+        max_gap_record_bytes=16 * 1024,
+        max_manifest_record_bytes=128 * 1024,
+        max_identity_bytes=64 * 1024,
+        retries=2,
+    )
+
+
+def _scratch(workdir: Path, name: str) -> LocalFileStorageAdapter:
+    warehouse = workdir / f"{name}-warehouse"
+    staging = workdir / f"{name}-stage"
+    staging.mkdir(parents=True, exist_ok=True)
+    return LocalFileStorageAdapter(warehouse.as_uri(), staging.as_uri())
+
+
+def _prepare_bounded_dataset_quality(
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    scratch_root: Path,
+) -> None:
+    """Seed the exact ADR-0093 report versions that Dataset v3 consumes."""
+    run_limits = RunLimits(leaf_max_records=256, leaf_max_bytes=4 * 1024 * 1024, fanout=8)
+    stream_limits = QualityReportStreamLimits(
+        leaf_max_records=128, leaf_max_bytes=1 * 1024 * 1024, fanout=8
+    )
+    pit_params = PitRunParams(
+        row_batch_rows=256,
+        edge_batch_rows=256,
+        merge_fanout=8,
+        key_history_buffer=256,
+        limits=RunLimits(leaf_max_records=256, leaf_max_bytes=4 * 1024 * 1024, fanout=8),
+    )
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    canonical_scratch = _scratch(scratch_root, "canonical")
+    listing_scratch = _scratch(scratch_root, "listing")
+    metadata_limits = BoundedMetadataLimits(
+        max_metadata_bytes=64 * 1024 * 1024,
+        max_item_bytes=256 * 1024,
+        max_retained_json_bytes=4 * 1024 * 1024,
+        read_chunk_bytes=64 * 1024,
+        max_small_array_items=1024,
+        max_map_items=1024,
+        max_snapshots=100_000,
+        run_capacity=256,
+        run_limits=run_limits,
+        run_merge_fanout=8,
+        key_tree_params=KeyTreeParams(
+            page_max_bytes=4 * 1024 * 1024, leaf_max_records=256, fanout=8
+        ),
+    )
+    try:
+        for symbol in (SYMBOL, OTHER_SYMBOL):
+            reporter = QualityReporterV3(
+                adapter,
+                storage,
+                scratch_storage=canonical_scratch,
+                clock=lambda: DATASET_V3_DAY_END + timedelta(days=2),
+                identity_rule_hashes=_quality_identity_hashes(),
+                max_identity_rule_hashes=16,
+                allowed_snapshot_tables=(
+                    CANONICAL_TRADES.table,
+                    BINANCE_SPOT_AGG_TRADES.table,
+                    BINANCE_SPOT_REST_AGG_TRADES.table,
+                    BINANCE_SPOT_ARCHIVES.table,
+                    BINANCE_SPOT_REST_RESPONSES.table,
+                    BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
+                ),
+                required_snapshot_tables=(
+                    CANONICAL_TRADES.table,
+                    BINANCE_SPOT_AGG_TRADES.table,
+                    BINANCE_SPOT_ARCHIVES.table,
+                ),
+                pit_params=pit_params,
+                run_capacity=256,
+                merge_fanout=8,
+                run_limits=run_limits,
+                stream_limits=stream_limits,
+                max_event_record_bytes=16 * 1024,
+                max_revision_record_bytes=4096,
+                max_gap_record_bytes=16 * 1024,
+                max_input_record_bytes=64 * 1024,
+                max_manifest_record_bytes=128 * 1024,
+                max_identity_bytes=64 * 1024,
+                retries=2,
+            )
+            reporter.report(DATA_TYPE, symbol, PROBE_DAY)
+
+        listing_reporter = ListingHistoryQualityReporterV2(
+            adapter,
+            storage,
+            scratch_storage=listing_scratch,
+            market_data_base_url=REST_BASE,
+            clock=lambda: DATASET_V3_DAY_END + timedelta(days=3),
+            metadata_limits=metadata_limits,
+            capacity=256,
+            merge_fanout=8,
+            run_limits=run_limits,
+            stream_limits=stream_limits,
+            max_record_bytes=64 * 1024,
+            max_run_object_bytes=4 * 1024 * 1024,
+            prefix_leaf_max_records=8,
+            prefix_fanout=2,
+            prefix_max_node_bytes=256 * 1024,
+            prefix_max_record_bytes=16 * 1024,
+            row_chunk_capacity=256,
+            max_hash_chunk_bytes=1 * 1024 * 1024,
+            max_event_record_bytes=16 * 1024,
+            max_revision_record_bytes=4096,
+            max_gap_record_bytes=16 * 1024,
+            max_manifest_record_bytes=128 * 1024,
+            max_identity_bytes=64 * 1024,
+            retries=2,
+        )
+        listing_reporter.report(
+            {
+                CANONICAL_INSTRUMENT_LISTINGS.table: _current_head(
+                    adapter, CANONICAL_INSTRUMENT_LISTINGS.table
+                ),
+                BINANCE_SPOT_EXCHANGE_INFO.table: _current_head(
+                    adapter, BINANCE_SPOT_EXCHANGE_INFO.table
+                ),
+            }
+        )
+    finally:
+        canonical_scratch.close()
+        listing_scratch.close()
+
+
+def _current_head(adapter: PyIcebergCatalogAdapter, table: str) -> str:
+    metadata = adapter.load_table(table)
+    if metadata is None or metadata.current_snapshot is None:
+        raise ProbeError(f"Dataset v3 quality fixture table {table} has no current snapshot")
+    return str(metadata.current_snapshot.snapshot_id)
 
 
 def _dataset_v3_source_params(microbatch: int) -> tuple[PitRunParams, UniverseRunParams]:
@@ -723,6 +976,7 @@ def _stage(
     rows: int,
     microbatch: int,
     dataset_v3_config: Mapping[str, int] | None = None,
+    dataset_scratch_root: Path | None = None,
 ) -> Callable[[], tuple[dict[str, Any], object]]:
     """A closure doing only the measured work; returns (facts, the API result to hold)."""
     batches = -(-rows // microbatch)
@@ -734,6 +988,8 @@ def _stage(
         pit_params, universe_params = _dataset_v3_source_params(microbatch)
 
         def build_dataset() -> tuple[dict[str, Any], object]:
+            if dataset_scratch_root is None:
+                raise ProbeError("dataset_v3_build requires isolated scratch storage")
             pit = _dataset_pit_spec(adapter)
             request = DatasetEvidenceRequest(
                 universe=FIRST_SLICE_UNIVERSE,
@@ -743,7 +999,42 @@ def _stage(
                 end=DATASET_V3_DAY_END,
             )
 
+            adapters: list[LocalFileStorageAdapter] = []
+            source_count = 0
+
+            def new_scratch(name: str) -> LocalFileStorageAdapter:
+                nonlocal source_count
+                scratch = _scratch(dataset_scratch_root / f"source-{source_count}", name)
+                adapters.append(scratch)
+                return scratch
+
             def sources_for(req: DatasetEvidenceRequest) -> Any:
+                nonlocal source_count
+                source_count += 1
+                stream_limits = QualityReportStreamLimits(
+                    leaf_max_records=128, leaf_max_bytes=1 * 1024 * 1024, fanout=8
+                )
+                run_limits = RunLimits(
+                    leaf_max_records=256, leaf_max_bytes=4 * 1024 * 1024, fanout=8
+                )
+                quality = BoundedQualityEvidence(
+                    adapter,
+                    storage,
+                    req.pit,
+                    req.data_type,
+                    canonical_reporter=lambda view: _canonical_reporter(
+                        view, storage, new_scratch("canonical-report")
+                    ),
+                    listing_reporter=lambda view: _listing_reporter(
+                        view, storage, new_scratch("listing-report")
+                    ),
+                    stream_limits=stream_limits,
+                    scratch_storage=new_scratch("quality-gap-join"),
+                    run_capacity=256,
+                    merge_fanout=8,
+                    run_limits=run_limits,
+                    max_run_object_bytes=4 * 1024 * 1024,
+                )
                 return dataset_evidence_sources(
                     adapter,
                     storage,
@@ -751,20 +1042,25 @@ def _stage(
                     market_data_base_url=REST_BASE,
                     pit_params=pit_params,
                     universe_params=universe_params,
+                    quality=quality,
                 )
 
-            sources = sources_for(request)
-            chunks = IcebergChunkWriter(adapter, DATASET_SELECTION_CHUNKS)
-            builder = DatasetEvidenceBuilder(adapter, storage, rule=rule)
-            verifier = StreamingEvidenceVerifier(
-                adapter, builder=builder, chunks=chunks, sources=sources_for
-            )
-            summary = builder.build(
-                request,
-                sources=sources,
-                chunks=chunks,
-                manifests=verifier.store(),
-            )
+            try:
+                sources = sources_for(request)
+                chunks = IcebergChunkWriter(adapter, DATASET_SELECTION_CHUNKS)
+                builder = DatasetEvidenceBuilder(adapter, storage, rule=rule)
+                verifier = StreamingEvidenceVerifier(
+                    adapter, builder=builder, chunks=chunks, sources=sources_for
+                )
+                summary = builder.build(
+                    request,
+                    sources=sources,
+                    chunks=chunks,
+                    manifests=verifier.store(),
+                )
+            finally:
+                for scratch in adapters:
+                    scratch.close()
             if summary.row_count != rows:
                 raise ProbeError(
                     f"full-day Dataset selected {summary.row_count} rows, expected {rows}"
@@ -980,6 +1276,7 @@ def _child_stage(
             rows,
             microbatch,
             dataset_v3_config,
+            workdir / "dataset-v3-stage-scratch",
         )
         gc.collect()
         _emit("ready", vmhwm_kb=_status_kb("VmHWM"), vmrss_kb=_status_kb("VmRSS"))

@@ -106,6 +106,7 @@ from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     CANONICAL_INSTRUMENT_LISTINGS,
+    DATA_QUALITY_REPORT_MANIFESTS,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
     QUALITY_EVIDENCE_GAPS,
@@ -251,6 +252,7 @@ _ATTEMPTS: Final = 8
 _EVIDENCE: Final = BINANCE_SPOT_PRECEDENCE_EVIDENCE.table
 _LISTINGS: Final = CANONICAL_INSTRUMENT_LISTINGS.table
 _QUALITY: Final = DATA_QUALITY_REPORTS.table
+_QUALITY_MANIFESTS: Final = DATA_QUALITY_REPORT_MANIFESTS.table
 _GAPS: Final = QUALITY_EVIDENCE_GAPS.table
 #: Tables bound whenever they had a snapshot when the build ran (not the listing tables: a
 #: missing listing history is the universe's refusal), with the decision that requires it.
@@ -1263,7 +1265,7 @@ class PitKeySource(Protocol):
 
 
 class QualityEvidenceSource(Protocol):
-    """Committed quality reports re-derived at the bound snapshots (``existing_only``)."""
+    """Bounded ADR-0093 reports re-derived at Dataset's pinned snapshots."""
 
     def listing_report(self) -> str:
         """The listing-history report id (``QualityReportMissing`` if not committed)."""
@@ -1273,8 +1275,16 @@ class QualityEvidenceSource(Protocol):
         """The (symbol, UTC day) report id of the dataset's data type."""
         ...
 
-    def recorded_gap(self, report_id: str, table: str, revision_id: str) -> str | None:
-        """The gap text ``report_id`` records for ``(table, revision_id)``, else ``None``."""
+    def claim_gap(self, report_id: str, table: str, revision_id: str, gap: str) -> None:
+        """Queue one Dataset gap claim for bounded external ordered-join verification."""
+        ...
+
+    def finish_reports(self) -> None:
+        """Drain and verify the active report's complete evidence-gap root."""
+        ...
+
+    def close(self) -> None:
+        """Release bounded claim buffers after success or failure."""
         ...
 
 
@@ -1590,7 +1600,7 @@ def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: s
                     "registered"
                 )
     bound = pit.snapshot_bindings
-    for table in (canonical.table, _QUALITY):
+    for table in (canonical.table, _QUALITY, _QUALITY_MANIFESTS):
         if table not in bound:
             raise DatasetSpecError(f"the PIT spec does not bind {table}")
     check_listing_bindings(pit)
@@ -1925,6 +1935,14 @@ class _EvidenceDerivation:
     ) -> None:
         if not isinstance(sources, DatasetEvidenceSources):
             raise DatasetSpecError("sources must be DatasetEvidenceSources")
+        if any(
+            not callable(getattr(sources.quality, name, None))
+            for name in ("claim_gap", "finish_reports", "close")
+        ):
+            raise DatasetSpecError(
+                "Dataset v3 requires the bounded ADR-0093 Quality source; legacy inline-report "
+                "sources are unsupported"
+            )
         self.request = request
         self.quality = sources.quality
         self._canonical = canonical
@@ -1941,6 +1959,14 @@ class _EvidenceDerivation:
         self._last_report: tuple[int, str, str] | None = None
 
     def run(self) -> DatasetDerivation:
+        try:
+            return self._run()
+        finally:
+            close = getattr(self.quality, "close", None)
+            if callable(close):
+                close()
+
+    def _run(self) -> DatasetDerivation:
         listing = self.quality.listing_report()
         self.report(
             DatasetQualityReportRef(report_id=listing, subject=DatasetQualitySubject.LISTING)
@@ -1952,6 +1978,9 @@ class _EvidenceDerivation:
             for venue_symbol in self.request.universe.symbols:
                 self._symbol(venue_symbol, members.take(venue_symbol))
             members.close()
+        finish_reports = getattr(self.quality, "finish_reports", None)
+        if callable(finish_reports):
+            finish_reports()
         return DatasetDerivation(
             selection_id=self._selection_id,
             row_count=self._rows,
@@ -2040,11 +2069,7 @@ class _EvidenceDerivation:
                 )
 
     def _gap(self, report_id: str, table: str, revision: str, gap: str) -> None:
-        if self.quality.recorded_gap(report_id, table, revision) != gap:
-            raise DatasetQualityError(
-                f"report {report_id} does not record the evidence gap of {table} revision "
-                f"{revision}"
-            )
+        self.quality.claim_gap(report_id, table, revision, gap)
         self._emit(
             EvidenceStream.EVIDENCE_GAPS,
             AvailabilityEvidenceGap(

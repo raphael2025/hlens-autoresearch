@@ -109,6 +109,7 @@ def v3(w: World, adapter: RevisionCatalog | None = None) -> V3:
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
+            quality=ds.FakeQuality(accept_any_gap=True),
         )
 
     evidence_builder = DatasetEvidenceBuilder(catalog, storage, rule=dataset_evidence_rule(**RULE))

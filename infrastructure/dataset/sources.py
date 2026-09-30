@@ -54,10 +54,10 @@ from infrastructure.dataset.builder import (
     DatasetEvidenceRequest,
     DatasetEvidenceSources,
     DatasetSpecError,
-    PinnedQualityEvidence,
     PitKeyEvaluation,
     PitKeyGroup,
     PitSelectedRevision,
+    QualityEvidenceSource,
     UniverseEvidenceSource,
 )
 from infrastructure.pit.runs import RunSetBuilder, iter_run
@@ -753,27 +753,33 @@ def dataset_evidence_sources(
     market_data_base_url: str,
     pit_params: PitRunParams,
     universe_params: UniverseRunParams,
+    quality: QualityEvidenceSource | None = None,
 ) -> DatasetEvidenceSources:
     """The real upstreams of ``request`` for ``DatasetEvidenceBuilder.select`` / ``build``.
 
     Universe: ``UniverseBuilder.cursor(request.universe, request.pit,
     run_params=universe_params)`` in ADR-0077 §2 order;
-    PIT: ``PitSelector.iter_bounded`` grouped by key; quality: ``PinnedQualityEvidence`` at the
-    PIT spec's bound snapshots. Every run size is the caller's (no defaults).
+    PIT: ``PitSelector.iter_bounded`` grouped by key; quality is an explicit caller-supplied
+    ``QualityEvidenceSource``. Dataset v3 must use ``BoundedQualityEvidence``; the factory never
+    creates or falls back to a legacy inline-list reporter. Every run size is the caller's.
     """
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
+    if quality is None:
+        raise DatasetSpecError("Dataset v3 requires an explicit bounded Quality evidence source")
+    if any(
+        not callable(getattr(quality, name, None))
+        for name in ("claim_gap", "finish_reports", "close")
+    ):
+        raise DatasetSpecError(
+            "Dataset v3 requires the bounded ADR-0093 Quality source; legacy inline-report "
+            "sources are unsupported"
+        )
     cursor = UniverseBuilder(adapter, storage, market_data_base_url=market_data_base_url).cursor(
         request.universe, request.pit, run_params=universe_params
     )
     return DatasetEvidenceSources(
         universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
         pit=PitSelectorKeySource(PitSelector(adapter, storage), storage=storage, params=pit_params),
-        quality=PinnedQualityEvidence(
-            adapter,
-            storage,
-            request.pit,
-            request.data_type,
-            market_data_base_url=market_data_base_url,
-        ),
+        quality=quality,
     )
