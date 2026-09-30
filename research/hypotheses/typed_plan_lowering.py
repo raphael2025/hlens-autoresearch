@@ -554,6 +554,16 @@ def _lower_temporal(
     sources = _resolve_inputs(node, direct, specs, expected_types=EventSpec)
     # `_resolve_inputs` already required each input to be exactly EventSpec.
     first, second = cast(list[EventSpec], sources)
+    # ADR-0100 修订 1 §3: the two inputs must be different EventSpecs. A sequence of an event
+    # with itself has no accepted meaning (every occurrence would pair with its own predecessor,
+    # and the upstream binding would name one ref twice), so it is refused, not lowered.
+    if first.ref.target_identity() == second.ref.target_identity():
+        _refuse(
+            node,
+            "temporal_same_input",
+            f"both temporal inputs are the same EventSpec ({first.ref}); the first and second "
+            "event must be different EventSpecs (ADR-0100 revision 1 §3)",
+        )
     if first.bar_spec is None or second.bar_spec is None:
         _operator_open(
             node,

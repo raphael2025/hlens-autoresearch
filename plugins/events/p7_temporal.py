@@ -10,7 +10,8 @@ interval ``(first.event_time, first.event_time + window_bars * bar_duration]``.
   positive ``timedelta``); a spec whose ``bar_spec`` has no entry is refused at construction. No
   duration is ever guessed from the representation's name.
 - **Upstream specs are explicit.** The caller supplies the two input ``EventSpec`` values
-  (``str(ref)`` -> spec). Their refs must be the spec's ``lineage`` / trigger refs, both must
+  (``str(ref)`` -> spec). Their refs must be the spec's ``lineage`` / trigger refs and must name
+  two different EventSpecs (ADR-0100 revision 1 §3, ``temporal_same_input``), both must
   declare the spec's ``bar_spec``, the spec's ``observable_lag`` must equal the second's, and the
   first's lag must not exceed the second's (the lowering's ``temporal_visibility_unprovable`` rule,
   re-checked). Upstream events of any other definition or spec hash are refused.
@@ -101,6 +102,10 @@ class P7TemporalSequenceProvider(EventProviderBase):
             raise ValueError("window_bars must be a positive int")
         first_ref = parse_ref(params["first_event"], Kind.EVENT)
         second_ref = parse_ref(params["second_event"], Kind.EVENT)
+        if first_ref.target_identity() == second_ref.target_identity():
+            raise ValueError(
+                "temporal_same_input: first_event and second_event must be different EventSpecs"
+            )
         bar_spec = parse_ref(params["bar_spec"], Kind.REPRESENTATION)
         if spec.bar_spec is None or str(spec.bar_spec) != str(bar_spec):
             raise ValueError("bar_spec must equal the trigger's bar_spec")

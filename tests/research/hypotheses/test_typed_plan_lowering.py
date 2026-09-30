@@ -411,6 +411,17 @@ def test_temporal_refuses_first_event_observable_after_second() -> None:
         lower_typed_plan(plan, resolution=resolution, created_at=NOW)
 
 
+def test_temporal_refuses_the_same_event_spec_as_both_inputs() -> None:
+    """ADR-0100 revision 1 §3: the first and second event must be different EventSpecs."""
+    plan, resolution = _temporal(EVENT_A, EVENT_A)
+
+    with pytest.raises(OperatorLoweringRefused, match="temporal_same_input") as error:
+        lower_typed_plan(plan, resolution=resolution, created_at=NOW)
+
+    assert error.value.code == "temporal_same_input"
+    assert error.value.node_id == "seq"
+
+
 def test_temporal_equal_observable_lags_are_accepted() -> None:
     same_lag = EVENT_A.model_copy(update={"observable_lag": EVENT_B.observable_lag})
     plan, resolution = _temporal(same_lag, EVENT_B)
