@@ -533,6 +533,20 @@ class ExchangeInfoRowVerifier:
                 raise CatalogIntegrityError("Raw snapshot lookup returned a different head")
             history_count = 0
             for snapshot in history_from(self._catalog, EXCHANGE_INFO_TABLE, head):
+                try:
+                    actual_snapshot = self._catalog.get_snapshot(
+                        EXCHANGE_INFO_TABLE, snapshot.snapshot_id
+                    )
+                except Exception as exc:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} history names an unreadable snapshot "
+                        f"{snapshot.snapshot_id}"
+                    ) from exc
+                if actual_snapshot != snapshot:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} history metadata disagrees with snapshot "
+                        f"{snapshot.snapshot_id}"
+                    )
                 expected_total_rows = head_info.total_rows - history_count
                 if snapshot.total_rows != expected_total_rows:
                     raise CatalogIntegrityError(

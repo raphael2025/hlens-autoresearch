@@ -123,9 +123,12 @@ def test_bounded_raw_table_proof_spools_sorted_rows_without_proof_cache(h: Harne
         assert verifier._proven == {}
         with iter_run(scratch, root) as rows:
             actual = list(rows)
+        head = h.head(TABLE)
+        assert head is not None
         history = {
             snapshot.batch_id: (snapshot.snapshot_id, snapshot.total_rows - 1)
-            for snapshot in h.adapter.history(TABLE, h.head(TABLE))
+            for snapshot in h.adapter.history(TABLE, head)
+            if snapshot.batch_id is not None
         }
         assert [item["sort_key"] for item in actual] == sorted(item["sort_key"] for item in actual)
         assert sorted(item["row"]["arrival_seq"] for item in actual) == [0, 1]
@@ -212,6 +215,12 @@ def test_bounded_raw_table_proof_rejects_inconsistent_history_metadata(h: Harnes
         def __getattr__(self, name: str) -> Any:
             return getattr(h.adapter, name)
 
+        def get_snapshot(self, table: str, snapshot_id: str) -> Any:
+            snapshot = h.adapter.get_snapshot(table, snapshot_id)
+            if table == TABLE:
+                return snapshot.model_copy(update={"total_rows": snapshot.total_rows + 1})
+            return snapshot
+
         def history(self, table: str, snapshot_id: str) -> Any:
             for snapshot in h.adapter.history(table, snapshot_id):
                 if table == TABLE:
@@ -221,7 +230,42 @@ def test_bounded_raw_table_proof_rejects_inconsistent_history_metadata(h: Harnes
 
     verifier._catalog = WrongHistoryCatalog()
     try:
-        with pytest.raises(CatalogIntegrityError, match="inconsistent total_rows"):
+        with pytest.raises(CatalogIntegrityError, match="append ordinal"):
+            verifier.verify_table_bounded(
+                h.head(TABLE),
+                scratch_storage=scratch,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=4096,
+            )
+    finally:
+        verifier.close()
+        scratch.close()
+
+
+def test_bounded_raw_table_proof_rejects_history_snapshot_membership_mismatch(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+
+    class WrongMembershipCatalog:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(h.adapter, name)
+
+        def history(self, table: str, snapshot_id: str) -> Any:
+            for snapshot in h.adapter.history(table, snapshot_id):
+                if table == TABLE:
+                    yield snapshot.model_copy(update={"snapshot_id": "missing-snapshot"})
+                else:
+                    yield snapshot
+
+    verifier._catalog = WrongMembershipCatalog()
+    try:
+        with pytest.raises(CatalogIntegrityError, match="unreadable snapshot"):
             verifier.verify_table_bounded(
                 h.head(TABLE),
                 scratch_storage=scratch,
