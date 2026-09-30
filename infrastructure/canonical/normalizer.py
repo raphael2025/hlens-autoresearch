@@ -76,7 +76,7 @@ from core.contracts.catalog import (
 from core.contracts.storage import StorageAdapter
 from infrastructure import contract_version
 from infrastructure.canonical import rules
-from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
+from infrastructure.catalog.bounded_metadata import BoundedMetadataError, BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.row_integrity import (
@@ -93,6 +93,7 @@ from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter
 __all__ = [
     "DEFAULT_MICROBATCH_ROWS",
     "MAX_MICROBATCH_ROWS",
+    "NORMALIZER_METADATA_LIMITS",
     "CanonicalNormalizeConflict",
     "CanonicalNormalizeError",
     "CanonicalNormalizer",
@@ -118,12 +119,14 @@ _BATCH_CACHE: Final = 2
 _POSITION_DB_CACHE_KIB: Final = 1024
 _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
-# Named E1-CAP-1 parser/index profile for the normalizer's pinned read pass. At N=500,000 and
-# M=256, one Canonical history has about 1,954 batches; 10,000 allows >5x headroom for additional
-# snapshots while still failing closed at a finite bound. The 16 MiB document and 256 KiB item
-# caps are parser resource ceilings, not measured RSS or an E1-CAP-1 pass claim. Callers can
-# inject a separately reviewed profile through ``metadata_limits``.
-_NORMALIZER_METADATA_LIMITS: Final = BoundedMetadataLimits(
+# Named E1-CAP-1 parser/index profile a caller may pass explicitly as ``metadata_limits`` to take
+# the bounded double-pin read pass. It is never applied implicitly: its caps cover a table's whole
+# snapshot array (there is no snapshot expiry), so a default would break normalization once a
+# table's history outgrew it. At N=500,000 and M=256, one Canonical history has about 1,954
+# batches; 10,000 allows >5x headroom for one such unit while still failing closed at a finite
+# bound. The 16 MiB document and 256 KiB item caps are parser resource ceilings, not measured RSS
+# or an E1-CAP-1 pass claim.
+NORMALIZER_METADATA_LIMITS: Final = BoundedMetadataLimits(
     max_metadata_bytes=16 * 1024 * 1024,
     max_item_bytes=256 * 1024,
     max_retained_json_bytes=2 * 1024 * 1024,
@@ -572,7 +575,7 @@ class CanonicalNormalizer:
         scratch_directory: Path,
         clock: Callable[[], datetime] | None = None,
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
-        metadata_limits: BoundedMetadataLimits = _NORMALIZER_METADATA_LIMITS,
+        metadata_limits: BoundedMetadataLimits | None = None,
     ) -> None:
         if not isinstance(microbatch_rows, int) or isinstance(microbatch_rows, bool):
             raise CanonicalNormalizeError("microbatch_rows must be an int")
@@ -580,8 +583,8 @@ class CanonicalNormalizer:
             raise CanonicalNormalizeError(
                 f"microbatch_rows must be between 1 and {MAX_MICROBATCH_ROWS}"
             )
-        if not isinstance(metadata_limits, BoundedMetadataLimits):
-            raise CanonicalNormalizeError("metadata_limits must be BoundedMetadataLimits")
+        if metadata_limits is not None and not isinstance(metadata_limits, BoundedMetadataLimits):
+            raise CanonicalNormalizeError("metadata_limits must be BoundedMetadataLimits or None")
         self._adapter = adapter
         self._storage = storage
         self._scratch_directory = _prepare_scratch_directory(scratch_directory)
@@ -1144,27 +1147,35 @@ class CanonicalNormalizer:
         return channel
 
     def _pin(self, channel: rules.RawChannel, source_revision_id: str) -> _Pin:
-        """Heads read twice and equal: at one instant between, all three held them."""
+        """Heads read twice and equal: at one instant between, all three held them.
+
+        Only a caller that explicitly passed ``metadata_limits`` gets the bounded double-pin
+        route; without limits the head-pair pin is used whatever the adapter can do.
+        """
         tables = (channel.element.table, channel.source.table, channel.canonical.table)
         if self._frozen and tables in self._pins:
             return self._pins[tables]
-        supports_bounded = getattr(self._adapter, "supports_bounded_metadata", None)
-        bounded_pin = getattr(self._adapter, "pin_bounded_metadata", None)
-        can_pin_bounded = (
-            bool(supports_bounded) if supports_bounded is not None else callable(bounded_pin)
-        )
-        if can_pin_bounded:
-            if not callable(bounded_pin):
-                raise CanonicalNormalizeError("bounded catalog pin capability is incomplete")
+        limits = self._metadata_limits
+        if limits is not None:
+            supports_bounded = getattr(self._adapter, "supports_bounded_metadata", None)
+            bounded_pin = getattr(self._adapter, "pin_bounded_metadata", None)
+            if not callable(bounded_pin) or (
+                supports_bounded is not None and not bool(supports_bounded)
+            ):
+                raise CanonicalNormalizeError(
+                    "metadata_limits was given but the catalog cannot pin bounded metadata"
+                )
+
+            def pin_one(table: str) -> Any:
+                try:
+                    return bounded_pin(table, storage=self._storage, limits=limits)
+                except BoundedMetadataError as exc:
+                    # The bounded parser names the exceeded limit and the observed value.
+                    raise BoundedMetadataError(f"{table}: {exc}") from exc
+
             for _ in range(_ATTEMPTS):
-                first = tuple(
-                    bounded_pin(table, storage=self._storage, limits=self._metadata_limits)
-                    for table in tables
-                )
-                second = tuple(
-                    bounded_pin(table, storage=self._storage, limits=self._metadata_limits)
-                    for table in tables
-                )
+                first = tuple(pin_one(table) for table in tables)
+                second = tuple(pin_one(table) for table in tables)
                 first_identity = tuple(
                     (view.metadata_location, view.selected_snapshot_id) for view in first
                 )
