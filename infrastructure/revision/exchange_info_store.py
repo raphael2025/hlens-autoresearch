@@ -79,7 +79,7 @@ from infrastructure.revision.row_integrity import (
     check_batch_snapshot,
     history_from,
 )
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import BatchCommit, RevisionCatalog, scan_rows
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = [
@@ -405,13 +405,17 @@ class ExchangeInfoRowVerifier:
                     ("revision_id", revision),
                     ("arrival_seq", row["arrival_seq"]),
                 ):
-                    holders = self._catalog.scan_columns(
-                        EXCHANGE_INFO_TABLE,
-                        columns=("revision_id",),
-                        row_filter=_equals(column, value),
-                        limit=2,
-                        snapshot_id=head,
-                    ).num_rows
+                    # Streamed at ``head`` (ADR-0075); two rows already prove a non-unique holder.
+                    holders = len(
+                        scan_rows(
+                            self._catalog,
+                            EXCHANGE_INFO_TABLE,
+                            columns=("revision_id",),
+                            row_filter=_equals(column, value),
+                            snapshot_id=head,
+                            limit=2,
+                        )
+                    )
                     if holders != 1:
                         raise CatalogIntegrityError(
                             f"snapshot revision {revision}: {column} is held by {holders} rows"
@@ -817,11 +821,10 @@ class ExchangeInfoRowVerifier:
         add(1)  # JSONL LF
 
     def _scan(self, head: str | None) -> list[Mapping[str, Any]]:
+        """Every row at ``head``, streamed (ADR-0075: no high-level planner, whose manifest /
+        entry / task lists grow with this one-row-per-commit table's file count)."""
         columns = tuple(field.name for field in BINANCE_SPOT_EXCHANGE_INFO.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._catalog.scan_columns(
-            EXCHANGE_INFO_TABLE, columns=columns, snapshot_id=head
-        ).to_pylist()
-        return rows
+        return scan_rows(self._catalog, EXCHANGE_INFO_TABLE, columns=columns, snapshot_id=head)
 
 
 def _history(catalog: RevisionCatalog, table: str, head: str | None) -> list[SnapshotInfo]:
@@ -909,7 +912,8 @@ class ExchangeInfoSnapshotStore:
         last_error: Exception | None = None
         for _ in range(_ATTEMPTS):
             parent = self._head()
-            ours = self._rows(_equals("revision_id", revision), parent)
+            # Two rows already prove a duplicate; no further copy is ever held.
+            ours = self._rows(_equals("revision_id", revision), parent, limit=2)
             if len(ours) > 1:
                 raise CatalogIntegrityError(f"snapshot revision {revision} is committed twice")
             if ours:
@@ -935,7 +939,7 @@ class ExchangeInfoSnapshotStore:
                 last_error = exc  # another writer moved the head: read everything again
                 continue
             head = result.snapshot.snapshot_id
-            stored = self._rows(_equals("revision_id", revision), head)
+            stored = self._rows(_equals("revision_id", revision), head, limit=2)
             if len(stored) != 1 or dict(stored[0]) != row:
                 raise CatalogIntegrityError(
                     f"snapshot revision {revision} does not read back as committed"
@@ -1015,25 +1019,48 @@ class ExchangeInfoSnapshotStore:
             ),
         )
 
-    def _rows(self, row_filter: BooleanExpression, head: str | None) -> list[Mapping[str, Any]]:
+    def _rows(
+        self, row_filter: BooleanExpression, head: str | None, *, limit: int
+    ) -> list[Mapping[str, Any]]:
+        """At most ``limit`` matching rows at ``head``, streamed (ADR-0075 bounded scan)."""
         if head is None:
             return []
         columns = tuple(field.name for field in BINANCE_SPOT_EXCHANGE_INFO.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            EXCHANGE_INFO_TABLE, columns=columns, row_filter=row_filter, snapshot_id=head
-        ).to_pylist()
-        return rows
+        return scan_rows(
+            self._adapter,
+            EXCHANGE_INFO_TABLE,
+            columns=columns,
+            row_filter=row_filter,
+            snapshot_id=head,
+            limit=limit,
+        )
 
     def _largest_arrival(self, head: str | None) -> int | None:
+        """The largest ``arrival_seq`` at ``head``, reduced batch by batch (ADR-0075).
+
+        Every streamed batch is checked for nulls before it can contribute, so a null anywhere
+        fails closed exactly as the old whole-column read did; only the running maximum is held.
+        """
         if head is None:
             return None
-        values = self._adapter.scan_columns(
+        largest: int | None = None
+        reader = self._adapter.scan_column_batches(
             EXCHANGE_INFO_TABLE, columns=("arrival_seq",), snapshot_id=head
-        ).column("arrival_seq")
-        if values.null_count:
-            raise CatalogIntegrityError(f"{EXCHANGE_INFO_TABLE}: an arrival_seq is null")
-        numbers = values.to_pylist()
-        return max(numbers) if numbers else None
+        )
+        try:
+            for record_batch in reader:
+                values = record_batch.column("arrival_seq")
+                if values.null_count:
+                    raise CatalogIntegrityError(f"{EXCHANGE_INFO_TABLE}: an arrival_seq is null")
+                numbers = values.to_pylist()
+                if numbers:
+                    batch_largest = max(numbers)
+                    largest = batch_largest if largest is None else max(largest, batch_largest)
+        finally:
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
+        return largest
 
     def _head(self) -> str | None:
         info = self._adapter.load_table(EXCHANGE_INFO_TABLE)
