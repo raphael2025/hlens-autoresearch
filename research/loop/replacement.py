@@ -53,7 +53,11 @@ loop has **never opened**:
 - *pre-registered*: the trigger's ``windows`` (``RegisteredSealedWindow``: id, bounds, registrar,
   registration time not after the window's start) are part of the loop's configuration fingerprint,
   i.e. of the anchored ``loop_state_opened`` header written when the state directory was created;
-  reopening with other windows is refused (a new window is a new directory), like a budget;
+  reopening with other windows is refused (a new window is a new directory), like a budget; and
+  every window must start **strictly after the loop's first scheduled ``as_of``** (the loop epoch,
+  round 0) — checked when the header is first written, recorded in it (``epoch_check``: the rule,
+  the epoch, every window id and start) and re-checked against the recorded values on every
+  reopening;
 - *independent*: no registered window overlaps the Profile's sealed OOS window (refused at
   composition) or another registered window, and a window the loop's accumulated research data
   reaches into (``RoundData.research_start`` / ``research_end`` of this round) is refused — the loop
@@ -122,7 +126,10 @@ __all__ = [
     "ReplacementInputs",
     "ReplacementTrigger",
     "ReplacementTriggerStage",
+    "EPOCH_CHECK_KEY",
     "check_independent_of_profile",
+    "check_windows_after_epoch",
+    "epoch_check_payload",
     "trigger_rows",
 ]
 
@@ -130,6 +137,9 @@ __all__ = [
 REPLACEMENT_TRIGGER_KEY: Final = "replacement_trigger"
 #: Format of the trigger's summary and fingerprint payload.
 TRIGGER_FORMAT: Final = 1
+#: The key of the loop-epoch pre-registration check inside the fingerprinted trigger payload.
+EPOCH_CHECK_KEY: Final = "epoch_check"
+_EPOCH_RULE: Final = "window.start > loop_epoch (the loop's first scheduled as_of)"
 _REASON_FIELDS: Final = ("incumbent", "incumbent_state", "candidate", "candidate_state")
 _TOKEN: Final = re.compile(r"[^a-z0-9_]")
 
@@ -287,6 +297,34 @@ def check_independent_of_profile(trigger: ReplacementTrigger, profile: Validatio
             )
 
 
+def check_windows_after_epoch(trigger: ReplacementTrigger, epoch: datetime) -> None:
+    """Every registered window starts strictly after the loop's first scheduled ``as_of`` (the
+    loop epoch, round 0): a window the loop could already have been running over when it was
+    configured is not pre-registered with respect to this loop (``ValueError``)."""
+    if not isinstance(epoch, datetime) or epoch.tzinfo is None or epoch.utcoffset() is None:
+        raise ValueError("the loop epoch must be a timezone-aware (UTC) datetime")
+    for window in trigger.windows:
+        if not window.start > epoch:
+            raise ValueError(
+                f"registered window {window.window_id!r} starts at {window.start.isoformat()}, "
+                f"not strictly after the loop's first scheduled as_of {epoch.isoformat()}: a "
+                "replacement window must be pre-registered before the loop begins"
+            )
+
+
+def epoch_check_payload(trigger: ReplacementTrigger, epoch: datetime) -> dict[str, Any]:
+    """The recorded loop-epoch check (fingerprinted under ``EPOCH_CHECK_KEY``; refuses first)."""
+    check_windows_after_epoch(trigger, epoch)
+    return {
+        "rule": _EPOCH_RULE,
+        "loop_epoch": epoch.isoformat(),
+        "windows": [
+            {"window_id": window.window_id, "start": window.start.isoformat()}
+            for window in trigger.windows
+        ],
+    }
+
+
 class ReplacementTriggerStage:
     """``EvolutionStage`` followed by the replacement trigger, as the ``evolution`` stage."""
 
@@ -301,6 +339,7 @@ class ReplacementTriggerStage:
         loop_id: str,
         family_id: str,
         profile: ValidationProfile,
+        loop_epoch: datetime,
     ) -> None:
         if not isinstance(trigger, ReplacementTrigger) or trigger.enabled is not True:
             raise ValueError("the replacement trigger is composed only with enabled=True")
@@ -312,6 +351,7 @@ class ReplacementTriggerStage:
                 "forgets window openings on a restart"
             )
         check_independent_of_profile(trigger, profile)
+        check_windows_after_epoch(trigger, loop_epoch)
         if not family_id.strip():
             raise ValueError("family_id must not be blank")
         self._evolution = evolution
