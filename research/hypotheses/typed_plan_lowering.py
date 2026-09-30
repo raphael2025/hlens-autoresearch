@@ -17,7 +17,10 @@ Accepted operators:
 * ``temporal`` (ADR-0088 decision 1, pending-decisions §3 option A): EventSpec. Both input
   EventSpecs must declare the same non-empty ``bar_spec``; the window counts bars of that spec,
   left-open / right-closed (the second event falls 1..N bars after the first); the result carries
-  the same ``bar_spec`` and becomes visible when the second event becomes visible.
+  the same ``bar_spec`` and becomes visible when the second event becomes visible. The two inputs
+  must be different EventSpecs (``temporal_same_input``). In a plan of format "1.3.0" (ADR-0100
+  revision 1) the trigger also binds both upstream spec hashes (``first_event_hash`` /
+  ``second_event_hash``) and ``observable_lag`` is 0; older formats keep their original lowering.
 * ``conditioning`` / ``ensemble`` / ``negation`` (ADR-0088 decision 2): StrategySpec whose
   ``composition`` is ``ConditionedStrategy`` / ``EnsembleStrategy`` / ``NegatedStrategy``.
 
@@ -118,6 +121,10 @@ _NEGATION_DEFINITION: Final = "p7.negation.target_position@1.0.0"
 #: (pending-decisions §3 option A). Any other unit has no accepted semantics and stays OPEN;
 #: ADR-0061's microsecond seq window is not reused as a substitute.
 _TEMPORAL_TIME_UNIT: Final = "bar"
+#: ADR-0100 revision 1: plan formats whose ``temporal`` lowering follows the revised semantics
+#: (upstream hash binding in the trigger, ``observable_lag = 0``). Older formats ("1.1.0" /
+#: "1.2.0") keep their original lowering byte for byte; an old plan's meaning never changes.
+_TEMPORAL_REVISION_1_FORMATS: Final = frozenset({"1.3.0"})
 
 
 class OperatorLoweringRefused(PlanRefused):
@@ -533,11 +540,21 @@ def _lower_temporal(
     direct: dict[tuple[str, int], VersionedSpec],
     specs: dict[str, VersionedSpec],
     created_at: datetime,
+    *,
+    plan_format: str,
 ) -> EventSpec:
     """``second`` occurs 1..``window`` bars after ``first`` (left-open, right-closed).
 
     Both EventSpecs must declare the same non-empty ``bar_spec`` (ADR-0088 decision 1). The output
     event time is the second event's time and it is visible when the second event is visible.
+
+    In plan format "1.3.0" (ADR-0100 revision 1 §4) the trigger also binds each upstream spec's
+    ``content_hash()`` as ``first_event_hash`` / ``second_event_hash`` (the ``<name>`` /
+    ``<name>_hash`` pair ``infrastructure.event.upstream.verify_interaction`` reads), and the
+    output's ``observable_lag`` is 0 (revision 1 §1): an upstream ``event_time`` already is its
+    observable time, so the combined event is visible exactly at the second event's
+    ``event_time``. Older plan formats keep their original lowering (hash-free trigger,
+    ``observable_lag`` = the second event's).
     """
     time_unit = node.parameters["time_unit"]
     if time_unit != _TEMPORAL_TIME_UNIT:
@@ -554,6 +571,16 @@ def _lower_temporal(
     sources = _resolve_inputs(node, direct, specs, expected_types=EventSpec)
     # `_resolve_inputs` already required each input to be exactly EventSpec.
     first, second = cast(list[EventSpec], sources)
+    # ADR-0100 修订 1 §3: the two inputs must be different EventSpecs. A sequence of an event
+    # with itself has no accepted meaning (every occurrence would pair with its own predecessor,
+    # and the upstream binding would name one ref twice), so it is refused, not lowered.
+    if first.ref.target_identity() == second.ref.target_identity():
+        _refuse(
+            node,
+            "temporal_same_input",
+            f"both temporal inputs are the same EventSpec ({first.ref}); the first and second "
+            "event must be different EventSpecs (ADR-0100 revision 1 §3)",
+        )
     if first.bar_spec is None or second.bar_spec is None:
         _operator_open(
             node,
@@ -582,23 +609,27 @@ def _lower_temporal(
 
     bar_spec = first.bar_spec
     identity = _spec_identity(_TEMPORAL_DEFINITION, node, sources, created_at)
-    trigger = canonical_json(
-        {
-            "definition": _TEMPORAL_DEFINITION,
-            "operator": "temporal_sequence",
-            "provider": "p7_temporal_sequence@1.0.0",
-            "semantic_version": _SEMANTIC_VERSION,
-            "first_event": str(first.ref),
-            "second_event": str(second.ref),
-            "bar_spec": str(bar_spec),
-            "window_bars": window,
-            # The second event lies in (first, first + window bars]: 1..window bars after it.
-            "interval": "left_open_right_closed",
-            "event_time": "second_event_time",
-            "visibility": "second_event_observable_time",
-            "missing": "no_event",
-        }
-    )
+    declaration: dict[str, object] = {
+        "definition": _TEMPORAL_DEFINITION,
+        "operator": "temporal_sequence",
+        "provider": "p7_temporal_sequence@1.0.0",
+        "semantic_version": _SEMANTIC_VERSION,
+        "first_event": str(first.ref),
+        "second_event": str(second.ref),
+        "bar_spec": str(bar_spec),
+        "window_bars": window,
+        # The second event lies in (first, first + window bars]: 1..window bars after it.
+        "interval": "left_open_right_closed",
+        "event_time": "second_event_time",
+        "visibility": "second_event_observable_time",
+        "missing": "no_event",
+    }
+    revised = plan_format in _TEMPORAL_REVISION_1_FORMATS
+    if revised:
+        # ADR-0100 revision 1 §4: bind the exact upstream specs (ADR-0036 §5 `<name>_hash`).
+        declaration["first_event_hash"] = first.content_hash()
+        declaration["second_event_hash"] = second.content_hash()
+    trigger = canonical_json(declaration)
     return _build_output(
         node,
         lambda: EventSpec(
@@ -608,7 +639,9 @@ def _lower_temporal(
             trigger=trigger,
             features=_union_refs((first.features, second.features)),
             states=_union_refs((first.states, second.states)),
-            observable_lag=second.observable_lag,
+            # ADR-0100 revision 1 §1: from 1.3.0 the upstream event_time already is the second
+            # event's observable time, so the combined event adds no further lag.
+            observable_lag=timedelta(0) if revised else second.observable_lag,
             bar_spec=bar_spec,
             lineage=(first.ref, second.ref),
         ),
@@ -777,8 +810,8 @@ _LOWERERS: Final[
     ]
 ] = {
     PlanOperator.INTERACTION: _lower_interaction,
-    # TRANSFORMATION is dispatched in `lower_typed_plan`: it also needs the plan format version.
-    PlanOperator.TEMPORAL: _lower_temporal,
+    # TRANSFORMATION and TEMPORAL are dispatched in `lower_typed_plan`: they also need the plan
+    # format version (ADR-0099 decision 4, ADR-0100 revision 1).
     PlanOperator.CONDITIONING: _lower_conditioning,
     PlanOperator.ENSEMBLE: _lower_ensemble,
     PlanOperator.NEGATION: _lower_negation,
@@ -858,6 +891,12 @@ def lower_typed_plan(
                 created_at,
                 plan_format=plan.schema_version,
                 universes=universe_by_hash,
+            )
+            continue
+        if node.operator is PlanOperator.TEMPORAL:
+            # ADR-0100 revision 1: the temporal lowering depends on the plan's format version.
+            specs[node.node_id] = _lower_temporal(
+                node, direct, specs, created_at, plan_format=plan.schema_version
             )
             continue
         lowerer = _LOWERERS.get(node.operator)

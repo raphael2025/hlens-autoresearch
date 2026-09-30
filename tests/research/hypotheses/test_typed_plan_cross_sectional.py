@@ -16,8 +16,14 @@ from research.hypotheses.typed_plan import (
     PlanLimits,
     PlanRejected,
     TypedPlan,
+    compile_plan,
     parse_plan_json,
     parse_universe_reference,
+)
+from research.hypotheses.typed_plan_compiler import (
+    P7_OPERATOR_ALLOWLIST,
+    P7ExecutionSwitch,
+    PlanCompileRefused,
 )
 from research.hypotheses.typed_plan_lowering import OperatorLoweringRefused, lower_typed_plan
 from research.hypotheses.typed_plan_resolver import (
@@ -260,6 +266,26 @@ def test_cross_sectional_lowering_refuses_without_the_pinned_manifest() -> None:
     with pytest.raises(OperatorLoweringRefused) as refused:
         lower_typed_plan(plan, resolution=resolution, created_at=NOW, universes=[other])
     assert refused.value.code == "unresolved_universe"
+
+
+@pytest.mark.parametrize("transform", ["rank_cs", "quantile_cs"])
+def test_compile_plan_lowers_cross_sectional_nodes_then_refuses_execution(transform: str) -> None:
+    """ADR-0100 §2: ``universes=`` reaches the lowering, but the compiled single-series wiring
+    cannot drive CrossSectionalRequest / Result, so compilation refuses with an explicit code."""
+    overrides: dict[str, Any] = {"buckets": 4} if transform == "quantile_cs" else {}
+    plan, resolution = _cs_plan(transform, **overrides)
+
+    with pytest.raises(PlanCompileRefused) as refused:
+        compile_plan(
+            plan,
+            resolution=resolution,
+            created_at=NOW,
+            allowlist=P7_OPERATOR_ALLOWLIST,
+            switch=P7ExecutionSwitch(enabled=True),
+            universes=(UNIVERSE,),
+        )
+    assert refused.value.code == "cross_sectional_execution_unsupported"
+    assert refused.value.where == "xs"
 
 
 def test_cross_sectional_lowering_refuses_a_universe_text_naming_another_dataset() -> None:

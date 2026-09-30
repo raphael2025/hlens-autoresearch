@@ -14,6 +14,14 @@ Otherwise it raises ``PlanCompileRefused`` (a ``PlanRefused``) with a precise co
 ``provider_not_registered``, ``provider_identity_mismatch``, ...). A refusal of the lowering itself
 propagates unchanged as ``OperatorLoweringRefused``. Nothing is partially compiled.
 
+Cross-sectional ``rank_cs`` / ``quantile_cs`` nodes (plan format 1.3.0, ADR-0100 §2) lower when the
+caller passes the pinned universe manifests (``universes=``, handed to the lowering as evidence),
+but they are not compiled: their Providers (``plugins.features.p7_cross_sectional``) take a
+``CrossSectionalRequest`` / return a ``CrossSectionalResult``, which neither
+``CompiledPlan.build_providers`` (single-series ``FeatureRequest`` upstream wiring) nor the Research
+Loop path can drive. Such a plan is refused with ``cross_sectional_execution_unsupported``
+whatever the allowlist holds, never executed through the single-series wiring.
+
 Compilation is pure and deterministic: it re-runs the pure lowering
 (``typed_plan_lowering.lower_typed_plan``) on the caller's hash-verified direct-reference
 resolution and explicit ``created_at``, then checks the allowlist. It does not read a clock, does
@@ -38,14 +46,15 @@ import hashlib
 import inspect
 import json
 import sys
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Final
 
 from core.contracts.feature import FeatureProvider
 from core.contracts.strategy import StrategyProvider
+from core.contracts.universe import ResearchDatasetManifest
 from core.domain.base import Kind, VersionedSpec, content_hash
 from core.domain.specs import EventSpec, FeatureSpec, InstrumentType, StrategySpec
 from plugins.events.p7_temporal import P7TemporalSequenceProvider
@@ -58,7 +67,13 @@ from plugins.features.p7_operators import (
     P7StandardizeProvider,
     UpstreamFeature,
 )
-from research.hypotheses.typed_plan import NodeInput, PlanOperator, PlanRefused, TypedPlan
+from research.hypotheses.typed_plan import (
+    CROSS_SECTIONAL_TRANSFORMS,
+    NodeInput,
+    PlanOperator,
+    PlanRefused,
+    TypedPlan,
+)
 from research.hypotheses.typed_plan_audit import PlanAdmissionEvidence
 from research.hypotheses.typed_plan_lowering import lower_typed_plan
 from research.hypotheses.typed_plan_resolver import DirectReferenceResolution
@@ -175,6 +190,10 @@ class OperatorImplementation:
             raise ValueError(
                 f"{self.provider_class!r} does not declare provider key {self.provider_key}"
             )
+        if getattr(self.provider_class, "DEFINITION", None) != self.definition:
+            raise ValueError(
+                f"{self.provider_class!r} does not declare definition {self.definition}"
+            )
 
     @property
     def implementation_hash(self) -> str:
@@ -261,9 +280,35 @@ class CompiledNode:
     implementation: OperatorImplementation
 
 
+#: Private seal set only by ``compile_lowered_plan`` on the ``CompiledPlan`` it returns.
+_COMPILE_SEAL: Final = object()
+
+
+def _node_matches(node: CompiledNode, plan_node: object) -> bool:
+    """Re-verify one compiled node against its plan node and its implementation."""
+    implementation = node.implementation
+    if type(implementation) is not OperatorImplementation:
+        return False
+    return (
+        getattr(plan_node, "node_id", None) == node.node_id
+        and getattr(plan_node, "operator", None) is node.operator
+        and implementation.operator is node.operator
+        and implementation.definition == node.definition
+        and type(node.spec) is _SPEC_CLASS_BY_KIND[implementation.output_kind]
+        and _declared_identity(node.spec) == (node.definition, implementation.provider_key)
+        and getattr(implementation.provider_class, "DEFINITION", None) == node.definition
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledPlan:
-    """A plan compiled against an explicit allowlist with execution explicitly enabled."""
+    """A plan compiled against an explicit allowlist with execution explicitly enabled.
+
+    Only ``compile_lowered_plan`` produces a runnable instance: it seals the value it returns with
+    a private token. An instance constructed (or ``dataclasses.replace``-d) anywhere else carries
+    no seal and is never runnable, and ``runnable`` also re-verifies every node against its plan
+    node and its implementation.
+    """
 
     plan: TypedPlan
     plan_hash: str
@@ -271,16 +316,23 @@ class CompiledPlan:
     execution_enabled: bool
     allowlist_hash: str
     compiler: str = COMPILER_IDENTITY
+    #: Set only by ``compile_lowered_plan`` (not an init field: ``replace`` drops it).
+    _seal: object = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def runnable(self) -> bool:
-        """True only with execution enabled and one implementation for every plan node."""
+        """True only for a compiled (sealed) plan with execution enabled and one verified
+        implementation for every plan node."""
         return (
-            self.execution_enabled is True
+            self._seal is _COMPILE_SEAL
+            and self.execution_enabled is True
+            and self.compiler == COMPILER_IDENTITY
             and self.plan_hash == self.plan.content_hash()
-            and tuple(node.node_id for node in self.nodes)
-            == tuple(node.node_id for node in self.plan.nodes)
-            and all(isinstance(node.implementation, OperatorImplementation) for node in self.nodes)
+            and len(self.nodes) == len(self.plan.nodes)
+            and all(
+                _node_matches(node, plan_node)
+                for node, plan_node in zip(self.nodes, self.plan.nodes, strict=True)
+            )
         )
 
     @property
@@ -458,8 +510,12 @@ def compile_lowered_plan(
     created_at: datetime | None = None,
     allowlist: Mapping[str, OperatorImplementation] | None = None,
     switch: P7ExecutionSwitch | None = None,
+    universes: Iterable[ResearchDatasetManifest] = (),
 ) -> CompiledPlan:
-    """Compile ``plan`` or refuse with a precise reason (module docstring)."""
+    """Compile ``plan`` or refuse with a precise reason (module docstring).
+
+    ``universes`` are the caller-supplied pinned universe manifests, passed to the lowering.
+    """
     if type(plan) is not TypedPlan:
         raise TypeError("plan must be an exact TypedPlan")
     if switch is None or type(switch) is not P7ExecutionSwitch or switch.enabled is not True:
@@ -476,11 +532,24 @@ def compile_lowered_plan(
             plan.root,
             "compilation needs the plan's DirectReferenceResolution and an explicit created_at",
         )
-    lowered = lower_typed_plan(plan, resolution=resolution, created_at=created_at)
+    lowered = lower_typed_plan(
+        plan, resolution=resolution, created_at=created_at, universes=universes
+    )
     direct = {(item.node_id, item.input_index): item.spec for item in resolution.inputs}
 
     nodes: list[CompiledNode] = []
     for node in plan.nodes:
+        if (
+            node.operator is PlanOperator.TRANSFORMATION
+            and node.parameters.get("transform") in CROSS_SECTIONAL_TRANSFORMS
+        ):
+            raise PlanCompileRefused(
+                "cross_sectional_execution_unsupported",
+                node.node_id,
+                "cross-sectional rank_cs / quantile_cs lower, but their CrossSectionalRequest / "
+                "CrossSectionalResult Providers cannot be driven by the compiled single-series "
+                "wiring or the Research Loop (ADR-0100 §2); not compiled",
+            )
         spec = lowered[node.node_id]
         definition, provider = _declared_identity(spec)
         if not isinstance(definition, str):
@@ -543,6 +612,8 @@ def compile_lowered_plan(
         execution_enabled=True,
         allowlist_hash=allowlist_hash,
     )
+    # The only place a CompiledPlan is sealed as produced by the compile path.
+    object.__setattr__(compiled, "_seal", _COMPILE_SEAL)
     if not compiled.runnable:  # pragma: no cover - every branch above refuses first
         raise PlanCompileRefused("not_runnable", plan.root, "compiled plan failed its own check")
     return compiled

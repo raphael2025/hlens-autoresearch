@@ -212,7 +212,9 @@ EVENT_COUNT = PluginManifest(
 
 # P7 `temporal` (ADR-0100 item 1; `plugins/events/p7_temporal.py`). Uses `EventSpec.bar_spec`
 # (contract 2.4.0, ADR-0088 decision 1). The provider additionally needs explicit bar durations
-# and the two upstream EventSpecs at construction; neither is a trigger parameter.
+# and the two upstream EventSpecs at construction; neither is a trigger parameter. Specs lowered
+# from plan format 1.3.0 also bind the upstream spec hashes (`first_event_hash` /
+# `second_event_hash`, both or neither; ADR-0100 revision 1 §4).
 P7_TEMPORAL_SEQUENCE = PluginManifest(
     name="p7_temporal_sequence",
     kind=PluginKind.EVENT,
@@ -230,6 +232,15 @@ P7_TEMPORAL_SEQUENCE = PluginManifest(
             "semantic_version": {"type": "string", "enum": ["1.0.0"]},
             "first_event": {"type": "string", "description": "event:name@version Ref"},
             "second_event": {"type": "string", "description": "event:name@version Ref"},
+            # Optional pair (plan format 1.3.0, ADR-0100 revision 1 §4): the upstream spec hashes.
+            "first_event_hash": {
+                "type": "string",
+                "description": "content hash of the first_event EventSpec",
+            },
+            "second_event_hash": {
+                "type": "string",
+                "description": "content hash of the second_event EventSpec",
+            },
             "bar_spec": {"type": "string", "description": "representation:name@version Ref"},
             "window_bars": {"type": "integer", "minimum": 1},
             "interval": {"type": "string", "enum": ["left_open_right_closed"]},
