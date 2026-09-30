@@ -1,5 +1,5 @@
-"""Test-only rows and evolution targets for the fifteen Phase 1 production tables
-(C3/D3B/E2/QG-1/DS-1).
+"""Test-only rows and evolution targets for the fifteen original Phase 1 tables
+(C3/D3B/E2/QG-1/DS-1); ADR-0077's two appended tables have dedicated tests.
 
 Rows are built from **validated contract objects** (``RevisionRecord``, ``ListingRevision``,
 ``ResearchDatasetManifest``, ``CollectedObject`` …) so the tests show that the physical columns
@@ -995,10 +995,16 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     QUALITY_EVIDENCE_GAPS.table: quality_evidence_gap_row,
     DATASET_SELECTIONS.table: dataset_selection_row,
 }
-assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
+_B2_TABLES: Final = {
+    "research.dataset_evidence_manifests",
+    "research.dataset_selection_chunks",
+}
+assert set(ROW_BUILDERS) == {
+    definition.table for definition in PHASE1_TABLES if definition.table not in _B2_TABLES
+}
 assert (
-    CONTRACT_SCHEMA_VERSION == "2.2.0"
-)  # ADR-0052 §4 / ADR-0055 (rows carry their recorded version)
+    CONTRACT_SCHEMA_VERSION == "2.4.0"
+)  # ADR-0088 (current contract; rows carry their recorded version)
 
 
 def batch_for(definition: RegisteredTableDefinition, rows: list[dict[str, Any]]) -> pa.Table:

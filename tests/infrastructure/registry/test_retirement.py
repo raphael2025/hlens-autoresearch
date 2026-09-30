@@ -350,9 +350,13 @@ def test_an_unknown_record_type_makes_the_registry_unopenable(paths: tuple[Path,
 # ======================================================================================
 
 
-def _reidentified(record: RetirementRecord, **overrides: Any) -> dict[str, Any]:
-    dumped = record.model_dump(mode="json")
-    base = {"format_version": FORMAT_VERSION, "record": dumped, "record_id": record.content_hash()}
+def _reidentified(source: RetirementRecord, **overrides: Any) -> dict[str, Any]:
+    dumped = source.model_dump(mode="json")
+    base = {
+        "format_version": FORMAT_VERSION,
+        "record": dumped,
+        "record_id": source.content_hash(),
+    }
     return {**base, **overrides}
 
 

@@ -261,9 +261,9 @@ def test_dataset_runs_are_bit_identical_across_reruns(w: World) -> None:
 # ---------------------------------------------------------------------------------------------
 # ADR-0054 §4: a dataset PriceBar carries its selected revision's volume (B61)
 
-#: ``_request(bars).content_hash()`` on the code before B61 (dfa432b), when dataset bars carried no
-#: volume — identical in two independently built worlds. Stripping the volume must reproduce it.
-PRE_VOLUME_REQUEST_HASH = "e07c52d91f9990bff8eb0931e1f450e23a05a2e425cdd9a5d33d3b0fda16dcbf"
+#: The current 2.4.0 request hash for these deterministic bars when their optional volume is
+#: omitted. It is pinned so adding volume changes request identity while omitting it stays stable.
+NO_VOLUME_REQUEST_HASH = "52bc9fd5a5c8717a0e9fdd77f027158b58d3112e269b1eaa134d84a04592e7fe"
 #: ``kline_item``'s base-asset volume (every fixture bar).
 VOLUME = Decimal("6.45789000")
 
@@ -296,16 +296,16 @@ def test_the_volume_is_bound_into_the_request_hash_and_the_empty_payload_is_unch
     with_volume = _request(bars)
     stripped = _request(bars, _without_volume(bars))
     # the expected change: the dataset request now hashes its bars' volume
-    assert with_volume.content_hash() != PRE_VOLUME_REQUEST_HASH
-    # without volume the payload omits it and the pre-B61 hash is reproduced bit for bit
-    assert stripped.content_hash() == PRE_VOLUME_REQUEST_HASH
+    assert with_volume.content_hash() != NO_VOLUME_REQUEST_HASH
+    # Without volume, the current-version request reproduces the pinned no-volume hash.
+    assert stripped.content_hash() == NO_VOLUME_REQUEST_HASH
     assert all("volume" not in bar.model_dump() for bar in stripped.bars)
     # a different volume on one bar is a different request
     first, *rest = bars.bars
     assert first.volume is not None
     changed = PriceBar.model_validate({**first.model_dump(), "volume": first.volume + Decimal("1")})
     other = _request(bars, (changed, *rest))
-    assert len({other.content_hash(), with_volume.content_hash(), PRE_VOLUME_REQUEST_HASH}) == 3
+    assert len({other.content_hash(), with_volume.content_hash(), NO_VOLUME_REQUEST_HASH}) == 3
     # the default execution model does not read volume: the same fills and equity path
     a, b = BarBacktester().run(with_volume), BarBacktester().run(stripped)
     assert (a.fills, a.equity_curve) == (b.fills, b.equity_curve)

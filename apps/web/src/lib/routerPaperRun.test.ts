@@ -24,7 +24,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("every committed fixture parses, named by its run_hash", () => {
-  assert.equal(fixtures.length, 2);
+  assert.equal(fixtures.length, 3);
   for (const envelope of fixtures) {
     const run = payloadOf(envelope.payload);
     assert.equal(run.run_hash, envelope.id);

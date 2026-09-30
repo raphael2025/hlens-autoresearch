@@ -231,9 +231,7 @@ class RetirementRegistry:
                     f"{have}: records were removed"
                 )
             if self._journal.entry(length - 1).hash != head:
-                raise RegistryCorrupted(
-                    "the retirement registry is not the history its anchor saw"
-                )
+                raise RegistryCorrupted("the retirement registry is not the history its anchor saw")
         if have > length + 1:
             raise RegistryCorrupted(
                 f"the retirement registry has {have} records but its anchor saw {length}: "
@@ -430,10 +428,7 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict
                 or not isinstance(new_head, str)
             ):
                 raise RegistryCorrupted(f"retirement anchor record {entry.seq} is invalid")
-            if (
-                new_length > len(journal)
-                or journal.entry(new_length - 1).hash != new_head
-            ):
+            if new_length > len(journal) or journal.entry(new_length - 1).hash != new_head:
                 raise RegistryCorrupted(
                     f"retirement anchor record {entry.seq} does not match its journal prefix"
                 )

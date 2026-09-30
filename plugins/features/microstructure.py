@@ -35,8 +35,9 @@ mirrored rather than imported, since it is not one of the constants ``bars.py`` 
   fewer terms would silently redefine the window, which ADR-0085 §通用规则 4 does not allow);
 - ``CorwinSchultzSpreadProvider`` (``cs_spread_<window>``, FEA-CS-SPREAD-001): the Corwin & Schultz
   (2012) two-bar high-low spread estimator, applied to each adjacent bar pair in the trailing
-  ``window`` (= ``window + 1`` contiguous bars), each estimate truncated to ``>= 0`` (ADR-0085: "负值
-  截断为 0") before the trailing mean over the ``window`` estimates. Given ``low > 0`` (validated at
+  ``window`` (= ``window + 1`` contiguous bars), each estimate truncated to ``>= 0``
+  (ADR-0085: "负值截断为 0") before the trailing mean over the ``window`` estimates. Given
+  ``low > 0`` (validated at
   parse time) the estimator's ``beta`` and ``gamma`` terms are non-negative sums/logs of ratios
   ``>= 1``, so no other operation in the formula needs guarding.
 """
@@ -69,7 +70,7 @@ from core.contracts.feature import (
 )
 from core.domain.base import FrozenMapping, Ref
 from core.domain.specs import FeatureSpec
-from plugins.features.bars import BAR_1M_INPUT, DEFAULT_SCALE, _LOG_CONTEXT
+from plugins.features.bars import _LOG_CONTEXT, BAR_1M_INPUT, DEFAULT_SCALE
 
 __all__ = [
     "AmihudIlliquidityProvider",

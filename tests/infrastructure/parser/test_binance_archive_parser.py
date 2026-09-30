@@ -612,7 +612,11 @@ def test_parsing_twice_yields_equal_results_and_no_shared_state() -> None:
     assert first == second
     assert first.row_count == 70_000
     assert first.rows.column("archive_line_number").to_pylist() == list(range(1, 70_001))
-    assert first.rows.column("agg_trade_id").num_chunks == 1
+    # The parser retains bounded RecordBatch chunks instead of combining a second 70k-column
+    # copy at the end. The 65,536-row flush boundary is part of that memory behavior.
+    chunks = first.rows.column("agg_trade_id").chunks
+    assert [len(chunk) for chunk in chunks] == [65_536, 4_464]
+    assert all(column.num_chunks == 2 for column in first.rows.columns)
 
 
 def test_parsed_archive_equality_is_by_value() -> None:

@@ -1,7 +1,8 @@
 """Donchian channel breakout, spot long / flat (ADR-0085 ``STR-TF-DONCHIAN-001``).
 
-Research code — never production (H5). Source: the strategy library entry ``STR-TF-DONCHIAN-001`` / ``STR-BREAKOUT-001`` (Donchian's
-channel rule; the Turtle trading rules). The project knowledge base holds no seed item for the
+Research code — never production (H5). Source: the strategy library entry
+``STR-TF-DONCHIAN-001`` / ``STR-BREAKOUT-001`` (Donchian's channel rule; the Turtle trading rules).
+The project knowledge base holds no seed item for the
 channel rule itself; the spec's ``lineage`` cites the trend-persistence claims the rule trades on,
 ``strategy_time_series_momentum@1.0.0`` and ``strategy_crypto_time_series_momentum@1.0.0``. They are
 claims to test, not evidence.

@@ -480,9 +480,7 @@ def dataset_evidence_sources(
     )
     return DatasetEvidenceSources(
         universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
-        pit=PitSelectorKeySource(
-            PitSelector(adapter, storage), storage=storage, params=pit_params
-        ),
+        pit=PitSelectorKeySource(PitSelector(adapter, storage), storage=storage, params=pit_params),
         quality=PinnedQualityEvidence(
             adapter,
             storage,

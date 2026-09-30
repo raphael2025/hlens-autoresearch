@@ -2,7 +2,7 @@
 
 > 一个长期演化的、模块化、可插拔、可验证的**加密市场自动化研究基础设施**。
 
-**当前阶段：Phase 0（Research Constitution）已完成**（2026-09-24，tag `phase-0-complete`）— 领域契约、状态机、Schema 与测试已就绪，研究宪法已发布为 1.0.0（ADR-0020）；**Phase 1（Market Representation）已开启**（分支 `phase/1`），当前只处于架构决策子阶段（ADR-0021 ~ 0024 已起草为 Proposed，待复核），尚未开始任何数据采集或存储实现。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
+**当前阶段：Phase 0（Research Constitution）已完成**（2026-09-24，tag `phase-0-complete`）— 领域契约、状态机、Schema 与测试已就绪，研究宪法已发布为 1.0.0（ADR-0020）；**Phase 1（Market Representation）已开启**，其本地数据基础设施、采集、修订、PIT、质量、标的池和 Dataset 代码已实现，其中 D3E 已独立验收、D4 已关闭。Phase 1 整体验收仍被 E1-CAP-1 的 32 MiB 完整工作集容量门阻断。Phase 1 的 Accepted 决策见 ADR-0021 ~ 0024 与 [ADR 索引](docs/adr/README.md)。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
 
 ## 它是什么 / 不是什么
 

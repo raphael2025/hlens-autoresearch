@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import TracebackType
-from typing import Any, Final, Self
+from typing import Any, Final, Self, cast
 from urllib.parse import urlparse
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -297,9 +297,7 @@ class _SnapshotBatchStream(Iterator[pa.RecordBatch]):
     ``close`` is idempotent; a closed stream yields nothing more.
     """
 
-    def __init__(
-        self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch, None, None]
-    ) -> None:
+    def __init__(self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch]) -> None:
         self._reader = reader
         self._source = source
         self._closed = False
@@ -512,7 +510,7 @@ def _preflight_snapshot(name: str, io: FileIO, snapshot: Snapshot, plan: _ScanPl
 
 def _snapshot_batches(
     name: str, snapshot: Snapshot | None, plan: _ScanPlan, read: _FileRead
-) -> Generator[pa.RecordBatch, None, None]:
+) -> Generator[pa.RecordBatch]:
     """Second pass: the matched data files of ``snapshot``, read one at a time, in plan order.
 
     Manifest and data files are immutable, so this sees what the preflight checked; the content
@@ -958,7 +956,10 @@ class PyIcebergCatalogAdapter:
         if check is not None and not callable(check):
             raise BatchRejected("max_int64 check must be callable")
         with _backend("max_int64"):
-            reader = self.scan_column_batches(name, columns=(column,), row_filter=row_filter)
+            reader = cast(
+                Generator[pa.RecordBatch],
+                self.scan_column_batches(name, columns=(column,), row_filter=row_filter),
+            )
             try:
                 return _reduce_max_int64(reader, name=name, column=column, check=check)
             finally:
@@ -1227,8 +1228,7 @@ class PyIcebergCatalogAdapter:
                 raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             if (
                 snapshot.summary is not None
-                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID)
-                == request.batch_id
+                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID) == request.batch_id
             ):
                 if first_match is None:
                     first_match = snapshot

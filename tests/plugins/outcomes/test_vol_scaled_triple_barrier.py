@@ -5,6 +5,7 @@ non-positive volatility, and that a later event's volatility cannot change an ea
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from decimal import Decimal
 
@@ -20,7 +21,7 @@ from core.contracts.outcome import (
 )
 from core.domain.base import Kind, Ref
 from core.domain.specs import OutcomeSpec
-from plugins.outcomes import VolScaledTripleBarrierOutcome
+from plugins.outcomes import TripleBarrierOutcome, VolScaledTripleBarrierOutcome
 from tests.contract_suites.outcome import OutcomeProviderContract, OutcomeSubject
 from tests.plugins.outcomes.test_outcome_providers import BARS, EVENTS, MANIFEST, MINUTE, T0
 
@@ -66,7 +67,7 @@ def _request(
 
 
 def _provider(
-    volatility: dict[str, Decimal | None] | None = None,
+    volatility: Mapping[str, Decimal | None] | None = None,
 ) -> VolScaledTripleBarrierOutcome:
     return VolScaledTripleBarrierOutcome(
         (VOL_SCALED,), volatility=VOLATILITY_BY_EVENT if volatility is None else volatility
@@ -101,7 +102,7 @@ def test_vol_scaled_value_matches_the_fixed_fraction_equivalent() -> None:
     """`barrier_multiplier * volatility == 0.0015` must reproduce the same result as the plain
     `triple_barrier` fixture with fixed `upper_barrier == lower_barrier == 0.0015`, since the
     scanning logic and prices are identical."""
-    from tests.plugins.outcomes.test_outcome_providers import BARRIER, TripleBarrierOutcome
+    from tests.plugins.outcomes.test_outcome_providers import BARRIER
 
     fixed_request = OutcomeRequest(
         label_spec=BARRIER,

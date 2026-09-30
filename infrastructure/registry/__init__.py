@@ -1,5 +1,5 @@
-"""File-backed, append-only Strategy Registry and golden blob store (ADR-0005; 2026-09-26), and the
-Profile freeze registry (ADR-0062; 2026-09-27), and the retirement record store (ADR-0086; 2026-09-28).
+"""File-backed, append-only Strategy Registry and golden blob store (ADR-0005; 2026-09-26),
+Profile freeze registry (ADR-0062; 2026-09-27), and retirement record store (ADR-0086; 2026-09-28).
 
 CODE_COMPLETE / DEBUG_PENDING. See ``README.md`` and ``registry.py`` for placement and rules.
 """

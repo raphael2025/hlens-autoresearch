@@ -82,8 +82,8 @@ from research.loop.durable import (
     MEMORY_FILE,
     OPERATOR_STATE_VERSION,
     PLAN_ADMISSION_FILE,
-    ROUND_MEMORY,
     REVIEWS_FILE,
+    ROUND_MEMORY,
     SEALED_OOS_FILE,
     FileAnchor,
     LoopStateLocked,
@@ -362,10 +362,7 @@ def _check_state_anchor(
         or canonical_json(_line_heads(entry)) != canonical_json(anchored.heads)
         or sum(1 for item in memory_entries[: anchored.memory_seq] if item.type == ROUND_MEMORY)
         != anchored.rounds
-        or (
-            anchored.rounds > 0
-            and records[anchored.rounds - 1].record_hash != anchored.audit_head
-        )
+        or (anchored.rounds > 0 and records[anchored.rounds - 1].record_hash != anchored.audit_head)
     ):
         raise _StateFault("the external state anchor disagrees with its state history prefix")
 
@@ -392,8 +389,10 @@ def _check_state_anchor(
         path = state_dir / filename
         entries = _journal_entries(path) if path.exists() else ()
         actual_hash = entries[seq - 1].hash if 0 < seq <= len(entries) else None
-        if seq > len(entries) or (seq == 0 and expected_hash != "0" * 64) or (
-            seq > 0 and actual_hash != expected_hash
+        if (
+            seq > len(entries)
+            or (seq == 0 and expected_hash != "0" * 64)
+            or (seq > 0 and actual_hash != expected_hash)
         ):
             raise _StateFault(f"{name} is behind or differs from its anchored position")
     failure_position = positions["failures"]
@@ -455,7 +454,8 @@ def _check_bus_anchor(state_dir: Path, anchor_path: Path) -> None:
 def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bool:
     """Refuse a ``state_dir`` that is neither new nor this configuration's operator v5 state;
     return whether it already holds a state header. ``open_state`` repeats checks under the
-    directory lock; this read-only pass classifies foreign identity, corruption and recovery first."""
+    directory lock; this read-only pass classifies foreign identity, corruption and recovery
+    first."""
     state_dir = paths.state_dir
     if not state_dir.exists():
         for label, anchor in (
@@ -484,13 +484,9 @@ def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bo
                 if stat.S_ISDIR(bus_info.st_mode):
                     continue
                 if not stat.S_ISREG(bus_info.st_mode) or bus_info.st_nlink != 1:
-                    raise _StateFault(
-                        "state_dir's bus contains a non-regular or aliased entry"
-                    )
+                    raise _StateFault("state_dir's bus contains a non-regular or aliased entry")
         elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise _StateFault(
-                f"state_dir entry {entry.name!r} is not a regular, unaliased file"
-            )
+            raise _StateFault(f"state_dir entry {entry.name!r} is not a regular, unaliased file")
     memory = state_dir / MEMORY_FILE
     children = tuple(state_dir.iterdir())
     if not children:
@@ -529,12 +525,10 @@ def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bo
     if not isinstance(recorded, Mapping):
         raise _StateFault("state_dir's operator state header has no fingerprint object")
     if canonical_json(recorded) != canonical_json(fingerprint):
-        changed = (
-            sorted(
-                key
-                for key in set(recorded) | set(fingerprint)
-                if canonical_json(recorded.get(key)) != canonical_json(fingerprint.get(key))
-            )
+        changed = sorted(
+            key
+            for key in set(recorded) | set(fingerprint)
+            if canonical_json(recorded.get(key)) != canonical_json(fingerprint.get(key))
         )
         raise OperatorRefused(
             "state_dir belongs to another operator configuration (fields that differ: "

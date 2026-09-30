@@ -176,9 +176,7 @@ def _v3_build(
     )
     manifests = verifier.store()
 
-    summary = b.build(
-        request, sources=sources_factory(request), chunks=chunks, manifests=manifests
-    )
+    summary = b.build(request, sources=sources_factory(request), chunks=chunks, manifests=manifests)
 
     both = ManifestStore(w.h.adapter, w.builder(), evidence_verifier=verifier)
     assert both.load_any(summary.manifest_hash) == summary.manifest

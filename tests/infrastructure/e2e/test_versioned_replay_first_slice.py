@@ -45,7 +45,7 @@ from tests.infrastructure.e2e import first_slice_support as fs
 from tests.infrastructure.revision import rest_store_support as ss
 
 #: Every published version older than the current one (ADR-0052 2.1.0, ADR-0055 2.2.0 bumps).
-PRIOR = ("2.0.0", "2.1.0")
+PRIOR = ("2.0.0", "2.1.0", "2.2.0", "2.3.0")
 prior_versions = pytest.mark.parametrize("old", PRIOR)
 _ASSUMED = (rules.AVAILABILITY_BINDING, EXCHANGE_INFO_AVAILABILITY_BINDING, ASSUMPTION_BINDING)
 
@@ -172,7 +172,7 @@ def _replay_every_step(w: ds.World) -> None:
 
 @prior_versions
 def test_an_earlier_first_slice_is_read_and_replayed_unchanged_now(w: ds.World, old: str) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
     with written_at(old):
         _walk(w)
         spec = w.spec()

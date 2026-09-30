@@ -165,5 +165,4 @@ uv run --extra api-server python -m apps.api.serve --port 8000 \
   单 worker、不 reload、不信任代理头。公网部署、TLS / 认证、反向代理、高可用不在范围内，需要另行决定。
 - 各选项直接接到 `create_app`；未给出的设置按 `create_app` 的既有语义回答（空报告列表、任务 / 知识 503）。`--port 0` 绑定临时端口（Uvicorn 日志给出实际端口）。
 - Uvicorn 是可选 `api-server` extra（`uvicorn==0.53.0`），不在默认依赖中；`apps.api` 不 import 它。未安装时入口以退出码 2 与说明退出。
-- **当前状态**：本仓库的任何环境都**未安装** Uvicorn（安装须 Raphael 按 H12 明确批准）；`tests/apps/test_api_server.py` 中真实 Uvicorn 子进程的
-  两项测试因此跳过（未运行）。批准后运行：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`。
+- **当前状态**：当前开发 `.venv` 已按开发期授权安装锁定的 `api-server` extra。真实 Uvicorn 子进程在回环地址提供健康 / 报告 / 知识 HTTP，SIGTERM / SIGINT 优雅停止与 worker 跨进程恢复组合回归为 `30 passed`、无 skip。复验命令：`uv run --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py tests/apps/test_worker_jobs_cross_process.py`。干净默认环境没有安装该可选 extra 时，两个真实 Uvicorn 用例仍按设计跳过。

@@ -267,18 +267,17 @@ Git 是项目的**持久工程历史**；仓库状态必须随时明确无歧义
 
 | 分支 | 用途 | 规则 |
 |---|---|---|
-| `main` | 稳定、已审阅、可恢复的基线 | **常规实现工作不得直接提交到 main** |
-| `phase/<n>` | 当前 Phase 的集成分支（如 `phase/0.5`） | Phase 开启时创建，关闭并合并后保留 |
-| `feature/*`、`fix/*`、`test/*` | 短命任务分支，仅在确有必要时创建 | 合并回当前 phase 分支后即可删除 |
+| `main` | 唯一长期保留的分支与整合基线 | 项目当前由 Raphael 授权在 main 上直接整合和提交；提交保持小而可恢复 |
+| 临时 `feature/*`、`fix/*`、`test/*` | 仅在需要隔离并行实现时短暂创建 | 完成复核并整合到 main 后立即删除分支与 worktree；不得长期保留 phase 分支 |
 
-不创建不必要的分支。文档 / 状态同步这类零散改动可直接提交到当前 phase 分支。
+不创建不必要的分支。独立文档或状态同步可直接提交到 main。归档 ref 可用于保存恢复点，但不是开发分支。
 
 ### 10.2 合并策略
 
-1. 任务分支 → 当前 phase 分支。
-2. phase 分支 → `main`：**仅当该 Phase 的验收标准全部满足**（见 roadmap）。
-3. 以下内容合并进 `main` **必须有 Raphael 的明确批准**：架构决定、ADR、Research Constitution、Lifecycle、验证架构、研究 / 生产边界。
-4. Claude 可以自动准备 commit 与 PR，但**不得代替 Raphael 做架构决定**，也不得静默合并进 `main`。
+1. 临时任务分支（如使用）→ `main`，完成后删除临时分支与 worktree。
+2. 代码进入 `main` 不代表 Phase 验收完成；Phase 状态仍按 roadmap 的验收标准单独记录。
+3. 架构、契约、Constitution、Lifecycle、验证架构和研究 / 生产边界的决定必须先按本文件记录到 ADR；实现授权按 §0 当前有效委托执行。
+4. 不得静默整合；提交与合并记录必须说明改动、验证状态和架构影响。
 
 ### 10.3 Commit 策略
 
@@ -288,7 +287,7 @@ Git 是项目的**持久工程历史**；仓库状态必须随时明确无歧义
 
 ### 10.4 Pull Request
 
-非平凡改动创建 PR，正文包含：改动摘要、测试结果、文档同步情况、架构影响、需要 Raphael 决定的事项、base 分支。
+非平凡改动可创建以 `main` 为 base 的 PR；正文包含改动摘要、实际运行的检查、文档同步情况、架构影响和待决事项。无 PR 时也须在提交记录 / HANDOFF 中保留这些信息。
 
 ### 10.5 合并前验证（必须实际运行）
 
@@ -309,10 +308,10 @@ uv run mypy
 
 ### 10.7 安全红线
 
-禁止：force push；改写已发布历史；无理由删除分支；静默合并进 `main`；修改全局 Git 配置；用 `--no-verify` 跳过检查。
+禁止：force push；改写已发布历史；删除未保全的独有提交或未提交工作；静默整合；修改全局 Git 配置；用 `--no-verify` 跳过检查。临时分支在内容确认已进入 main 或已存入 archive ref 后应及时删除。
 
 ### 10.8 状态报告
 
 每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025）：
-自 2026-09-28 起由 Claude PM 在审阅后推送 phase 分支与已整合的 `main`；子代理 / Codex / Cursor 只提交、不 push。phase → `main` 的合并仍按 §10.2 以 Phase 验收为准。
+项目当前仅保留 `main` 为长期本地与远端分支。自 2026-09-28 起由 Claude PM 在审阅后推送整合后的 `main`；临时任务分支只用于隔离实现，整合后清理。推送 `main` 不等于 Phase 验收完成。
 GIT_STATE 如实报告相对远程的 ahead 数；未创建 PR、未配置 CI 时分别填 `none` / `not configured`。

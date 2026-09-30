@@ -55,11 +55,11 @@ unaffected — it is still "no discrepancy of any kind" — but
 ``ValidationReplayProvider`` to ``verify_replayed_values``. The provider must have recomputed the
 complete gate set from the bound experiment and Profile; this pure function checks the replay
 result's report / run / experiment / Profile identities and compares every ``metric``, ``value``
-and ``value_exact``. It rejects missing, extra, duplicate or mismatched gates. It cannot authenticate
-an arbitrary Python Provider: choosing the trusted implementation is the host composition root's
-responsibility. In particular, G5 may only be supplied from evidence captured during the original
-one-shot evaluation; this repository has no production Provider or persisted G5 replay artifact,
-so Promotion fails closed until the host supplies one.
+and ``value_exact``. It rejects missing, extra, duplicate or mismatched gates. It cannot
+authenticate an arbitrary Python Provider: choosing the trusted implementation is the host
+composition root's responsibility. In particular, G5 may only be supplied from evidence captured
+during the original one-shot evaluation; this repository has no production Provider or persisted G5
+replay artifact, so Promotion fails closed until the host supplies one.
 
 Status: CODE_COMPLETE / DEBUG_PENDING (MOD-VALID, 2026-09-28; ADR-0086 decision 1 and ADR-0092,
 2026-09-28). No contract, Schema, Profile number or gate rule changes.
@@ -116,7 +116,8 @@ class ReportDiscrepancy(StrEnum):
     PIPELINE_VERSION_UNREGISTERED = "pipeline_version_unregistered"
     #: ADR-0086 decision 1: a stage the report's pipeline version and mode require has no gate.
     GATE_STAGE_MISSING = "gate_stage_missing"
-    #: ADR-0086 decision 1: the report carries a gate under a stage its pipeline version never emits.
+    #: ADR-0086 decision 1: the report carries a gate under a stage its pipeline version never
+    #: emits.
     GATE_STAGE_UNKNOWN = "gate_stage_unknown"
     #: ADR-0092: replay output is absent, unbound, incomplete or differs from the report's values.
     RECOMPUTED_VALUE_MISMATCH = "recomputed_value_mismatch"
@@ -436,9 +437,7 @@ def verify_replayed_values(
     replayed_ids = [gate.gate_id for gate in replay.gates]
     replayed = {gate.gate_id: gate for gate in replay.gates}
     discrepancies: list[GateDiscrepancy] = []
-    duplicates = sorted(
-        gate_id for gate_id, count in Counter(replayed_ids).items() if count > 1
-    )
+    duplicates = sorted(gate_id for gate_id, count in Counter(replayed_ids).items() if count > 1)
     for gate_id in duplicates:
         discrepancies.append(
             GateDiscrepancy(
@@ -471,9 +470,7 @@ def verify_replayed_values(
         if recorded.value != computed.value:
             differences.append(f"value {computed.value!r} != {recorded.value!r}")
         if recorded.value_exact != computed.value_exact:
-            differences.append(
-                f"value_exact {computed.value_exact!r} != {recorded.value_exact!r}"
-            )
+            differences.append(f"value_exact {computed.value_exact!r} != {recorded.value_exact!r}")
         if differences:
             discrepancies.append(
                 GateDiscrepancy(

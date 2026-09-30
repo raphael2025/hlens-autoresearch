@@ -14,8 +14,9 @@ dedicated `StateSpec` fields, not `method` params) for the two quantile regimes,
 `efficiency_ratio` (`window`, `threshold`) for `TrendRangeProvider`.
 
 `volatility_squeeze` (`vol_ratio_bands`, ADR-0085 `MST-SQUEEZE-001` / `MST-EXPANSION-001`) and
-`return_shock` (`abs_return_vol_multiple`, `MST-SHOCK-001`), from `plugins/states/volatility_events.py`,
-follow the same shape: no `method` parameter has a default (ADR-0085 §"通用规则" #2), so every one
+`return_shock` (`abs_return_vol_multiple`, `MST-SHOCK-001`), from
+`plugins/states/volatility_events.py`, follow the same shape: no `method` parameter has a default
+(ADR-0085 §"通用规则" #2), so every one
 of them is `required` here too.
 """
 

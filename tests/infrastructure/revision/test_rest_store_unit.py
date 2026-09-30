@@ -1485,10 +1485,20 @@ class _ScanHook(ProxyCatalog):
 
     def scan_columns(self, table: str, **kwargs: Any) -> Any:
         result = self.inner.scan_columns(table, **kwargs)
-        text = repr(kwargs.get("row_filter"))
-        if table == AGGS.table and "observation_key" in text:
+        if table == AGGS.table and "observation_key" in repr(kwargs.get("row_filter")):
             self.armed = True
-        elif (
+        return result
+
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
+        reader = self.inner.scan_column_batches(table, **kwargs)
+        try:
+            batches = list(reader)
+        finally:
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
+        text = repr(kwargs.get("row_filter"))
+        if (
             table == RESPONSES.table
             and self.armed
             and "revision_id" in text
@@ -1498,7 +1508,7 @@ class _ScanHook(ProxyCatalog):
             self.lineage_scans += 1
             if self.hook is not None:
                 self.hook(self.lineage_scans)
-        return result
+        return iter(batches)
 
 
 def _unrelated_response_factory(h: RestHarness) -> Any:

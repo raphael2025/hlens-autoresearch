@@ -12,7 +12,7 @@
 
 ## 当前代码线与分支处置
 
-- 当前整合点：本地 `main@ae66dc8`；`origin/main@44fe9a2`；当前 ahead 131，未推送。四项 E1-R 提交已进入本地 main；状态文档待同步提交后预计 ahead 132。G1 两条边界测试仍未运行。
+- 本文记录 2026-09-28 的代码收敛计划，分支数字与当日裁定只作历史记录。2026-09-29 Raphael 要求两轮失败项延期、不阻塞整体进度后，协调分支转为 `codex/w1-stabilization`；当前分支/worktree 状态和 W1 结果以 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-28-project-completion-wbs.md` 为准。
 - `phase/1@52f7477` 的所有提交都是 main 祖先，没有独有 patch；已保存至 `refs/archive/2026-09-28/branches/local/phase-1` 后删除分支，并将根 checkout 切回 `main`。根下未跟踪旧计划已移入本地 `.codex/archive/`，跟踪版计划已在主线。Cursor 会话此前确认无独有实现；IDE 进程未强行关闭。
 - `docs/research-spec-completion@82bfe73` 从旧 `20bdd82` 分叉，整树与当前 main 有 124 个路径差异，包含主线后续实现的删除 / 回退。其 `7b9df59` 的 G1 测试与策略收益率修复已核对在 main；其余 README / library 文档以 main 为准。tip 由 archive ref 保存；确认工作区干净、特殊测试与 main 相同后，已关闭闲置 Claude 会话并清理 branch/worktree。
 - 远端只保留 `main`；不得从 archive ref 恢复或整支合并失败的 E1 候选。E1 候选 `c3868dc` 超过 32 MiB 门槛的失败证据继续保留。
@@ -24,7 +24,7 @@
 |---|---|---|---|---|---|
 | P0.5 Knowledge Base | CODE_COMPLETE / DEBUG_PENDING：检索、review 写入、过滤、seed loader 已实现 | 无已批准的可编码缺口 | seed tags/assets 需具名人工审阅；黄金哈希留统一验收生成 | 否：人工 / 验收门 | 否 |
 | P1 D0–D4 数据基础链 | CODE_COMPLETE / DEBUG_PENDING：Storage、Catalog、Collector、Parser、Revision、PIT、Normalizer、REST / lineage 均有基础实现 | 本轮不扩 E1 有界状态；其余经审计无已批准代码缺口 | 历史 universe / volume bars 是规格门 | 否 | 可按单模块独立，但当前无任务 |
-| P1 E1 / Dataset | FRAMEWORK：基础读取、selection、manifest、RSS 工具已存在；上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`，未审阅、未测试、不构成正式决定 | 仍有 E1-CAP-1 / Dataset 有界结果工作，但本轮明确排除 | ADR-0077、容量门、32 MiB 证据；需后续单独处理 | **否：本轮跳过** | 否：本轮不派 |
+| P1 E1 / Dataset | FRAMEWORK：基础读取、selection、manifest、RSS 工具已存在；上一轮归档的 E1 设计背景见 E1 review | 2026-09-29 已重开有界路径批次：archive parser、PIT run-set、Universe 外部排序；E1-CAP-1 仍需端到端测量 | ADR-0077 当前接受范围、DQ-9 参数证据、32 MiB 容量门；不猜数值 | **是：W3/E1 子任务并行实施** | 是：各子任务边界分开，由 PM 做接口整合 |
 | P2 State + Web diagnostics | CODE_COMPLETE / DEBUG_PENDING：执行器与 Python / Web diagnostics 字段已接线 | 无已批准的代码缺口；兼容与渲染属于后续调试 | 逐 kind Report DTO schema 需新契约决定 | 否：当前实现随本地修改收敛 | 是，若后续只改 Web |
 | P3 Event | CODE_COMPLETE / DEBUG_PENDING：Provider、DSL、统计、定义及显式建表命令输出已实现 | 无；旧断言留统一调试 | 真正创建 Catalog 表需人工授权 | 否 | 是，单独命令模块 |
 | P4 Outcome | CODE_COMPLETE / DEBUG_PENDING：store/source、转换辅助与验证流已实现 | 无已批准调用接线；现有纯转换函数不新造写路径 | 若增加新写入调用点，需先确认流程 / ADR 边界 | 否 | 否：无任务 |
@@ -40,7 +40,7 @@
 | P14 Migration | FRAMEWORK / CODE_COMPLETE：golden、diff、rollback evidence 与不可变快照已有 | 无目标系统时不写 target adapter；现有 conformance 覆盖不等于迁移目标 | 目标系统与 golden data 需人工提供 | **否：本轮跳过** | 否：等待目标 |
 | Apps / shared APIs | CODE_COMPLETE / DEBUG_PENDING：Reports API、只读 Web 查询面、多类页面已实现 | 无已批准基础接线缺口；P2 / P8 消费字段已同步 | report kind 版本化 DTO 需契约门；不增加写触发 | 否 | 是：后续可按单 app 页面并行 |
 
-本表按现有模块计划、Wave A/C 交付记录与当前工作区代码盘点；“CODE_COMPLETE / DEBUG_PENDING”只表示批准范围内基础逻辑已存在，不代表测试或阶段验收通过。P1 E1 / Dataset 明确留到后续，不作为本轮代码缺口继续深挖。
+本表按现有模块计划、Wave A/C 交付记录与当前工作区代码盘点；“CODE_COMPLETE / DEBUG_PENDING”只表示批准范围内基础逻辑已存在，不代表测试或阶段验收通过。除上表注明重开的 E1 子任务外，原计划的暂缓事项仍保持暂缓。
 
 ### 后续模块调试顺序建议
 
@@ -54,11 +54,13 @@
 
 以上只是下一阶段建议顺序，不代表任何 Phase 已验收；每个模块调试结束后单独记录结果与剩余门槛。
 
-### 本轮跳过的决定 / 人工门
+### 原计划延期的决定 / 人工门
+
+以下反映 2026-09-28 编制时的边界；P1 E1 有界实现已按 Raphael 2026-09-29 的进度指示重新排入当前批次。其他人工 / 决策门仍保持原判。
 
 | ID | 模块 | 待定问题 / 人工动作 | 本轮处理 |
 |---|---|---|---|
-| DP-P1-E1 | P1 E1 / Dataset | ADR-0077 与 E1-CAP-1 的后续实现和容量证据 | 本轮跳过；ADR 保持 Proposed，不继续扩写或实施 |
+| DP-P1-E1 | P1 E1 / Dataset | ADR-0077 与 E1-CAP-1 的后续实现和容量证据 | 已于 2026-09-29 重开有界实现工作；32 MiB 证据仍未完成 |
 | DP-P0.5-REVIEW | P0.5 Knowledge Base | 由具名审阅者确认 seed tags/assets；验收窗口生成黄金哈希 | 本轮不代审、不生成 |
 | DP-P3-CATALOG | P3 Event | 是否授权在真实 Catalog 创建 Event 表 | 本轮不创建 |
 | DP-P7-OUTPUTS | P7 Discovery | lowered outputs 完整集合的权威来源与后续 producer/lowering 边界 | 本轮不实现 producer 或启用算子 |
@@ -137,10 +139,13 @@ Raphael 于 2026-09-28 指定 Claude Code 以 PM 身份协调本轮：只有 PM 
 | W1-P7 | P7 Discovery | ADR-0078：lowered outputs 权威；producer / 完整性校验 | Codex | research/hypotheses | 改 `runnable=False`、运行时启用算子、core/ | ADR + 实现 + 测试更新 | ✅ `79ea546` |
 | W1-P10 | P10 Router | ADR-0079：deviation 绑定 P8 声明范围 | Codex | research/router | 改阈值、推翻 P10-FREEZE、core/ | ADR + 实现 + 测试更新 | ✅ `1974610`；console fixture 需运行 writer 重生成，列入调试 |
 | W2-P11 | P11 Loop | ADR-0080：ACTIVE / source / metric 权威与 resolver | Codex | research/loop、research/operations | 仓内 scheduler、伪造 Profile | ADR + 实现 | ⛔ BLOCKED `b7ee4b1`：缺上游权威定义（D-P11-AUTH）；首次运行因 stdin 挂起浪费 4h 后重跑 |
-| W2-DTO | Apps | ADR-0081：各 report kind 版本化 DTO；同步 deviation 2.0.0 | Codex | research/reports、apps/api、apps/web/src | DTO 进 core/、生成 fixture、收窄旧版读取、写 API | ADR + 实现 + 待重生成 fixture 清单 | 🔄 |
+| W2-DTO | Apps | ADR-0081：各 report kind 版本化 DTO；同步 deviation 2.0.0 | Codex | research/reports、apps/api、apps/web/src | DTO 进 core/、生成 fixture、收窄旧版读取、写 API | ADR + 实现 + 待重生成 fixture 清单 | 🟡 DTO / fixtures 已对齐；API 90 passed、Web lib 111 passed；全仓遗留失败转延期见 2026-09-29 W1 review |
 | W2-P4 | P4 Outcome | 按 roadmap 判定 converter 调用接线 | Codex | research/outcomes、research/experiments | 改 outcome 语义 / 阈值 | 接线或书面依据 | ✅ `317e6c8`：无需生产调用点，依据写入 README |
 | W3-P7OPS | P7 Discovery | ADR-0082：六类算子语义与 lowering | Codex | research/hypotheses | 设 runnable、接 Runner | 逐算子 ADR + lowering | 🟡 `29763f3`：interaction 完成；其余五项 OPEN（D-P7-OPS） |
-| W3-E1DS | P1 Dataset | 实施 ADR-0077（2.3.0 additive 契约模型 + 有界 Dataset API；v2 只读兼容） | Codex | core/contracts（仅新增）、infrastructure/dataset、catalog 新表 | 改动既有 v2 模型字段 / 哈希；与其他任务并行 | 实现 + 测试更新 | ⏳ 待当前任务全部结束后单独串行（涉及 core/） |
+| W3-E1DS | P1 Dataset | 收口 ADR-0077（2.3.0 additive 契约模型 + 有界 Dataset API；v2 只读兼容） | Codex | infrastructure；若触及 core 契约需单独串行 | 改动既有 v2 模型字段 / 哈希；越过 ADR 升级质量契约 | 有界实现 + 测试 + 后续容量证据 | 🔄 主流程已有；只读审查仍见 PIT / Universe / per-key / quality-gap O(N) 持有点；DQ-9 与 E1-CAP-1 等容量证据。详见 2026-09-29 W1 review |
+| W3-PIT-STREAM | P1 Dataset / PIT | ADR-0077 §6.1.2–6.1.4：扫描时 bounded spill，逐 key 有序归并，run refs 层次有界 | Codex agent | `infrastructure/pit/selector.py`, `runs.py`, PIT tests | whole-window sets/lists；core / v2 contracts | structural multi-level spill + close tests; focused PIT tests | ✅ isolated commit `fc5d736`; `test_bounded_runs.py` + `test_selector_v3.py` 41 passed；单 key 图物化仍是 ADR-0077 acceptance blocker，详见提交说明 |
+| W3-UNIVERSE-STREAM | P1 Dataset / Universe | ADR-0077 §6.1.1：通过有界外部排序合并 listing / exchange-info event streams；DQ-9 数值显式传入、不设默认 | Codex agent | `infrastructure/universe/builder.py`, `infrastructure/dataset/sources.py`, v3 source tests | 假定 Catalog 排序；whole-window event/ref sets；schema changes | cutoff, dedupe, multi-run, close tests | ✅ `codex/dataset-universe-bounds@bf72bd5`; 51 passed + gap invariant follow-up `1 passed`。四类排序折叠到单一 run root；lineage 首次出现索引转为 SQLite scratch，scratch 空间随唯一 revision 数增长，容量待测，ADR-0077 / E1-CAP-1 未验收 |
+| E1-ARCHIVE-STREAM | P1 D1 / E1 | Keep full-file integrity while adding bounded parser output and connect D2 row writer | Codex agent | `infrastructure/parser/binance_archive.py`, `revision/row_integrity.py`, `infrastructure/revision/store.py`, focused tests | change to `ParsedArchive` public API; weaken CRC/SHA/row rejection | spool cleanup / reject atomicity / focused parser, verifier and D2 writer tests | ✅ isolated commits `8f9265a` + `e0aab8d` + `27b8b54`; parser / row-integrity / store regression 177 passed. One verifier call now holds at most one parse spool and closes it after use. Full-process / tmpfs capacity remains unmeasured; E1-CAP-1 stays open |
 | W4-P7RETRY | P7 Discovery | ADR-0083：失败轮次审阅后的显式重试入口 | Codex | research/loop（不含 dataset_*）、apps/worker/loop.py | 删除 / 隐藏失败记录、重置 trial 计数、自动重试 | ADR + 入口 + 测试更新 | 🔄 |
 | W3-P11D | P11 Loop | dataset operator + 在 ADR-0077 新 API 上再试一次权威解析（仅一次） | Codex | 待 W3-E1DS 完成后签发 | — | — | ⏳ 排队 |
 | HUMAN | P14 / P0.5 | 迁移目标与 golden data；seed tags/assets 具名审阅 | Raphael / 具名审阅者 | — | 不代写、不猜 | — | ⏸ 需人工输入 |

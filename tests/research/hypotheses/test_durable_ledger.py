@@ -10,8 +10,11 @@ from pathlib import Path
 import pytest
 
 from core.domain.base import Kind, Ref
+from core.domain.research import HypothesisOrigin
 from research.hypotheses import LedgerError, TrialLedger, negation
+from research.hypotheses.generator import HypothesisDraft
 from research.persistence import AppendOnlyJournal, JournalCorrupted
+from tests.factories import llm_call
 
 S = Ref(kind=Kind.STRATEGY, name="tsmom", version="1.0.0")
 
@@ -44,6 +47,19 @@ def test_re_registering_the_same_hypothesis_after_reload_is_not_a_new_trial(
     reloaded = TrialLedger(path)
     assert not reloaded.register(h1)  # idempotent: the family count does not double
     assert reloaded.trials("fam") == 1
+
+
+def test_direct_register_rejects_an_already_reviewed_llm_hypothesis() -> None:
+    ledger = TrialLedger()
+    hypothesis = negation("llm_h1", "fam", S, "0.1").model_copy(
+        update={"origin": HypothesisOrigin.LLM}
+    )
+    assert ledger.register_draft(
+        HypothesisDraft(hypothesis=hypothesis, call=llm_call(), reviewed=True)
+    )
+
+    with pytest.raises(LedgerError, match="registered only as a reviewed draft"):
+        ledger.register(hypothesis)
 
 
 def test_changing_a_registered_hypothesis_after_reload_is_refused(tmp_path: Path) -> None:

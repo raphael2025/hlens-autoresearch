@@ -20,6 +20,7 @@ import pytest
 
 from core.contracts.feature import FeatureObservation, FeatureRequest
 from core.contracts.revision import PointInTimeSpec
+from infrastructure.canonical.resample import resample_bars
 from infrastructure.dataset.manifests import ManifestFormError
 from infrastructure.feature.dataset import (
     DatasetBindingError,
@@ -27,7 +28,6 @@ from infrastructure.feature.dataset import (
     feature_request_from_derived_bars,
 )
 from infrastructure.feature.observations import bar_observations, derived_bar_observations
-from infrastructure.canonical.resample import resample_bars
 from infrastructure.feature.runner import run_feature
 from infrastructure.pit.selector import PitSelector
 from plugins.features import BarVolumeSumProvider
@@ -133,9 +133,7 @@ def test_a_v3_interval_request_keeps_the_effective_times_and_membership(w: World
 
 
 @pytest.mark.parametrize("change", sorted(ALTERED))
-def test_observations_that_are_not_the_v3_datasets_rows_are_refused(
-    w: World, change: str
-) -> None:
+def test_observations_that_are_not_the_v3_datasets_rows_are_refused(w: World, change: str) -> None:
     data = _datasets(w)
     altered = ALTERED[change](data.observations())
     for on_v3 in (False, True):
@@ -222,7 +220,7 @@ def test_a_v3_derived_request_is_the_v2_request_but_for_the_manifest_hash(w: Wor
 def test_a_v2_derived_hash_with_an_evidence_verifier_is_exactly_the_v2_path(w: World) -> None:
     data = _datasets(w)
     observations = data.derived_observations(1)
-    args = {
+    args: dict[str, Any] = {
         "adapter": w.h.adapter,
         "storage": w.h.storage,
         "builder": w.builder(),

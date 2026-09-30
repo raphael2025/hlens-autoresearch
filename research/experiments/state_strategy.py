@@ -199,9 +199,7 @@ def state_strategy_matrix(
         else states
     )
     state_at = (
-        _asof_states(known, sorted(returns), max_state_age)
-        if max_state_age is not None
-        else known
+        _asof_states(known, sorted(returns), max_state_age) if max_state_age is not None else known
     )
     buckets: dict[str | None, list[Decimal]] = {}
     for at in sorted(returns):
@@ -303,7 +301,8 @@ def matrix_from_backtest(
     The return over ``(t, t_next]`` goes to the state evaluated at ``t`` (known at ``t``). In
     exact mode every period start must have a state evaluation (otherwise ``ValueError``). When
     ``max_state_age`` is provided, each start uses the latest state evaluation at or before it,
-    with stale / absent history assigned to unknown. The matrix binds both inputs by ``result_hash``.
+    with stale / absent history assigned to unknown. The matrix binds both inputs by
+    ``result_hash``.
     """
     if not isinstance(states, StateResult):
         raise ValueError("matrix_from_backtest needs a StateResult")

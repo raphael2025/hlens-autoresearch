@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding, PolicyRole
+from core.domain.base import FrozenMapping
 from infrastructure.canonical.listings import ListingPointInTime, UnconstructibleReason
 from infrastructure.universe import listing_assumption as backfill
 from tests.infrastructure.revision import exchange_info_support as xs
@@ -50,7 +51,7 @@ def _bound_pit(simulation: datetime, cutoff: datetime) -> PointInTimeSpec:
         version="1.0.0",
         simulation_time=simulation,
         knowledge_cutoff=cutoff,
-        snapshot_bindings={"canonical.instrument_listings": "1"},
+        snapshot_bindings=FrozenMapping({"canonical.instrument_listings": "1"}),
         point_in_time_binding=pit_binding,
         availability_bindings=(base, backfill.ASSUMPTION_BINDING),
         precedence_bindings=(precedence,),

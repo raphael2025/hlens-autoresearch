@@ -84,7 +84,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Final, TypeVar
+from typing import Any, Final
 
 from pydantic import ValidationError
 
@@ -245,9 +245,6 @@ _GIT_OID_RE: Final = re.compile(GIT_OID_PATTERN)
 _DURATION_RE: Final = re.compile(r"(0|[1-9][0-9]*)(?:\.([0-9]{0,5}[1-9]))? seconds")
 _PLACEHOLDER_RE: Final = re.compile(r"\s*<.*>\s*", re.DOTALL)
 _TEST_ONLY_RE: Final = re.compile(r"test[\s_-]*only", re.IGNORECASE)
-
-_M = TypeVar("_M", bound=Contract)
-_T = TypeVar("_T")
 
 
 class OperatorConfigError(ValueError):
@@ -717,7 +714,7 @@ def _float_param(value: Any, label: str) -> float:
     return result
 
 
-def _nullable(value: Any, label: str, parse: Callable[[Any, str], _T]) -> _T | None:
+def _nullable[T](value: Any, label: str, parse: Callable[[Any, str], T]) -> T | None:
     """A nullable ``RobustnessParams`` value: TOML ``false`` is ``None``; ``true`` is refused."""
     if value is False:
         return None
@@ -832,7 +829,7 @@ def _providers(value: Any) -> tuple[ProviderIdentity, ...]:
 # ---- artifacts ------------------------------------------------------------------------------
 
 
-def _artifact(value: Any, label: str, base: Path, model: type[_M]) -> _M:
+def _artifact[M: Contract](value: Any, label: str, base: Path, model: type[M]) -> M:
     """Load one ``{ path, content_hash }`` reference through its contract model (module docs)."""
     ref = _table(value, label, _REF_KEYS)
     path = _resolve(ref["path"], f"{label} path", base)
@@ -855,7 +852,7 @@ def _artifact(value: Any, label: str, base: Path, model: type[_M]) -> _M:
     return loaded
 
 
-def _artifacts(value: Any, label: str, base: Path, model: type[_M]) -> tuple[_M, ...]:
+def _artifacts[M: Contract](value: Any, label: str, base: Path, model: type[M]) -> tuple[M, ...]:
     if not isinstance(value, list):
         raise OperatorConfigError(f"{label} must be an array")
     return tuple(_artifact(item, f"{label}[{i}]", base, model) for i, item in enumerate(value))
@@ -1080,8 +1077,8 @@ def _cross_check(values: LoopValues, wiring: WiringValues) -> None:
             f"{profile.ref} stresses {stressed}, the configured cost_model is "
             f"{wiring.cost_model.ref}"
         )
-    for index, entry in enumerate(wiring.strategies):
-        if entry.hypothesis_family_id != values.family_id:
+    for index, strategy_entry in enumerate(wiring.strategies):
+        if strategy_entry.hypothesis_family_id != values.family_id:
             raise OperatorConfigError(
                 f"[loop.wiring] strategies[{index}] hypothesis_family_id is not [loop] family_id"
             )

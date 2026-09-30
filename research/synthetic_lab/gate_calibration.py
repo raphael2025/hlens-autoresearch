@@ -709,8 +709,7 @@ class GateCalibrationSetup:
                 raise ValueError("seeds must be distinct")
         arms = [synthetic_effect_arm_id(effect) for effect in self.planted]
         if any(
-            isinstance(effect, PlantedEffect) and effect.strength == 0
-            for effect in self.planted
+            isinstance(effect, PlantedEffect) and effect.strength == 0 for effect in self.planted
         ):
             raise ValueError("a planted effect with strength 0 is noise")
         if len(set(arms)) != len(arms):
@@ -824,8 +823,7 @@ class MultiInstrumentArm:
         if not isinstance(self.effects, tuple) or not self.effects:
             raise ValueError(f"{self.name}: effects must declare every instrument")
         if any(
-            isinstance(effect, PlantedEffect) and effect.strength == 0
-            for effect in self.effects
+            isinstance(effect, PlantedEffect) and effect.strength == 0 for effect in self.effects
         ):
             raise ValueError(f"{self.name}: a planted effect with strength 0 is noise")
         planted = sum(effect is not None for effect in self.effects)

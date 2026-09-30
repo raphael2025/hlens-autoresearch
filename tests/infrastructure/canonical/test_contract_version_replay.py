@@ -252,16 +252,16 @@ def test_committed_batches_without_version_evidence_fail_closed(h: RestHarness) 
 
 # =========================================================================================
 # the real bumps (M2, ADR-0055): units committed at every earlier published version (2.0.0, 2.1.0),
-# read and replayed at the current version (2.2.0)
+# read and replayed at the current version (2.4.0)
 # =========================================================================================
 
 #: Every published version older than the current one: each must replay unchanged.
-PRIOR = ("2.0.0", "2.1.0")
+PRIOR = ("2.0.0", "2.1.0", "2.2.0", "2.3.0")
 prior_versions = pytest.mark.parametrize("old", PRIOR)
 
 
 def test_the_bump_is_real() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (*PRIOR, CONTRACT_SCHEMA_VERSION)
 
 

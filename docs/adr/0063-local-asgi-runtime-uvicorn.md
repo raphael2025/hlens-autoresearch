@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Accepted**（2026-09-27，Codex 依 Raphael 2026-09-23 授权决定技术栈；D-UVICORN 选 A）；已实施（B65）CODE_COMPLETE / DEBUG_PENDING；**真实 Uvicorn 运行待 Raphael 明确授权安装**（H12） |
+| 状态 | **Accepted**（2026-09-27，Codex 依 Raphael 2026-09-23 授权决定技术栈；D-UVICORN 选 A）；已实施并于 2026-09-29 通过真实 Uvicorn 生命周期测试（见验证记录） |
 | 日期 | 2026-09-27 |
 | 决策者 | Codex（技术协调者，CLAUDE.md §0） |
 | 起草者 | Claude Code（Opus），只记录决定，不改变决定 |
@@ -58,7 +58,7 @@ ADR-0048 的只读研究 API（`apps/api`，`create_app(...)`）至今没有选�
   不新增任何其他依赖；普通 `uv sync` 与默认全量门禁不变（默认依赖中没有 Uvicorn）。若离线解析或完整性核对失败，停止、不安装、报告具体失败，不扩大授权。
 - 仓库改动已授权并实施（B65）：`pyproject.toml` 的 `[project.optional-dependencies] api-server = ["uvicorn==0.53.0"]`、`uv.lock` 的对应条目、
   回环入口、文档与真实子进程集成测试。
-- **安装仍未授权**：CLAUDE.md H12 要求环境软件安装由 Raphael 明确批准，因此没有在任何环境运行 `uv sync --extra api-server` 或安装 Uvicorn。
+- **当时未安装**：截至 2026-09-27，未在任何环境安装 Uvicorn；Raphael 于 2026-09-28 授权开发期环境安装由 PM 决定，后续按该授权安装并验证（见下方记录）。
 
 ## Implementation note（B65，2026-09-27）
 
@@ -75,4 +75,15 @@ ADR-0048 的只读研究 API（`apps/api`，`create_app(...)`）至今没有选�
   `create_app` 接线经 TestClient、可选 extra 声明与锁条目、`apps.api` 不 import Uvicorn、缺 extra 时退出码 2）全部通过；
   需要 Uvicorn 的 2 项（真实 `python -m apps.api.serve` 子进程在 127.0.0.1 临时端口上：健康检查、报告列表 / 详情、知识检索、未配置的 `/jobs` 503、
   SIGTERM / SIGINT 优雅停止且退出码 0）在当前环境**跳过（未运行）**，原因写明 extra 未安装。
-- **待 Raphael 批准后才能执行的命令**：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`。在此之前不得声称真实 Uvicorn 运行已通过。
+- **当时待批准的命令**（2026-09-27）：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`；该状态已由下方 2026-09-29 验证记录取代。
+
+## Post-acceptance validation (2026-09-29)
+
+Raphael 的 2026-09-28 开发期环境授权覆盖安装锁定的 optional extra。当前开发 `.venv` 安装 `uvicorn==0.53.0`；真实子进程在 `127.0.0.1` 上提供健康、报告和知识 HTTP 后，SIGTERM / SIGINT 均完成 graceful shutdown 并以 0 退出。复验命令：
+
+```bash
+uv run --extra api-server pytest -q -rs -p no:cacheprovider \
+  tests/apps/test_api_server.py tests/apps/test_worker_jobs_cross_process.py
+```
+
+结果：`30 passed, 1 warning in 6.10s`；唯一 warning 为 Starlette 提醒 `TestClient` 的 `httpx` 依赖迁移。实现处理 Uvicorn 完成清理后的信号重放，测试 harness 直接 drain 已由启动读取过的 stdout；默认依赖不变，Uvicorn 仍仅属于可选 extra。

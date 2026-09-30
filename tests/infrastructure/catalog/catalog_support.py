@@ -250,9 +250,7 @@ class ScanSpy:
                 batches.append(batch)
             return pa.RecordBatchReader.from_batches(reader.schema, batches)
 
-        def scan_column_batches(
-            adapter: PyIcebergCatalogAdapter, *args: Any, **kwargs: Any
-        ) -> Any:
+        def scan_column_batches(adapter: PyIcebergCatalogAdapter, *args: Any, **kwargs: Any) -> Any:
             spy.readers += 1
             batches = real_scan_batches(adapter, *args, **kwargs)
 
