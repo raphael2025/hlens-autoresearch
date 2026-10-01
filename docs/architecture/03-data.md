@@ -366,3 +366,17 @@ F2 / F3 实现要点（`infrastructure/universe/`、`infrastructure/dataset/`）
   清单，Phase 1 的 15 张表与其哈希不变；只通过显式的 `ensure_event_tables(adapter)` 建表，不接入 Phase 1 的建表脚本。
 - 当前表定义依据 ADR-0056（含实施说明）、ADR-0057 与 ADR-0052 版本化重放实现；`event.events` 尚未在生产 catalog 创建，本文描述的是已登记并实现的表结构，不表示生产建表已执行。
 - 空运行（0 个事件）不写入表（`CommitRequest.row_count >= 1`），整次运行由 `EventResultStore` 制品存储保存。
+
+## 9. Phase 2 物理 State 表（[ADR-0089](../adr/0089-state-iceberg-table.md)，Accepted；入口见 [ADR-0102](../adr/0102-state-run-entry.md)）
+
+| 表 | 内容 | 初始分区 |
+|---|---|---|
+| `state.states` | 一次状态运行（`StateResult`）的全部评估时刻，一行一个时刻：逻辑 State 表 9 列（`infrastructure/state/table.py` 的 `STATE_TABLE_SCHEMA`：`state_ref`、`spec_hash`、`provider`、`request_hash`、`result_hash`、`evaluation_time`、`state`、`inputs_used`、`latest_input_time`；`state` 为空表示显式"不可计算"）+ 运行块 4 列（`provider_hash`、`evaluation_index`、`evaluation_count`、`run_schema_version`）；运行块记录契约信封版本，读取时按记录版本重建并复核 `StateResult`。一次运行一个批次（`batch_id = state.{result_hash}`），同运行重写为 no-op，同 `result_hash` 不同内容 fail closed，读取固定在一个 snapshot 上 | `day(evaluation_time)` |
+
+- 定义在 `infrastructure/state/table_definition.py`（`PHASE2_TABLES` / `PHASE2_REGISTRY`），**不**属于 §7.1 的 Phase 1
+  清单，Phase 1 的 15 张表与其哈希不变；只通过显式的 `ensure_state_tables(adapter)`（命令
+  `python -m infrastructure.state.create_state_tables`，默认只打印计划，`--apply` 才连 Catalog）建表，不接入 Phase 1 的建表脚本。
+- `state.states` **尚未在生产 catalog 创建**；本节描述的是已登记并实现的表结构，不表示生产建表已执行。
+- 写入与读回入口（ADR-0102）：`python -m infrastructure.state.run_cli` 的 `compute`（默认只打印摘要；`--store` 写
+  `StateResultStore` 制品，`--apply-table` 追加到**已存在**的 `state.states`，不隐式建表）、`show`、`list`；
+  存储的整次运行由 `StateResultStore` 制品保存（`<root>/<result_hash>.json`），不是 Iceberg 表。
