@@ -538,6 +538,7 @@ def test_dataset_v3_consumes_exact_bound_canonical_and_listing_reports(
         chunks = IcebergChunkWriter(w.h.adapter, DATASET_SELECTION_CHUNKS)
         quality_manifest_scans: list[str | None] = []
         original_scan_columns = w.h.adapter.scan_columns
+        original_scan_column_batches = w.h.adapter.scan_column_batches
 
         def track_quality_manifest_scan(
             table: str, *, snapshot_id: str | None = None, **kwargs: Any
@@ -546,7 +547,17 @@ def test_dataset_v3_consumes_exact_bound_canonical_and_listing_reports(
                 quality_manifest_scans.append(snapshot_id)
             return original_scan_columns(table, snapshot_id=snapshot_id, **kwargs)
 
+        def track_quality_manifest_batches(
+            table: str, *, snapshot_id: str | None = None, **kwargs: Any
+        ) -> Any:
+            # E1 bounding: the Dataset Quality source streams its manifest lookup; every read of
+            # the manifest table, streamed or not, must still be at the pinned binding.
+            if table == DATA_QUALITY_REPORT_MANIFESTS.table:
+                quality_manifest_scans.append(snapshot_id)
+            return original_scan_column_batches(table, snapshot_id=snapshot_id, **kwargs)
+
         monkeypatch.setattr(w.h.adapter, "scan_columns", track_quality_manifest_scan)
+        monkeypatch.setattr(w.h.adapter, "scan_column_batches", track_quality_manifest_batches)
         verifier = StreamingEvidenceVerifier(
             w.h.adapter, builder=builder, chunks=chunks, sources=sources_for
         )

@@ -940,4 +940,7 @@ class DatasetIngestStage:
         if declared.has_sealed_pair:
             summary["sealed_feature_manifest_hash"] = declared.sealed_feature_manifest_hash
             summary["sealed_price_manifest_hash"] = declared.sealed_price_manifest_hash
-        return StageResult(summary, self.estimate(ctx), {"segment": segment})
+        # the decision grid the segment's decision times were built with: a new run records it
+        # (research.experiments.run_inputs, ADR-0100 修订 2)
+        grid = (self._step, self._warmup)
+        return StageResult(summary, self.estimate(ctx), {"segment": segment, "decision_grid": grid})

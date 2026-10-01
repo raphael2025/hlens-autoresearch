@@ -1276,15 +1276,28 @@ def test_a_lawful_pair_still_yields_its_edge_after_verification(h: RestHarness) 
 @dataclass
 class _ReadHook(ProxyCatalog):
     """Runs ``hook(n)`` after the n-th archive element read of a pinned read — i.e. between the
-    element rows and every lineage / holder / batch verification of that attempt."""
+    element rows and every lineage / holder / batch verification of that attempt.
+
+    E1 bounding: the pinned read's current-head scans stream through ``scan_column_batches``
+    (no ``scan_columns`` is left on this path). A streamed reader is pinned to the head current
+    when it opens, so a commit made by ``hook`` right after opening is never seen by that read —
+    exactly as after the old whole-table read. Reads at an explicit snapshot (the verified-edge
+    stream) are not pinned-read attempts and are not counted, as before."""
 
     hook: Any = None
     attempts: int = 0
 
     def scan_columns(self, table: str, **kwargs: Any) -> Any:
-        result = self.inner.scan_columns(table, **kwargs)
+        raise AssertionError(f"{table}: a reconcile read must stream")
+
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_column_batches(table, **kwargs)
         text = repr(kwargs.get("row_filter"))
-        if table == ARCHIVE_AGGS.table and "observation_key" in text:
+        if (
+            table == ARCHIVE_AGGS.table
+            and "observation_key" in text
+            and kwargs.get("snapshot_id") is None
+        ):
             self.attempts += 1
             if self.hook is not None:
                 self.hook(self.attempts)

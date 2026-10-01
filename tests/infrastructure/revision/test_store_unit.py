@@ -1024,7 +1024,12 @@ def test_the_allocation_anchor_never_materialises_the_whole_archive_history(
     assert spy.readers >= 1, "the anchor must go through the streaming batch reader"
     # The old implementation read all six committed rows into one table here.
     assert spy.largest_table <= 1, spy.to_arrow_rows
-    assert sum(spy.batch_rows) == 6, "the reduction still visited every committed archive row"
+    # E1 bounding: no D2 archive read goes through the high-level planner's ``to_arrow`` any more.
+    assert spy.to_arrow_rows == [], "every D2 archive read must stream"
+    # 6: the anchor reduction still visited every committed archive row. The single-key reads
+    # stream too: the revision / observation-key lookups before the commit match nothing, and
+    # the head check afterwards reads this observation key's one committed revision (+1).
+    assert sum(spy.batch_rows) == 6 + 1, "the reduction still visited every committed archive row"
 
 
 def test_a_committed_anchor_that_is_not_a_block_base_fails_closed(

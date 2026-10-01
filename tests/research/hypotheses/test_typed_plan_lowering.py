@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from core.contracts.event import EventRequest
 from core.domain.base import FrozenMapping, Kind, Ref, VersionedSpec, content_hash
 from core.domain.specs import (
     ConditionedStrategy,
@@ -19,6 +20,7 @@ from core.domain.specs import (
     StateSpec,
     StrategySpec,
 )
+from infrastructure.event.upstream import UpstreamVerificationError, verify_interaction
 from research.hypotheses.plan_bindings import PlanBindingRefused, produce_lowered_output_bindings
 from research.hypotheses.typed_plan import (
     PLAN_FORMAT_VERSION,
@@ -212,15 +214,21 @@ def _multi(
     specs: tuple[VersionedSpec, ...],
     *,
     root: str,
+    schema_version: str = "1.1.0",
 ) -> tuple[TypedPlan, DirectReferenceResolution]:
     """Parse a multi-node plan and resolve its direct references against ``specs``."""
-    payload = {"schema_version": "1.1.0", "root": root, "nodes": nodes}
+    payload = {"schema_version": schema_version, "root": root, "nodes": nodes}
     plan = parse_plan_json(json.dumps(payload, separators=(",", ":")), limits=LIMITS)
     return plan, resolve_direct_references(plan, resolver=_Resolver(specs))
 
 
 def _temporal(
-    first: EventSpec, second: EventSpec, *, window: int = 3, time_unit: str = "bar"
+    first: EventSpec,
+    second: EventSpec,
+    *,
+    window: int = 3,
+    time_unit: str = "bar",
+    schema_version: str = "1.1.0",
 ) -> tuple[TypedPlan, DirectReferenceResolution]:
     return _multi(
         [
@@ -233,6 +241,7 @@ def _temporal(
         ],
         (first, second),
         root="seq",
+        schema_version=schema_version,
     )
 
 
@@ -411,6 +420,51 @@ def test_temporal_refuses_first_event_observable_after_second() -> None:
         lower_typed_plan(plan, resolution=resolution, created_at=NOW)
 
 
+def test_temporal_refuses_the_same_event_spec_as_both_inputs() -> None:
+    """ADR-0100 revision 1 §3: the first and second event must be different EventSpecs."""
+    plan, resolution = _temporal(EVENT_A, EVENT_A)
+
+    with pytest.raises(OperatorLoweringRefused, match="temporal_same_input") as error:
+        lower_typed_plan(plan, resolution=resolution, created_at=NOW)
+
+    assert error.value.code == "temporal_same_input"
+    assert error.value.node_id == "seq"
+
+
+@pytest.mark.parametrize("schema_version", ["1.1.0", "1.2.0"])
+def test_temporal_before_1_3_0_keeps_its_hash_free_trigger(schema_version: str) -> None:
+    """ADR-0100 revision 1: older plan formats keep their original lowering exactly."""
+    plan, resolution = _temporal(EVENT_A, EVENT_B, schema_version=schema_version)
+
+    output = cast(EventSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["seq"])
+
+    trigger = json.loads(output.trigger)
+    assert "first_event_hash" not in trigger
+    assert "second_event_hash" not in trigger
+    assert output.observable_lag == EVENT_B.observable_lag
+
+
+def test_temporal_1_3_0_trigger_binds_upstream_hashes_accepted_by_runner_check() -> None:
+    """ADR-0100 revision 1 §4: the 1.3.0 trigger binds each upstream spec's content hash."""
+    plan, resolution = _temporal(EVENT_A, EVENT_B, schema_version="1.3.0")
+
+    output = cast(EventSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["seq"])
+
+    # ADR-0100 revision 1 §1: visible exactly at the second event's (already observable) time.
+    assert output.observable_lag == timedelta(0)
+    trigger = json.loads(output.trigger)
+    assert trigger["first_event"] == str(EVENT_A.ref)
+    assert trigger["first_event_hash"] == EVENT_A.content_hash()
+    assert trigger["second_event"] == str(EVENT_B.ref)
+    assert trigger["second_event_hash"] == EVENT_B.content_hash()
+    request = EventRequest(event=output.ref, spec_hash=output.content_hash(), as_of=NOW)
+    report = verify_interaction(output, request, (EVENT_A, EVENT_B))
+    assert report.performed == ("upstream_specs",)
+    forged = EVENT_B.model_copy(update={"trigger": "other_trigger"})
+    with pytest.raises(UpstreamVerificationError):
+        verify_interaction(output, request, (EVENT_A, forged))
+
+
 def test_temporal_equal_observable_lags_are_accepted() -> None:
     same_lag = EVENT_A.model_copy(update={"observable_lag": EVENT_B.observable_lag})
     plan, resolution = _temporal(same_lag, EVENT_B)
@@ -543,14 +597,15 @@ def test_transformation_output_binds_via_adr_0078() -> None:
 # --- time-series rank / quantile (ADR-0099, plan format 1.2.0) --------------------------------
 
 
-def test_plan_format_version_is_1_2_0_and_1_1_0_still_parses() -> None:
-    assert PLAN_FORMAT_VERSION == "1.2.0"
-    assert SUPPORTED_PLAN_FORMAT_VERSIONS == {"1.1.0", "1.2.0"}
-    for version in ("1.1.0", "1.2.0"):
+def test_plan_format_version_is_1_3_0_and_older_formats_still_parse() -> None:
+    # 1.3.0: ADR-0100 §2 cross-sectional rank / quantile (see test_typed_plan_cross_sectional.py).
+    assert PLAN_FORMAT_VERSION == "1.3.0"
+    assert SUPPORTED_PLAN_FORMAT_VERSIONS == {"1.1.0", "1.2.0", "1.3.0"}
+    for version in ("1.1.0", "1.2.0", "1.3.0"):
         plan, _ = _plan("transformation", transform="difference", schema_version=version)
         assert plan.schema_version == version
         assert plan.payload()["schema_version"] == version
-    for unsupported in ("1.0.0", "1.3.0", "2.0.0"):
+    for unsupported in ("1.0.0", "1.4.0", "2.0.0"):
         with pytest.raises(PlanRejected, match="unsupported plan schema_version"):
             _plan("transformation", transform="difference", schema_version=unsupported)
 

@@ -33,6 +33,19 @@ given reports root at a time; the report writer does not provide a cross-process
     yielding one (held open until the report is written);
   - ``main(..., authority_environment=...)`` from an embedding caller.
 
+  The default factory (ADR-0100 item 4) is
+  ``--authority-environment research.operations.authority_environment:default_environment``: it
+  builds the Iceberg catalog, storage and dataset builder from ``infrastructure.settings.Settings``
+  and everything the baseline pins (run, strategy spec, cost model, decision grid, optional
+  validation binding) from ``HLENS_AUTHORITY_*`` settings; the v3 evidence verifier factory is the
+  explicit ``--authority-evidence-verifier MODULE:CALLABLE`` (checked with the same
+  ``load_factory``, passed to the factory as ``evidence_verifier=``; never read from the
+  environment or ``.env``, and required by the default factory), resolves the backtest
+  provider from the plugin registry by the run's recorded identity, and refuses with
+  ``authority_environment_unavailable`` naming every missing setting. The environment's optional
+  ``validation`` binding is passed to the resolver (needed only by metric definitions that re-run
+  the baseline validator on the window).
+
   Without either, the authority mode refuses (``authority_environment_unavailable``) after
   verifying the pinned head, before any report; a factory that cannot be loaded, fails, or does
   not produce an ``AuthorityEnvironment`` is refused with the same code.
@@ -96,7 +109,11 @@ _AUTHORITY_OPTIONS: Final = (
     "authority_as_of",
 )
 #: Optional authority-mode flags (a usage error in the caller-declared mode).
-_AUTHORITY_OPTIONAL: Final = ("authority_environment", "authority_anchor")
+_AUTHORITY_OPTIONAL: Final = (
+    "authority_environment",
+    "authority_anchor",
+    "authority_evidence_verifier",
+)
 
 
 class _InputError(ValueError):
@@ -296,7 +313,10 @@ def _mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
     authority = [getattr(args, name) is not None for name in _AUTHORITY_OPTIONS]
     if all(explicit) and not any(authority):
         if any(getattr(args, name) is not None for name in _AUTHORITY_OPTIONAL):
-            parser.error("--authority-environment and --authority-anchor need the authority mode")
+            parser.error(
+                "--authority-environment, --authority-anchor and --authority-evidence-verifier "
+                "need the authority mode"
+            )
         return "explicit"
     if all(authority) and not any(explicit):
         return "authority"
@@ -320,22 +340,40 @@ def _authority_anchor(anchor: Path | None, root: Path, others: tuple[Path, ...])
             raise _InputError("the authority registry anchor must be outside the other roots")
 
 
-def _factory_environment(spec: str, stack: ExitStack) -> AuthorityEnvironment:
+def _factory_environment(
+    spec: str, stack: ExitStack, evidence_verifier: str | None = None
+) -> AuthorityEnvironment:
     """Load and call the trusted ``MODULE:CALLABLE`` factory (ADR-0098 修订 1); its context
-    manager, if it returns one, is entered on ``stack``. Only exception type names are reported."""
+    manager, if it returns one, is entered on ``stack``. Only exception type names are reported.
+    ``evidence_verifier`` (``--authority-evidence-verifier``): a trusted ``MODULE:CALLABLE`` whose
+    syntax and target are checked with the same ``load_factory`` first, then passed to the factory
+    as ``evidence_verifier=`` (the factory loads it the same way); without it the factory is
+    called with no arguments."""
     from research.operations.authority import AuthorityEnvironment, AuthorityRefused
 
     try:
-        factory = cast(Callable[[], object], load_factory(spec))
+        factory = cast(Callable[..., object], load_factory(spec))
     except Exception as exc:  # bad syntax, import / attribute failure, not callable
         raise AuthorityRefused(
             AUTHORITY_ENVIRONMENT_UNAVAILABLE,
             f"the authority environment factory could not be loaded ({type(exc).__name__})",
         ) from exc
+    if evidence_verifier is not None:
+        try:
+            load_factory(evidence_verifier)
+        except Exception as exc:  # bad syntax, import / attribute failure, not callable
+            raise AuthorityRefused(
+                AUTHORITY_ENVIRONMENT_UNAVAILABLE,
+                f"the evidence verifier factory could not be loaded ({type(exc).__name__})",
+            ) from exc
     try:
-        produced = factory()
+        produced = (
+            factory() if evidence_verifier is None else factory(evidence_verifier=evidence_verifier)
+        )
         if isinstance(produced, AbstractContextManager):
             produced = stack.enter_context(produced)
+    except AuthorityRefused:  # a deliberate refusal (e.g. a missing setting) keeps its code
+        raise
     except Exception as exc:
         raise AuthorityRefused(
             AUTHORITY_ENVIRONMENT_UNAVAILABLE,
@@ -403,6 +441,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--authority-evidence-verifier",
+        metavar="MODULE:CALLABLE",
+        help=(
+            "authority mode, with --authority-environment: trusted factory (adapter, storage) -> "
+            "StreamingEvidenceVerifier, passed to the environment factory as evidence_verifier="
+        ),
+    )
+    parser.add_argument(
         "--authority-anchor",
         type=Path,
         help="authority mode, optional: existing external Lifecycle Registry anchor file",
@@ -446,6 +492,10 @@ def main(
         parser.error("an authority environment is only used by the authority mode")
     if authority_environment is not None and args.authority_environment is not None:
         parser.error("give --authority-environment or an embedded environment, not both")
+    if args.authority_evidence_verifier is not None and args.authority_environment is None:
+        parser.error(
+            "--authority-evidence-verifier is passed to the --authority-environment factory"
+        )
     anchor_state: str | None = None
     stage = "input"
     try:
@@ -524,7 +574,7 @@ def main(
                     raise AuthorityRefused(LIFECYCLE_HEAD_UNKNOWN, str(exc)) from exc
                 if args.authority_environment is not None:
                     authority_environment = _factory_environment(
-                        args.authority_environment, stack
+                        args.authority_environment, stack, args.authority_evidence_verifier
                     )
                 if not isinstance(authority_environment, AuthorityEnvironment):
                     raise AuthorityRefused(
@@ -547,6 +597,7 @@ def main(
                     execution=authority_environment.execution,
                     window=window,
                     as_of=as_of,
+                    validation=authority_environment.validation,
                 )
                 stage = "operation"
                 result = run_degradation_check(
@@ -588,6 +639,10 @@ def main(
         detail = type(exc).__name__
         if isinstance(code, str):
             detail = f"{detail}: {code}"
+        # the default environment factory names the settings it lacks (names, never values)
+        missing = getattr(exc, "missing_settings", ())
+        if isinstance(missing, tuple) and missing:
+            detail = f"{detail}; missing settings: {', '.join(str(name) for name in missing)}"
         print(f"P11 degradation CLI refused at {stage} ({detail})", file=sys.stderr)
         return 1
 

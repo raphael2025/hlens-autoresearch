@@ -69,6 +69,7 @@ __all__ = [
     "parse_archive",
     "parse_archive_spooled",
     "parse_archive_bytes",
+    "parse_archive_row_count",
     "time_unit_for",
 ]
 
@@ -89,6 +90,13 @@ _MAX_LINE_BYTES: Final = 1024  # 不含结尾 LF
 _READ_CHUNK_BYTES: Final = 1 << 20
 _MAX_DETAIL_CHARS: Final = 240
 _CHUNK_ROWS: Final = 65_536
+#: Upper bound on rows the spooled parser keeps as pending Python objects before converting them
+#: to one Arrow batch and writing it to the spool (E1 bounding, ADR-0100 item 6). Not in
+#: ``PARSER_SPEC``: it changes neither what is accepted or rejected nor any parsed value, only how
+#: many rows are held in Python form at once, so a 65 536-row pending buffer (tens of MiB of
+#: ``Decimal`` / ``int`` objects) no longer scales with the archive up to that cap. The effective
+#: spool batch is ``min(_CHUNK_ROWS, _SPOOL_CHUNK_ROWS)``, read at call time.
+_SPOOL_CHUNK_ROWS: Final = 4_096
 
 _INT64_MAX: Final = (1 << 63) - 1
 _DECIMAL_PRECISION: Final = 38
@@ -787,8 +795,11 @@ def parse_archive_spooled(
         raise StorageError(
             f"archive parser input or temporary spool I/O failed ({type(exc).__name__})"
         ) from exc
+    chunk_rows = min(_CHUNK_ROWS, _SPOOL_CHUNK_ROWS)
     try:
-        outcome = _parse_storage(request, storage, batch_sink=spool.write_batch)
+        outcome = _parse_storage(
+            request, storage, batch_sink=spool.write_batch, chunk_rows=chunk_rows
+        )
         if isinstance(outcome, ArchiveRejection):
             spool.close()
             return outcome
@@ -808,7 +819,7 @@ def parse_archive_spooled(
             time_unit=request.time_unit,
             row_count=row_count,
             spool=spool,
-            batch_rows=_CHUNK_ROWS,
+            batch_rows=chunk_rows,
         )
     except OSError as exc:
         spool.close()
@@ -820,11 +831,41 @@ def parse_archive_spooled(
         raise
 
 
+def _discard_batch(_batch: pa.RecordBatch) -> None:
+    """Batch sink of :func:`parse_archive_row_count`: every batch is built, then dropped."""
+
+
+def parse_archive_row_count(
+    request: ArchiveParseRequest, storage: StorageAdapter
+) -> int | ArchiveRejection:
+    """Strictly parse exactly as :func:`parse_archive_spooled` does, keeping only the row count.
+
+    Same request identity, object integrity, ZIP / member / CSV checks, per-row rules, chunk size
+    and Arrow conversion of every chunk as the spooled parse (so any rule enforced while a chunk
+    becomes a batch is enforced here too); each batch is discarded once built instead of being
+    written to a spool. Accepted: the number of data rows. Rejected: the same
+    ``ArchiveRejection``. Storage and local input spool failures are the same ``StorageError``.
+    """
+    outcome = _parse_storage(
+        request,
+        storage,
+        batch_sink=_discard_batch,
+        chunk_rows=min(_CHUNK_ROWS, _SPOOL_CHUNK_ROWS),
+    )
+    if isinstance(outcome, ArchiveRejection):
+        return outcome
+    rows, _member_name, row_count = outcome
+    if rows is not None:
+        raise AssertionError("counting parse unexpectedly materialized a complete Table")
+    return row_count
+
+
 def _parse_storage(
     request: ArchiveParseRequest,
     storage: StorageAdapter,
     *,
     batch_sink: Callable[[pa.RecordBatch], None] | None,
+    chunk_rows: int | None = None,
 ) -> tuple[pa.Table | None, str, int] | ArchiveRejection:
     try:
         _check_request_identity(request)
@@ -857,6 +898,7 @@ def _parse_storage(
                     cast(IO[bytes], _RetryableSpoolReader(input_spool)),
                     request,
                     batch_sink=batch_sink,
+                    chunk_rows=chunk_rows,
                 )
     except _Reject as reject:
         return _rejection(request, reject)
@@ -985,6 +1027,7 @@ def _parse_zip(
     request: ArchiveParseRequest,
     *,
     batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+    chunk_rows: int | None = None,
 ) -> tuple[pa.Table | None, str, int]:
     expected_member = member_filename(request.data_type, request.symbol, request.coverage_day)
     handle.seek(0, io.SEEK_END)
@@ -1011,9 +1054,9 @@ def _parse_zip(
         with member:
             parser: _RowParser
             if request.data_type == "agg_trades":
-                parser = _AggTradesParser(request, batch_sink=batch_sink)
+                parser = _AggTradesParser(request, batch_sink=batch_sink, chunk_rows=chunk_rows)
             else:
-                parser = _KlinesParser(request, batch_sink=batch_sink)
+                parser = _KlinesParser(request, batch_sink=batch_sink, chunk_rows=chunk_rows)
             for line_number, text in _csv_lines(member, size=info.file_size, crc=info.CRC):
                 parser.feed(line_number, text)
             return parser.finish(), expected_member, parser.rows
@@ -1285,20 +1328,27 @@ def _parse_bool(text: str, line: int, column: str) -> bool:
 
 
 class _ColumnBuffer:
-    """按列缓冲，每 ``_CHUNK_ROWS`` 行转换为 Arrow 数组以限制 Python 对象峰值。"""
+    """按列缓冲，每 ``chunk_rows`` 行（默认 ``_CHUNK_ROWS``）转换为 Arrow 数组以限制对象峰值。"""
 
     def __init__(
-        self, schema: pa.Schema, *, batch_sink: Callable[[pa.RecordBatch], None] | None = None
+        self,
+        schema: pa.Schema,
+        *,
+        batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+        chunk_rows: int | None = None,
     ) -> None:
         self._schema = schema
         self._batch_sink = batch_sink
+        self._chunk_rows = _CHUNK_ROWS if chunk_rows is None else chunk_rows
+        if isinstance(self._chunk_rows, bool) or self._chunk_rows < 1:
+            raise ValueError("chunk_rows must be a positive int")
         self._pending: list[list[Any]] = [[] for _ in schema]
         self._batches: list[pa.RecordBatch] = []
 
     def append(self, values: tuple[Any, ...]) -> None:
         for column, value in zip(self._pending, values, strict=True):
             column.append(value)
-        if len(self._pending[0]) >= _CHUNK_ROWS:
+        if len(self._pending[0]) >= self._chunk_rows:
             self._flush()
 
     def _flush(self) -> None:
@@ -1334,13 +1384,14 @@ class _RowParser:
         request: ArchiveParseRequest,
         *,
         batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+        chunk_rows: int | None = None,
     ) -> None:
         unit = request.time_unit
         self.unit = unit
         self.start_ticks = _epoch_ticks(request.coverage_start, unit)
         self.end_ticks = _epoch_ticks(request.coverage_end, unit)
         self.minute_ticks = 60 * unit.ticks_per_second
-        self.buffer = _ColumnBuffer(self.schema, batch_sink=batch_sink)
+        self.buffer = _ColumnBuffer(self.schema, batch_sink=batch_sink, chunk_rows=chunk_rows)
         self.rows = 0
 
     def fields(self, line: int, text: str) -> list[str]:
@@ -1380,8 +1431,9 @@ class _AggTradesParser(_RowParser):
         request: ArchiveParseRequest,
         *,
         batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+        chunk_rows: int | None = None,
     ) -> None:
-        super().__init__(request, batch_sink=batch_sink)
+        super().__init__(request, batch_sink=batch_sink, chunk_rows=chunk_rows)
         self.previous: tuple[int, int, int] | None = None  # (agg id, timestamp, last trade id)
 
     def feed(self, line: int, text: str) -> None:
@@ -1470,8 +1522,9 @@ class _KlinesParser(_RowParser):
         request: ArchiveParseRequest,
         *,
         batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+        chunk_rows: int | None = None,
     ) -> None:
-        super().__init__(request, batch_sink=batch_sink)
+        super().__init__(request, batch_sink=batch_sink, chunk_rows=chunk_rows)
         self.previous_open: int | None = None
 
     def feed(self, line: int, text: str) -> None:

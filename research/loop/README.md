@@ -16,7 +16,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 |---|---|
 | `segment.py` | `RoundData` 协议（摄取之后各阶段读本轮数据的唯一入口：研究 bar、决策网格、扣留的封存段、特征运行、复现快照、验证器绑定）；`Segment`（合成实现，本轮数据：**累计研究数据**——截至 `as_of` 摄取的全部研究窗口 bar，每个摄取市场一个 `ResearchPiece`——+ 本轮被扣留的封存段 `SealedBars`，只凭 vault 发出的一次性 `SealedEvaluation` 释放——该凭据在释放前已把该族的唯一评估记为消耗）、决策网格、合成 bar → `FeatureObservation`、分块 F4 特征运行、`trial_point`（假设条件 `strategy = name@version` / `param k = v`，其他条件一律拒绝）、`decimal_text`（进入哈希记录的浮点先转固定量化的 Decimal 文本） |
 | `stages.py` | `IngestStage`（新市场接续上一轮价格路径；按 Profile 固定日历切分：研究窗口 bar 并入累计研究数据，封存 bar 扣留）、`StateStage`（F4 `bar_log_return` 经 `run_feature` → Phase 2 `StateProvider` 经 `run_state`，都在累计研究数据上；同一特征值经 `signals_from_features` 成为策略信号；按研究段缓存特征）、`HypothesisStage`（知识假设 + 已人工审阅的 LLM 草稿预登记；仍开放的假设在数据增长后作为新 trial 重新登记（`reevaluation_candidates`）；新草稿只入审阅队列）、`MemoryStage`（出错 → FAILED、FAIL → REJECTED，均写 FailureRecord；样本内 PASS → OOS——OOS 表示「正在经过 / 有资格进入封存样本外检验」，不是「已通过 OOS」，证据为样本内报告；封存 OOS 失败 → REJECTED，G5 未运行 / INCONCLUSIVE / PASS 均留在 OOS；INCONCLUSIVE 留在 VALIDATION） |
-| `trials.py` | `ExperimentStage`（先核对已在 TrialLedger 预登记（重新评估按 attempt 核对），在累计研究数据上，再生成 06-experiment.md §2 复现元组的 `ExperimentSpec` / `ExperimentRun`，经 `CandidateTrialRunner` 跑策略 → 风控 → 回测，按决策期把收益归到 Phase 2 状态上做 Phase 6 矩阵）、`ValidationStage`（`PipelineBacktestValidator` G0 – G4；G5 仅在显式 `OosUnsealBudget` 列出该族、样本内 PASS、本轮有封存段且该族未开封时运行；开封后先 `claim_evaluation` 原子消耗唯一评估，提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭）、`TrialComponents`、`OosUnsealBudget`（全局次数 + `approved_families`：族 → 批准人）、`ConditionalPlan`（opt-in：矩阵全部单元预登记为 trial，见下「条件化假设」） |
+| `trials.py` | `ExperimentStage`（先核对已在 TrialLedger 预登记（重新评估按 attempt 核对），在累计研究数据上，再生成 06-experiment.md §2 复现元组的 `ExperimentSpec` / `ExperimentRun`，经 `CandidateTrialRunner` 跑策略 → 风控 → 回测，按决策期把收益归到 Phase 2 状态上做 Phase 6 矩阵）、`ValidationStage`（`PipelineBacktestValidator` G0 – G4；G5 仅在显式 `OosUnsealBudget` 列出该族、样本内 PASS、本轮有封存段且该族未开封时运行；开封后先 `claim_evaluation` 原子消耗唯一评估，提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭）、`TrialComponents`、`OosUnsealBudget`（全局次数 + `approved_families`：族 → 批准人）、`ConditionalPlan`（opt-in：矩阵全部单元预登记为 trial，见下「条件化假设」）。ADR-0100 修订 2（2026-09-30）：每个有策略的运行在 `repro.params` 的保留键 `hlens.p11.inputs@1.0.0` 记录决策网格、初始权益与验证输入（族试验计数、验证 seed、多 seed 对照、`cscv_partitions`、`impact_coefficient`、状态标注器身份；`research/experiments/run_inputs.py`）；族计数要等本轮全部 trial 登记完单元后才确定，因此先执行全部 trial、再生成各自的 Spec / Run；`ValidationStage` 回读记录、与自身取值不一致即本阶段失败，并把记录值交给验证器；实验行的 `params` 仍是策略参数，另有 `run_inputs` |
 | `evolution.py` | `EvolutionStage` / `EvolutionPlan`：从更早轮次未被否证（按各假设最近一次验证：PASS / INCONCLUSIVE）的最佳候选出发 `mutate`，`require_new_version` 与目录防覆盖，`LineageGraph` 可追溯；后代作为新假设先登记、IDEA → CANDIDATE、本轮在累计研究数据上重新验证，不继承父代结论 |
 | `memory.py` | `ResearchMemory`（TrialLedger、ReviewQueue、FailureRegistry、策略目录、试验 / 验证记录、谱系、封存开封账本、摄取市场（及其生成规格）与累计研究数据）；`ReviewQueue.approve` 要求非空且非自动化身份（非循环自身 actor、非 `research_loop:` 前缀），并记录审批；`ReviewQueue(path)` 把入队 / 审批 / 取用逐行写入哈希链日志，重放时重新核验（自动化身份的审批、草稿或调用哈希不符的审批 → `JournalCorrupted`）；`ReviewQueue.observe(ReviewObserver)` 绑定唯一观察者（持久状态目录：审批前拒绝轮中审批、审批后立即写轮间检查点并移动锚点） |
 | `compose.py` | `compose_loop` / `compose_durable`（两种数据源共用的组合：同一组阶段、预算、护栏、审计、持久钩子与自动持久总线）+ `LoopSettings` / `settings_fingerprint`；`SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：合成组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
@@ -24,6 +24,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 | `recovery_review.py` | `failed_round_review_packet(DurableState)`：只对最后记录的 failed experiment stage 生成纯内存、hash-bound 证据投影；不打开目录、不触发写路径，不等于恢复操作 |
+| `replacement.py` | 可选的循环内替换提案触发（ADR-0100 第 7 项，默认关闭）：`ReplacementTrigger`（显式 `enabled=True`、`every_rounds`、预登记的独立密封窗口、调用方的 `source` 与 `ProposalLedger`）、`ReplacementInputs`、`ReplacementTriggerStage`（包装 `EvolutionStage`，同名 `evolution`）；见下「循环内替换提案触发」 |
 
 要点：
 
@@ -42,7 +43,8 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   `result_hash`，否则该项 INCONCLUSIVE。基准与反向对照是同一试验的回测，不增加 trial。TEST ONLY 夹具 Profile 使用
   `buy_and_hold_equal_weight` + `inverse_control_reported=True`。
 - 生命周期最多到 OOS；OOS → PAPER 需要人工批准，循环在结构上无法产生 PAPER / ACTIVE。
-  因此替换提案不在循环内：`research/evolution/replacement_job.py` 是调用方显式运行的作业，只读循环的 `lineage.jsonl`（ADR-0045 实施说明 2026-09-26）。
+  替换提案默认不在循环内：`research/evolution/replacement_job.py` 是调用方显式运行的作业，只读循环的 `lineage.jsonl`（ADR-0045 实施说明 2026-09-26）；
+  可选的循环内触发见下「循环内替换提案触发」（ADR-0100 第 7 项，默认关闭）。
 - 封存 OOS 默认永不开封；只有显式 `OosUnsealBudget`（全局次数 + 逐族批准人名单，自动化身份被拒）列出的族才开封，每族一次；
   开封即消耗该族唯一的一次评估（即使之后没有结果），之后无人能再读该窗口。
   **开封账本必须持久**（review fixes 4）：`OosUnsealBudget` 只与 `DurableUnsealingLedger`（`state_dir` 的 `sealed_oos.jsonl`，或显式传入
@@ -392,3 +394,39 @@ descriptor_hash = "<exact sha256>"
 ```
 
 成功运行前仍必须通过所有 path / artifact / provider / Profile freeze 检查。state 只新建或以相同 identity 重开 v5；不接管 v3 / v4，不自动修复中断轮。每次打开先从已验证 audit 幂等补齐 `research_loop_round` 报告，再执行一轮、立即写一份报告；不写 Phase 6 matrix。SIGINT / SIGTERM 在当前轮完成并报告后退出。退出码为 0（完成 / 边界停止）、2（命令或配置拒绝）、3（预算或 loop halt）、4（中断 / 人工恢复审查）、5（损坏、锁、锚点或报告 I/O 故障）。
+
+## 循环内替换提案触发（ADR-0100 第 7 项，2026-09-30，CODE_COMPLETE / DEBUG_PENDING，默认关闭）
+
+`replacement.py`。`LoopWiring.replacement_trigger` 默认 `None`；只有显式 `ReplacementTrigger(enabled=True, ...)` 才会被组合，
+且需要 `EvolutionPlan`（触发器在 `evolution` 阶段内运行：`ReplacementTriggerStage` 包装 `EvolutionStage`，阶段名与顺序契约不变）。
+`enabled=False` 与 `None` 完全相同：不组合、不入指纹，记录 / 指纹 / 状态目录逐字节不变。不新增调度器：只在循环自身轮次中、`every_rounds` 到期的轮次运行；
+失败轮重试轮（ADR-0083）与演化一样永不运行。
+
+- **替换窗口 = 已发布 Profile 版本的封存窗口**（Constitution C-S3；2026-09-30 完整性修复）：窗口以 `window_profiles` 给出——循环 Profile 同一族（同 `name`）的**更新**纯 `major.minor.patch` 版本，
+  状态 `FROZEN` 且在调用方的 `ProfileFreezeRegistry` 中有 ADR-0062 冻结记录（ref + 内容哈希 + 引用的校准报告），冻结时间不晚于窗口起点。`RegisteredSealedWindow` 仅是对该版本的引用（Profile ref + 内容哈希 + 其 `data_split` 定义的边界）。
+  窗口 Profile 除封存窗口字段（`data_split.sealed_oos_boundary` / `sealed_oos_length`）外必须与循环 Profile **逐字段相同**（身份与运行元数据 `name` / `version` / `created_at` / `lineage` / `provenance` / `status` 不比较）：阈值、成本、切分、范围、预算完全一致。
+- **预算**（Constitution C-S2）：每次窗口开封都有审计记录（账本行 + 触发行），并**计入与 G5 族开封相同的全局开封预算**（`DurableUnsealingLedger.count()` 含开封数）。预算与循环 G5 vault 相同：循环 Profile 的
+  `data_split.sealed_oos_max_unsealings`，否则 `OosUnsealBudget.max_unsealings`；两者皆无 → 组合时拒绝。预算用尽时拒绝开封（不写入）；之后的 G5 开封也看得到全部窗口开封。预算写入指纹（`unsealing_budget`）。
+- **输入在循环之外**：`source(round_index, as_of)` → `ReplacementInputs`（`Incumbent`（ACTIVE / DEGRADED）、`ReplacementCandidate`（人工 Promotion 路径给出的生命周期 + 报告哈希）、报告解析器、报告的 Profile）。
+  候选**合格**须：在循环谱系中是某个给定现任的后代、处于 `PAPER` / `PRODUCTION_CANDIDATE`（OOS → PAPER 只能由人工批准）、与某现任的配对尚未进入 `ProposalLedger`；不合格者只列在摘要中，不计 trial。
+- **两阶段、两个不同的到期轮次**（在本循环账本开封之前就在密封窗口上评估过的证据属于"在别处消耗"，一律不接受）：
+  - **阶段 1 开封**（候选从未被触发）：① 先在 `TrialLedger` 登记假设（origin `combination`、循环自身 family），计入族 trial 数与 `LoopBudget`；同一候选版本终身只登记一次；
+    ② 窗口护栏（下）；拒绝时记录 `refused`，不开封；③ 按配置顺序开封第一个通过护栏的登记窗口：在开封账本写入唯一一次 `WindowOpening`（`sealed_oos.jsonl` 格式 3，含 `opened_at` = 本轮计划时刻），计入预算；状态 `window_opened`，本轮不使用任何证据。
+  - **阶段 2 评估**（之后的到期轮次；账本有该候选的开封且该窗口尚未消耗）：① 开封必须恰属该候选（subject + 规格哈希、trial + 哈希、本循环、更早轮次、登记哈希一致）；窗口必须在本轮 `as_of` 前**已结束**、仍未被循环看见、尚未消耗；OOS → PAPER 仍须人工批准；
+    所有声明报告必须可解析且其 Profile 已给出。此处拒绝不消耗窗口（证据可以稍后到达）。
+    ② 声明报告中封存窗口恰为该开封窗口的即为该窗口证据；至少一份时，**先**写入窗口唯一一次 `WindowConsumption`（开封哈希 + 这些报告哈希）**再**检查证据——窗口只产出第一次提交的证据（不能在多次评估间挑选）；已为别的窗口消耗的报告拒绝。一份都没有时记录 `refused`，不消耗。
+    ③ 每份声明报告的 Profile 必须除封存窗口字段外与循环 Profile 相同；循环自身窗口与开封窗口以外的窗口上的报告拒绝；开封窗口上的报告必须恰为登记版本（ref + 内容哈希，仍冻结），且 `created_at` 必须晚于开封的 `opened_at`、不早于窗口结束、不晚于本轮 `as_of`（早于开封的 G5 证据是在别处评估的）。
+    ④ 调用现有 `propose_replacements`（提出者为循环自动化身份，`proposed_at` 为本轮计划时刻，`extra_evidence` 附 `loop:` / `loop_round:` / `trial:` / `sealed_window:` / `sealed_window_opening:` / `sealed_window_consumption:` 溯源）；
+    提案写入调用方的持久 `ProposalLedger`，恒为 `PENDING_HUMAN_APPROVAL`，从不晋升、不改任何生命周期。作业抛错记录为 `failed`，窗口保持已消耗，不重试、不删除。
+  - 因此**一个窗口终身至多产出一个被评估的候选**：只开封一次（一个 subject），证据只消耗一次（同一 subject）。
+- **窗口护栏**（阶段 1）：**预登记**（全部窗口及其冻结记录进入配置指纹即锚定的 `loop_state_opened` 头行，换窗口 = 新目录；每个窗口起点必须**严格晚于循环首个计划 `as_of`**（epoch），
+  写入头行时检查、记录为 `epoch_check`（规则、epoch、各窗口 id 与起点），每次重开按记录值复核）；**独立**（不与循环 Profile 自身封存窗口重叠——组合时拒绝；窗口之间不重叠；
+  循环已摄入的**任何**数据触及该窗口 → 拒绝：取所有已记录轮次与本轮的并集——各轮 ingest 的 `data_window`（数据集路径）、每个生成市场的完整 bar 区间与累计研究片段（合成路径）、本轮 segment；
+  已运行但未记录数据窗口的轮次或未绑定审计 → 视为已见、拒绝）；**从未开封**（无论为谁，尤其是候选的祖先）；**此前未评估**（候选已声明任一登记窗口上的报告 → 拒绝）；**预算未用尽**；OOS → PAPER 须由非自动化身份批准。
+- **持久性**（沿用 ADR-0073 / ADR-0083 模式）：trial 登记、窗口开封与证据消耗都是轮内存储写入，在状态的准入门内、由轮次检查点定位并随之锚定；审计记录的 `evolution` 摘要 `replacement_trigger` 键保存每次触发的完整行（阶段、trial、窗口、开封、消耗、作业载荷及全部提案）。
+  重开时交叉校验 6 额外核对：每行的 trial 在 TrialLedger（内容哈希一致）、每个开封 / 消耗与行一致、账本中每个开封与消耗都被某个已完成 `evolution` 阶段的行命名（写入后该轮 `evolution` 失败时窗口保持已开封 / 已消耗，失败阶段即审计记录）。
+  触发器要求 `DurableUnsealingLedger`（内存账本重启即忘记开封）。`ProposalLedger` 与 `ProfileFreezeRegistry` 位于状态目录之外。
+- **格式版本**：开封账本日志格式 3（`replacement_window_opened` 含 `opened_at`，新增 `replacement_window_consumed`，载荷含 `"format_version": 3`；格式 1 行字节不变；首版的格式 2 开封行重放时拒绝，fail closed）；
+  触发器摘要与指纹载荷 `format_version: 2`。状态目录版本（v3–v6）与检查点布局不变：新行位于已被检查点定位的 `sealed_oos.jsonl`。
+- 诚实边界：报告的 `created_at` 是生产方的声明；与开封的绑定强度等同于该声明（及覆盖它的报告内容哈希）。
+- 未经测试（DEBUG_PENDING）：开启前需补齐单元 / 端到端测试（含重开、崩溃、复用、预算与指纹拒绝）。

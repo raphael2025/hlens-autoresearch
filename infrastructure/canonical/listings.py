@@ -55,7 +55,12 @@ from core.contracts.catalog import (
     SnapshotInfo,
     TableNotFound,
 )
-from core.contracts.revision import PointInTimeSpec, PrecedenceEvidence, RevisionRecord
+from core.contracts.revision import (
+    PointInTimeSpec,
+    PolicyBinding,
+    PrecedenceEvidence,
+    RevisionRecord,
+)
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
     ListingHistory,
@@ -87,7 +92,7 @@ from infrastructure.revision.exchange_info_store import (
     ProvenSnapshotTable,
 )
 from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import BatchCommit, RevisionCatalog, scan_rows, scanned_rows
 from infrastructure.streaming.runs import RunLimits, RunRef
 from infrastructure.universe import listing_assumption as backfill
 
@@ -545,7 +550,7 @@ class ListingDeriver:
                 raise ListingDeriveError(f"{label} must be timezone-aware UTC")
         if venue_symbol not in lr.FIRST_SLICE_ASSETS:
             raise ListingDeriveError(f"{venue_symbol!r} is not a first-slice venue symbol")
-        backfill_bound = False if pit is None else backfill.assumption_bound(pit)
+        backfill_binding = None if pit is None else backfill.bound_binding(pit)
         listing_head, raw_head = self._heads()
         state, raw = self._prove(listing_head, raw_head)
         return _select(
@@ -554,7 +559,7 @@ class ListingDeriver:
             knowledge_cutoff,
             state,
             raw,
-            backfill_bound=backfill_bound,
+            backfill_binding=backfill_binding,
         )
 
     # ------------------------------------------------------------------ prove
@@ -573,8 +578,9 @@ class ListingDeriver:
         for snapshot in reversed(history):
             largest = self._prove_batch(snapshot, raw, committed, largest)
         if listing_head is not None:
-            final = self._scan_listings(listing_head)
-            if {row["revision_id"] for row in final} != set(committed):  # pragma: no cover
+            # Only the head's revision ids take part in this check, so only they are read.
+            final = self._listing_revision_ids(listing_head)
+            if final != set(committed):  # pragma: no cover
                 raise CatalogIntegrityError(f"{LISTINGS_TABLE}: rows outside its batches")
         chains = _chains(raw.rows)
         derived = {planned.revision_id for chain in chains.values() for planned in chain.revisions}
@@ -703,11 +709,17 @@ class ListingDeriver:
         return base + len(rebuilt) - 1
 
     def _scan_listings(self, snapshot_id: str) -> list[Mapping[str, Any]]:
+        """Every listing row at ``snapshot_id``, streamed (ADR-0075: no high-level planner,
+        whose manifest / entry / task lists grow with the table's file count)."""
         columns = tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            LISTINGS_TABLE, columns=columns, snapshot_id=snapshot_id
-        ).to_pylist()
-        return rows
+        return scan_rows(self._adapter, LISTINGS_TABLE, columns=columns, snapshot_id=snapshot_id)
+
+    def _listing_revision_ids(self, snapshot_id: str) -> set[str]:
+        """The ``revision_id`` of every listing row at ``snapshot_id``, streamed (ADR-0075)."""
+        with scanned_rows(
+            self._adapter, LISTINGS_TABLE, columns=("revision_id",), snapshot_id=snapshot_id
+        ) as rows:
+            return {row["revision_id"] for row in rows}
 
     # ------------------------------------------------------------------ helpers
 
@@ -806,7 +818,7 @@ def _select(
     state: ListingsVerified,
     raw: ProvenSnapshotTable,
     *,
-    backfill_bound: bool = False,
+    backfill_binding: PolicyBinding | None = None,
 ) -> ListingPointInTime:
     def refuse(reason: str, detail: str) -> ListingPointInTime:
         return ListingPointInTime(
@@ -862,7 +874,7 @@ def _select(
             knowledge_cutoff,
             known_rows,
             raw,
-            bound=backfill_bound,
+            binding=backfill_binding,
         )
         if assumed is not None:
             return assumed
@@ -937,7 +949,7 @@ def _assumed_first_candidate(
     known_rows: Sequence[Mapping[str, Any]],
     raw: ProvenSnapshotTable,
     *,
-    bound: bool,
+    binding: PolicyBinding | None,
 ) -> ListingPointInTime | None:
     """The ADR-0051 backfill assumption's answer, or ``None`` when it does not apply (D-LIST).
 
@@ -946,9 +958,9 @@ def _assumed_first_candidate(
     ``no_visible_listing``) unless every condition of ``listing_assumption.assumption_applies``
     holds for the episode's one, real, unmodified first revision.
     """
-    if not bound:
+    if binding is None:
         return None
-    floor = backfill.backfill_floor_for(venue_symbol)
+    floor = backfill.backfill_floor_for(venue_symbol, binding)
     if floor is None:
         return None
     # The committed first revision of this episode (supersedes == ()), if exactly one is visible
@@ -984,6 +996,7 @@ def _assumed_first_candidate(
         backfill_floor=floor,
         first_observed_from=first_observed_from,
         stored_available_time=first_row["available_time"],
+        binding=binding,
     )
     listing = lr.listing_revision_from_row(first_row)
     return ListingPointInTime(
@@ -1006,7 +1019,7 @@ def _assumed_first_candidate(
         assumed=True,
         assumption=interval,
         detail=(
-            f"{backfill.ASSUMPTION_ID}@{backfill.ASSUMPTION_VERSION}: assumed listed member from "
+            f"{backfill.ASSUMPTION_ID}@{binding.version}: assumed listed member from "
             f"{interval.backfill_floor.isoformat()} (backfill_floor) to "
             f"{interval.first_observed_from.isoformat()} (first observed TRADING); not an "
             "exchange-declared listing date"

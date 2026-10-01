@@ -2,8 +2,8 @@
 PIT spec, carry assumed members, and v2 / v3 verification re-derives them (D-LIST).
 
 Real stores end to end (``dataset_support.World``); v3 uses the real B-UNIV / B-PIT upstreams, the
-real chunk table, the real v3 manifest store and the streaming verifier. ``POLICY_TABLE`` ships
-empty (ADR-0051 §2 evidence pending), so it is monkeypatched with an arbitrary floor; the bound
+real chunk table, the real v3 manifest store and the streaming verifier. The current version's
+``POLICY_TABLE`` (1.1.0) is monkeypatched with an arbitrary fixture floor; the bound
 ``ASSUMPTION_BINDING`` is the real module constant. Every run / rule size is an arbitrary small
 value (DQ-9 OPEN).
 """
@@ -134,7 +134,11 @@ def assumed_spans(members: Any) -> list[tuple[str, Any, Any]]:
 def test_the_policy_is_accepted_not_required_and_only_with_its_exact_hash() -> None:
     assert backfill.ASSUMPTION_BINDING in ACCEPTED_BINDINGS
     assert backfill.ASSUMPTION_BINDING not in KNOWN_BINDINGS  # the pinned Phase 1 registry
-    assert ACCEPTED_BINDINGS - KNOWN_BINDINGS == {backfill.ASSUMPTION_BINDING}
+    assert ACCEPTED_BINDINGS - KNOWN_BINDINGS == {
+        backfill.ASSUMPTION_BINDING_1_0_0,
+        backfill.ASSUMPTION_BINDING,
+    }
+    assert backfill.ASSUMPTION_BINDING_1_0_0 not in KNOWN_BINDINGS
 
 
 def test_a_wrong_hash_of_the_policy_is_refused_by_the_dataset(w: World, table: None) -> None:

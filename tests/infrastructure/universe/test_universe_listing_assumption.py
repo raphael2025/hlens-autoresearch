@@ -1,10 +1,10 @@
 """ADR-0051 second phase: the listing backfill assumption through ``UniverseBuilder`` (D-LIST).
 
 Real stores, real exchangeInfo snapshots, real listing derivation (``dataset_support.World``);
-``build()`` (v2) and ``cursor()`` (v3) are both driven. ``POLICY_TABLE`` ships empty (ADR-0051 §2:
-the ``backfill_floor`` evidence is not recorded yet), so it is monkeypatched with an arbitrary
-floor to exercise the in-table branch; ``ASSUMPTION_BINDING`` (the identity a spec binds) is the
-real, unpatched module constant throughout.
+``build()`` (v2) and ``cursor()`` (v3) are both driven. The current version's ``POLICY_TABLE``
+(1.1.0: real 2017 archive floors; 1.0.0 stays empty) is monkeypatched with an arbitrary floor
+near the fixtures to exercise the in-table branch; ``ASSUMPTION_BINDING`` (the identity a spec
+binds) is the real, unpatched module constant throughout.
 
 Checked here: an unbound spec answers exactly as before; a bound spec adds, per symbol, one member
 span ``[backfill_floor, first observation)`` carrying ``UniverseMember.assumption`` and listed in
@@ -64,13 +64,15 @@ def table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backfill, "POLICY_TABLE", TABLE)
 
 
-def bound(w: World, **kwargs: Any) -> PointInTimeSpec:
+def bound(
+    w: World, *, assumption: PolicyBinding = backfill.ASSUMPTION_BINDING, **kwargs: Any
+) -> PointInTimeSpec:
     """``w.spec(**kwargs)`` that also binds the ADR-0051 assumption (exact id, version, hash)."""
     return w.spec(
         availability_bindings=(
             rules.AVAILABILITY_BINDING,
             EXCHANGE_INFO_AVAILABILITY_BINDING,
-            backfill.ASSUMPTION_BINDING,
+            assumption,
         ),
         **kwargs,
     )
@@ -288,8 +290,9 @@ def test_before_the_floor_the_bound_build_still_fails_closed(w: World, table: No
 
 
 def test_the_real_empty_policy_table_never_assumes(w: World) -> None:
-    """No monkeypatch: the shipped ``POLICY_TABLE`` is empty, so even a bound spec refuses."""
+    """No monkeypatch: the frozen 1.0.0 table is empty, so even a spec binding 1.0.0 refuses."""
     w.listed(ds.TRADING, L1)
+    spec = bound(w, assumption=backfill.ASSUMPTION_BINDING_1_0_0, interval=(FLOOR, SIM))
     with pytest.raises(UniverseUnconstructible) as caught:
-        w.universe().build(FIRST_SLICE_UNIVERSE, bound(w, interval=(FLOOR, SIM)))
+        w.universe().build(FIRST_SLICE_UNIVERSE, spec)
     assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING

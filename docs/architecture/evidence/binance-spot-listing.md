@@ -57,3 +57,27 @@
 
 - 以只读 smoke（一次、market-data-only base、单 symbol）确认实际响应字段与本文件 L4 一致，并确认 `serverTime` 单位；
 - 若将来出现官方的历史上市 / 状态修订来源，必须新证据 + 新 policy 版本，不得回写已提交的推断结果。
+
+## 5. ADR-0051 回填下界取证（`hlens.listing.observed-state-backfill-assumption@1.1.0`，ADR-0100 第 5 项）
+
+- 核实时间：2026-09-30 18:19:55Z – 18:20:07Z（UTC）；只读 HTTP，未下载任何行情文件，仓库只记录下列常量（H9）。
+- 规则（ADR-0051 §2）：`backfill_floor` = 官方归档站点上该标的**最早 1m K 线日归档**所在的 UTC 日（00:00:00Z）。它是“归档存在的下界”，**不是**上市日期。
+- S3 列表按键名升序返回；不带 marker 的首个 `<SYM>-1m-YYYY-MM-DD.zip` 键即最早日。
+
+| 标的 | `backfill_floor` | 最早日归档文件（ETag / LastModified） | 最早月归档 | 最早 1m K 线 open time | `exchangeInfo` status |
+|---|---|---|---|---|---|
+| BTCUSDT | 2017-08-17T00:00:00Z | `BTCUSDT-1m-2017-08-17.zip`（`014a8d177da3bf9839c293f341804d26` / 2023-07-18T04:11:20Z） | 2017-08 | 1502942400000 = 2017-08-17T04:00:00Z | TRADING |
+| ETHUSDT | 2017-08-17T00:00:00Z | `ETHUSDT-1m-2017-08-17.zip`（`174be4804f5a23dfe3d93fa8ff98af83` / 2023-07-18T08:55:23Z） | 2017-08 | 1502942400000 = 2017-08-17T04:00:00Z | TRADING |
+
+来源 URL（`<SYM>` 替换为标的）：
+
+- 日归档索引：`https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?prefix=data/spot/daily/klines/<SYM>/1m/&delimiter=/`
+- 月归档索引：`https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?prefix=data/spot/monthly/klines/<SYM>/1m/&delimiter=/`
+- 状态：`https://data-api.binance.vision/api/v3/exchangeInfo?symbol=<SYM>`
+- 最早 K 线：`https://data-api.binance.vision/api/v3/klines?symbol=<SYM>&interval=1m&startTime=0&limit=1`
+
+说明：
+
+- `api.binance.com` 对本次核实返回 “Service unavailable from a restricted location”，因此 `exchangeInfo` / `klines` 改从 market-data-only base `data-api.binance.vision` 读取（ADR-0022，R1 / L2）；不声称二者内容一致。
+- 最早日归档文件的 `LastModified` 为 2023 年（文件被重新发布过）；这与本假设无关（本假设只给 listing 成员下界，行情可用时间仍由 ADR-0032 决定）。
+- `1.0.0`（空表）保持不变、仍可绑定，旧规格可逐位重放；新增 / 修改任一下界都必须发布新版本。

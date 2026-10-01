@@ -20,8 +20,8 @@ from typing import Any
 import pytest
 
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
-from core.domain.base import Kind, Ref
-from core.domain.specs import OutcomeSpec
+from core.domain.base import FrozenMapping, Kind, Ref, canonical_json
+from core.domain.specs import EventSpec, FeatureSpec, OutcomeSpec
 from infrastructure.plugins.builtin import BUILTIN_MANIFESTS
 from infrastructure.plugins.builtin.backtest import HLENS_BAR_BACKTEST
 from infrastructure.plugins.builtin.events import (
@@ -32,6 +32,7 @@ from infrastructure.plugins.builtin.events import (
     EVENT_WINDOW_END,
     FEATURE_RELATIVE_THRESHOLD_CROSS,
     FEATURE_THRESHOLD_CROSS,
+    P7_TEMPORAL_SEQUENCE,
     STATE_SWITCH,
     VOLATILITY_BREAKOUT,
 )
@@ -52,6 +53,12 @@ from infrastructure.plugins.builtin.features import (
     JUMP_VARIANCE,
     MACD_LINE,
     MACD_SIGNAL,
+    P7_INTERACTION_PRODUCT,
+    P7_TRANSFORMATION_DIFFERENCE,
+    P7_TRANSFORMATION_QUANTILE,
+    P7_TRANSFORMATION_RANK,
+    P7_TRANSFORMATION_SMOOTH,
+    P7_TRANSFORMATION_STANDARDIZE,
     PARKINSON_VOLATILITY,
     RSI,
     TAKER_FLOW_IMBALANCE,
@@ -83,6 +90,7 @@ from plugins.events import (
     EventWindowEndProvider,
     FeatureRelativeThresholdCrossProvider,
     FeatureThresholdCrossProvider,
+    P7TemporalSequenceProvider,
     StateSwitchProvider,
     VolatilityBreakoutProvider,
 )
@@ -103,9 +111,16 @@ from plugins.features import (
     JumpVarianceProvider,
     MacdLineProvider,
     MacdSignalProvider,
+    P7DifferenceProvider,
+    P7InteractionProductProvider,
+    P7QuantileTsProvider,
+    P7RankTsProvider,
+    P7SmoothSmaProvider,
+    P7StandardizeProvider,
     ParkinsonVolatilityProvider,
     RsiProvider,
     TakerFlowImbalanceProvider,
+    UpstreamFeature,
     VwapProvider,
     YangZhangVolatilityProvider,
 )
@@ -358,7 +373,171 @@ def _build_cases() -> list[tuple[object, PluginManifest, str]]:
     ]
 
 
-_CASES = _build_cases()
+# ---------------------------------------------------------------- P7 operator providers (ADR-0100)
+
+_BAR_SPEC = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_1m", version="1.0.0")
+
+
+def _p7_feature(definition: str, params: dict[str, Any], inputs: tuple[Ref, ...]) -> FeatureSpec:
+    """A spec in the exact form the P7 lowering emits (the provider checks form, not name)."""
+    return FeatureSpec(
+        name=f"p7_{definition.split('@')[0].replace('.', '_')}",
+        version="1.0.0",
+        definition=definition,
+        inputs=inputs,
+        params=FrozenMapping(params),
+        available_lag=timedelta(0),
+        deterministic=True,
+        lineage=inputs,
+    )
+
+
+def _p7_transformation(transform: str, definition: str, **extra: Any) -> FeatureSpec:
+    params: dict[str, Any] = {
+        "operator": transform,
+        "provider": f"p7_transformation_{transform}@1.0.0",
+        "semantic_version": "1.0.0",
+        "window": 3,
+        "direction": "backward_only",
+        "missing": "propagate_none",
+        **extra,
+    }
+    return _p7_feature(definition, params, (BarLogReturnProvider.spec().ref,))
+
+
+def _p7_cases() -> list[tuple[object, PluginManifest, str]]:
+    log_return = BarLogReturnProvider.spec()
+    upstream = {
+        str(log_return.ref): UpstreamFeature(log_return, BarLogReturnProvider((log_return,)))
+    }
+    volume = BarVolumeSumProvider.spec(3)
+    both = {
+        **upstream,
+        str(volume.ref): UpstreamFeature(volume, BarVolumeSumProvider((volume,))),
+    }
+    product = _p7_feature(
+        "p7.interaction.product@1.0.0",
+        {
+            "alignment": "exact_evaluation_time",
+            "missing": "propagate_none",
+            "numeric_domain": "decimal_or_int_excluding_bool",
+            "operator": "product",
+            "provider": "p7_interaction_product@1.0.0",
+            "semantic_version": "1.0.0",
+        },
+        (log_return.ref, volume.ref),
+    )
+    first = EventSpec(
+        name="p7_first", version="1.0.0", trigger="{}", features=(X,), bar_spec=_BAR_SPEC
+    )
+    second = EventSpec(
+        name="p7_second", version="1.0.0", trigger="{}", features=(X,), bar_spec=_BAR_SPEC
+    )
+    temporal = EventSpec(
+        name="p7_temporal",
+        version="1.0.0",
+        trigger=canonical_json(
+            {
+                "definition": "p7.temporal.sequence_within_bars@1.0.0",
+                "operator": "temporal_sequence",
+                "provider": "p7_temporal_sequence@1.0.0",
+                "semantic_version": "1.0.0",
+                "first_event": str(first.ref),
+                "second_event": str(second.ref),
+                "bar_spec": str(_BAR_SPEC),
+                "window_bars": 3,
+                "interval": "left_open_right_closed",
+                "event_time": "second_event_time",
+                "visibility": "second_event_observable_time",
+                "missing": "no_event",
+            }
+        ),
+        features=(X,),
+        bar_spec=_BAR_SPEC,
+        lineage=(first.ref, second.ref),
+    )
+    return [
+        (
+            P7StandardizeProvider(
+                (
+                    _p7_transformation(
+                        "standardize",
+                        "p7.transformation.standardize@1.0.0",
+                        fit_scope="rolling_training_window",
+                    ),
+                ),
+                upstream=upstream,
+            ),
+            P7_TRANSFORMATION_STANDARDIZE,
+            "feature",
+        ),
+        (
+            P7DifferenceProvider(
+                (_p7_transformation("difference", "p7.transformation.difference@1.0.0"),),
+                upstream=upstream,
+            ),
+            P7_TRANSFORMATION_DIFFERENCE,
+            "feature",
+        ),
+        (
+            P7SmoothSmaProvider(
+                (
+                    _p7_transformation(
+                        "smooth",
+                        "p7.transformation.smooth_sma@1.0.0",
+                        algorithm="simple_moving_average",
+                    ),
+                ),
+                upstream=upstream,
+            ),
+            P7_TRANSFORMATION_SMOOTH,
+            "feature",
+        ),
+        (
+            P7RankTsProvider(
+                (
+                    _p7_transformation(
+                        "rank",
+                        "p7.transformation.rank_ts@1.0.0",
+                        ties="average",
+                        scale="unit_interval",
+                    ),
+                ),
+                upstream=upstream,
+            ),
+            P7_TRANSFORMATION_RANK,
+            "feature",
+        ),
+        (
+            P7QuantileTsProvider(
+                (
+                    _p7_transformation(
+                        "quantile", "p7.transformation.quantile_ts@1.0.0", buckets=4, ties="average"
+                    ),
+                ),
+                upstream=upstream,
+            ),
+            P7_TRANSFORMATION_QUANTILE,
+            "feature",
+        ),
+        (
+            P7InteractionProductProvider((product,), upstream=both),
+            P7_INTERACTION_PRODUCT,
+            "feature",
+        ),
+        (
+            P7TemporalSequenceProvider(
+                (temporal,),
+                upstream={str(first.ref): first, str(second.ref): second},
+                bar_durations={str(_BAR_SPEC): MINUTE},
+            ),
+            P7_TEMPORAL_SEQUENCE,
+            "event",
+        ),
+    ]
+
+
+_CASES = _build_cases() + _p7_cases()
 
 
 @pytest.mark.parametrize(

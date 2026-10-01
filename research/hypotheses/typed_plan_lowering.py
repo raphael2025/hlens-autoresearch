@@ -8,26 +8,36 @@ Accepted operators:
 * ``interaction`` (ADR-0082 §2): FeatureSpec, exact point-in-time product.
 * ``transformation`` for ``standardize`` / ``difference`` / ``smooth`` (ADR-0082 §4) and, in a
   plan of format "1.2.0", time-series ``rank`` / ``quantile`` (ADR-0099): FeatureSpec, explicit
-  backward-looking window. In a "1.1.0" plan ``rank`` / ``quantile`` stay ``operator_open``;
-  cross-sectional rank / quantile remain out of scope.
+  backward-looking window. In a "1.1.0" plan ``rank`` / ``quantile`` stay ``operator_open``.
+* ``transformation`` for cross-sectional ``rank_cs`` / ``quantile_cs`` in a plan of format "1.3.0"
+  (ADR-0100 §2): FeatureSpec over the members of a pinned universe snapshot at the same bar
+  ``interval_end``. The node's ``universe`` / ``universe_hash`` must bind a caller-supplied
+  ``ResearchDatasetManifest`` exactly (content hash and dataset identity); the manifest's
+  ``DatasetRef`` becomes a direct input of the emitted FeatureSpec.
 * ``temporal`` (ADR-0088 decision 1, pending-decisions §3 option A): EventSpec. Both input
   EventSpecs must declare the same non-empty ``bar_spec``; the window counts bars of that spec,
   left-open / right-closed (the second event falls 1..N bars after the first); the result carries
-  the same ``bar_spec`` and becomes visible when the second event becomes visible.
+  the same ``bar_spec`` and becomes visible when the second event becomes visible. The two inputs
+  must be different EventSpecs (``temporal_same_input``). In a plan of format "1.3.0" (ADR-0100
+  revision 1) the trigger also binds both upstream spec hashes (``first_event_hash`` /
+  ``second_event_hash``) and ``observable_lag`` is 0; older formats keep their original lowering.
 * ``conditioning`` / ``ensemble`` / ``negation`` (ADR-0088 decision 2): StrategySpec whose
   ``composition`` is ``ConditionedStrategy`` / ``EnsembleStrategy`` / ``NegatedStrategy``.
 
 Every other operator shape refuses the whole plan; no partial node map is ever returned.
-``TypedPlan.runnable`` stays ``False`` and no Provider exists for any emitted spec.
+``TypedPlan.runnable`` stays ``False``. Execution Providers for every emitted definition exist
+since ADR-0100 item 1 (``plugins.features.p7_operators``, ``plugins.events.p7_temporal``,
+``research.strategies.p7_compositions``); only ``typed_plan_compiler`` (default OFF) binds them.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, NoReturn, cast
 
+from core.contracts.universe import ResearchDatasetManifest
 from core.domain.base import (
     FrozenMapping,
     Kind,
@@ -45,8 +55,10 @@ from core.domain.specs import (
     NegatedStrategy,
     StateSpec,
     StrategySpec,
+    Zone,
 )
 from research.hypotheses.typed_plan import (
+    CROSS_SECTIONAL_TRANSFORMS,
     NodeInput,
     PlanNode,
     PlanOperator,
@@ -54,6 +66,7 @@ from research.hypotheses.typed_plan import (
     SpecInput,
     TypedPlan,
     parse_plan_json,
+    parse_universe_reference,
 )
 from research.hypotheses.typed_plan_resolver import DirectReferenceResolution, ResolvedSpecInput
 
@@ -68,9 +81,11 @@ _ACCEPTED_TRANSFORMS: Final = frozenset({"standardize", "difference", "smooth"})
 #: ADR-0099: time-series ``rank`` / ``quantile`` are accepted only in plans of format "1.2.0".
 #: A "1.1.0" plan's ``rank`` / ``quantile`` node keeps its original meaning (``operator_open``);
 #: an old plan's meaning is never changed retroactively (ADR-0099 decision 4).
+#: ADR-0100 §2: cross-sectional ``rank_cs`` / ``quantile_cs`` are accepted only in format "1.3.0".
 _ACCEPTED_TRANSFORMS_BY_PLAN_FORMAT: Final[dict[str, frozenset[str]]] = {
     "1.1.0": _ACCEPTED_TRANSFORMS,
     "1.2.0": _ACCEPTED_TRANSFORMS | frozenset({"rank", "quantile"}),
+    "1.3.0": _ACCEPTED_TRANSFORMS | frozenset({"rank", "quantile"}) | CROSS_SECTIONAL_TRANSFORMS,
 }
 _TRANSFORMATION_DEFINITIONS: Final[dict[str, str]] = {
     "standardize": "p7.transformation.standardize@1.0.0",
@@ -82,7 +97,15 @@ _TRANSFORMATION_DEFINITIONS: Final[dict[str, str]] = {
     # in the definition identity itself.
     "rank": "p7.transformation.rank_ts@1.0.0",
     "quantile": "p7.transformation.quantile_ts@1.0.0",
+    # ADR-0100 §2: the ``_cs`` suffix makes the cross-sectional population explicit.
+    "rank_cs": "p7.transformation.rank_cs@1.0.0",
+    "quantile_cs": "p7.transformation.quantile_cs@1.0.0",
 }
+#: ADR-0100 §2: a cross-sectional rank needs at least two valid members (it divides by ``n - 1``).
+_MIN_CROSS_SECTION: Final = 2
+#: Decimal places of the emitted ``rank_cs`` value (a representation choice declared in the spec
+#: and hash-bound, matching the 18-place outputs of the existing bar FeatureProviders).
+_RANK_CS_DECIMAL_PLACES: Final = 18
 #: ADR-0099: the percentile rank divides by ``window - 1``; quantile is computed from that rank.
 _RANK_BASED_TRANSFORMS: Final = frozenset({"rank", "quantile"})
 _MIN_RANK_WINDOW: Final = 2
@@ -98,6 +121,10 @@ _NEGATION_DEFINITION: Final = "p7.negation.target_position@1.0.0"
 #: (pending-decisions §3 option A). Any other unit has no accepted semantics and stays OPEN;
 #: ADR-0061's microsecond seq window is not reused as a substitute.
 _TEMPORAL_TIME_UNIT: Final = "bar"
+#: ADR-0100 revision 1: plan formats whose ``temporal`` lowering follows the revised semantics
+#: (upstream hash binding in the trigger, ``observable_lag = 0``). Older formats ("1.1.0" /
+#: "1.2.0") keep their original lowering byte for byte; an old plan's meaning never changes.
+_TEMPORAL_REVISION_1_FORMATS: Final = frozenset({"1.3.0"})
 
 
 class OperatorLoweringRefused(PlanRefused):
@@ -300,6 +327,7 @@ def _lower_transformation(
     created_at: datetime,
     *,
     plan_format: str,
+    universes: Mapping[str, ResearchDatasetManifest],
 ) -> FeatureSpec:
     transform = node.parameters["transform"]
     accepted = _ACCEPTED_TRANSFORMS_BY_PLAN_FORMAT.get(plan_format, frozenset())
@@ -308,9 +336,14 @@ def _lower_transformation(
             node,
             f"transform {transform!r} has no accepted lowering in plan format {plan_format!r}: "
             "standardize / difference / smooth are accepted (ADR-0082); time-series rank / "
-            "quantile only in plan format 1.2.0 (ADR-0099); cross-sectional semantics stay OPEN",
+            "quantile from plan format 1.2.0 (ADR-0099); cross-sectional rank_cs / quantile_cs "
+            "only in plan format 1.3.0 (ADR-0100 §2)",
         )
-    window = node.parameters["window"]
+    if transform in CROSS_SECTIONAL_TRANSFORMS:
+        return _lower_cross_sectional(
+            node, direct, specs, created_at, transform=transform, universes=universes
+        )
+    window = node.parameters.get("window")
     if type(window) is not int or window < 1:  # Defensive: typed_plan.py already enforces this.
         raise OperatorLoweringRefused(
             "invalid_window", node.node_id, node.operator.value, "window must be a positive integer"
@@ -383,16 +416,145 @@ def _lower_transformation(
     return output
 
 
+def _lower_cross_sectional(
+    node: PlanNode,
+    direct: dict[tuple[str, int], VersionedSpec],
+    specs: dict[str, VersionedSpec],
+    created_at: datetime,
+    *,
+    transform: str,
+    universes: Mapping[str, ResearchDatasetManifest],
+) -> FeatureSpec:
+    """Cross-sectional ``rank_cs`` / ``quantile_cs`` over a pinned universe (ADR-0100 §2).
+
+    Population: every member of the pinned universe snapshot at the same bar time, aligned by bar
+    ``interval_end``; members whose source value is missing are excluded; with ``n`` valid members
+    the rank is ``(count_less + 0.5 * (count_equal - 1)) / (n - 1)`` (ties: average rank), and
+    ``n < 2`` yields a missing value. ``quantile_cs`` is ``min(floor(rank * buckets),
+    buckets - 1)``. Only ``available_time <= t`` data enter the value at ``t``.
+    """
+    parameters = node.parameters
+    try:
+        reference = parse_universe_reference(
+            parameters.get("universe"), parameters.get("universe_hash")
+        )
+    except ValueError as exc:  # Defensive: typed_plan.py enforces the same syntax.
+        _refuse(node, "invalid_universe", str(exc))
+    if "window" in parameters:  # Defensive: the parser rejects a window on these transforms.
+        _refuse(node, "invalid_window", f"{transform} does not take a trailing window")
+    buckets = parameters.get("buckets")
+    if transform == "quantile_cs":
+        if type(buckets) is not int or buckets < _MIN_BUCKETS:  # Defensive: parser enforces.
+            _refuse(
+                node, "invalid_buckets", f"quantile_cs requires integer buckets >= {_MIN_BUCKETS}"
+            )
+    elif buckets is not None:  # Defensive: parser rejects buckets on rank_cs.
+        _refuse(node, "invalid_buckets", "buckets is only admitted for transform 'quantile_cs'")
+
+    manifest = universes.get(reference.manifest_hash)
+    if manifest is None:
+        _refuse(
+            node,
+            "unresolved_universe",
+            "no caller-supplied ResearchDatasetManifest has content hash "
+            f"{reference.manifest_hash}",
+        )
+    dataset = manifest.dataset
+    if (dataset.zone, dataset.table, dataset.snapshot_id) != (
+        Zone.RESEARCH_DATASET,
+        reference.table,
+        reference.snapshot_id,
+    ):
+        _refuse(
+            node,
+            "universe_binding_mismatch",
+            f"manifest {reference.manifest_hash} describes {dataset.zone.value}:{dataset.table}@"
+            f"{dataset.snapshot_id}, not {reference.text()}",
+        )
+
+    sources = _resolve_inputs(node, direct, specs, expected_types=FeatureSpec)
+    (source,) = sources
+    definition = _TRANSFORMATION_DEFINITIONS[transform]
+    # The node payload (hence the identity) already carries `universe` and `universe_hash`.
+    identity = _spec_identity(definition, node, sources, created_at)
+    universe_spec = manifest.universe_spec
+    params: dict[str, str | int | float | bool] = {
+        "operator": transform,
+        "provider": f"p7_transformation_{transform}@1.0.0",
+        "semantic_version": _SEMANTIC_VERSION,
+        # Population: all members of the pinned universe snapshot effective at the bar time.
+        "population": "universe_snapshot_members_at_bar",
+        "universe": reference.text(),
+        "universe_manifest_hash": reference.manifest_hash,
+        "universe_spec": f"{universe_spec.name}@{universe_spec.version}",
+        "universe_spec_hash": universe_spec.spec_hash,
+        # One cross-section per bar, keyed by the bar's `interval_end` (no cross-bar mixing).
+        "alignment": "bar_interval_end",
+        # A member without a visible value at that bar is excluded from the population; nothing
+        # is filled, interpolated or carried forward.
+        "missing": "exclude_from_population",
+        # Fewer valid members than this yields a missing value for every member of that bar.
+        "min_population": _MIN_CROSS_SECTION,
+        "ties": "average",
+    }
+    if transform == "rank_cs":
+        params["scale"] = "unit_interval"
+        params["output_decimal_places"] = _RANK_CS_DECIMAL_PLACES
+        params["rounding"] = "half_even"
+    else:
+        params["buckets"] = cast(int, buckets)
+
+    return _build_output(
+        node,
+        lambda: FeatureSpec(
+            name=f"p7_transformation_{identity}",
+            version=_SEMANTIC_VERSION,
+            created_at=created_at,
+            definition=definition,
+            # The pinned universe snapshot is a direct input: membership decides the population.
+            inputs=(source.ref, dataset),
+            params=FrozenMapping(params),
+            available_lag=timedelta(0),
+            deterministic=True,
+            lineage=(source.ref,),
+        ),
+    )
+
+
+def _universe_map(
+    universes: Iterable[ResearchDatasetManifest],
+) -> dict[str, ResearchDatasetManifest]:
+    """Caller-supplied pinned universe manifests keyed by their recomputed content hash."""
+    if not isinstance(universes, Iterable):
+        raise TypeError("universes must be an iterable of ResearchDatasetManifest")
+    result: dict[str, ResearchDatasetManifest] = {}
+    for manifest in universes:
+        if type(manifest) is not ResearchDatasetManifest:
+            raise TypeError("universes must contain exact ResearchDatasetManifest instances")
+        result[manifest.content_hash()] = manifest
+    return result
+
+
 def _lower_temporal(
     node: PlanNode,
     direct: dict[tuple[str, int], VersionedSpec],
     specs: dict[str, VersionedSpec],
     created_at: datetime,
+    *,
+    plan_format: str,
 ) -> EventSpec:
     """``second`` occurs 1..``window`` bars after ``first`` (left-open, right-closed).
 
     Both EventSpecs must declare the same non-empty ``bar_spec`` (ADR-0088 decision 1). The output
     event time is the second event's time and it is visible when the second event is visible.
+
+    In plan format "1.3.0" (ADR-0100 revision 1 §4) the trigger also binds each upstream spec's
+    ``content_hash()`` as ``first_event_hash`` / ``second_event_hash`` (the ``<name>`` /
+    ``<name>_hash`` pair ``infrastructure.event.upstream.verify_interaction`` reads), and the
+    output's ``observable_lag`` is 0 (revision 1 §1): an upstream ``event_time`` already is its
+    observable time, so the combined event is visible exactly at the second event's
+    ``event_time``. Older plan formats keep their original lowering (hash-free trigger,
+    ``observable_lag`` = the second event's).
     """
     time_unit = node.parameters["time_unit"]
     if time_unit != _TEMPORAL_TIME_UNIT:
@@ -409,6 +571,16 @@ def _lower_temporal(
     sources = _resolve_inputs(node, direct, specs, expected_types=EventSpec)
     # `_resolve_inputs` already required each input to be exactly EventSpec.
     first, second = cast(list[EventSpec], sources)
+    # ADR-0100 修订 1 §3: the two inputs must be different EventSpecs. A sequence of an event
+    # with itself has no accepted meaning (every occurrence would pair with its own predecessor,
+    # and the upstream binding would name one ref twice), so it is refused, not lowered.
+    if first.ref.target_identity() == second.ref.target_identity():
+        _refuse(
+            node,
+            "temporal_same_input",
+            f"both temporal inputs are the same EventSpec ({first.ref}); the first and second "
+            "event must be different EventSpecs (ADR-0100 revision 1 §3)",
+        )
     if first.bar_spec is None or second.bar_spec is None:
         _operator_open(
             node,
@@ -437,23 +609,27 @@ def _lower_temporal(
 
     bar_spec = first.bar_spec
     identity = _spec_identity(_TEMPORAL_DEFINITION, node, sources, created_at)
-    trigger = canonical_json(
-        {
-            "definition": _TEMPORAL_DEFINITION,
-            "operator": "temporal_sequence",
-            "provider": "p7_temporal_sequence@1.0.0",
-            "semantic_version": _SEMANTIC_VERSION,
-            "first_event": str(first.ref),
-            "second_event": str(second.ref),
-            "bar_spec": str(bar_spec),
-            "window_bars": window,
-            # The second event lies in (first, first + window bars]: 1..window bars after it.
-            "interval": "left_open_right_closed",
-            "event_time": "second_event_time",
-            "visibility": "second_event_observable_time",
-            "missing": "no_event",
-        }
-    )
+    declaration: dict[str, object] = {
+        "definition": _TEMPORAL_DEFINITION,
+        "operator": "temporal_sequence",
+        "provider": "p7_temporal_sequence@1.0.0",
+        "semantic_version": _SEMANTIC_VERSION,
+        "first_event": str(first.ref),
+        "second_event": str(second.ref),
+        "bar_spec": str(bar_spec),
+        "window_bars": window,
+        # The second event lies in (first, first + window bars]: 1..window bars after it.
+        "interval": "left_open_right_closed",
+        "event_time": "second_event_time",
+        "visibility": "second_event_observable_time",
+        "missing": "no_event",
+    }
+    revised = plan_format in _TEMPORAL_REVISION_1_FORMATS
+    if revised:
+        # ADR-0100 revision 1 §4: bind the exact upstream specs (ADR-0036 §5 `<name>_hash`).
+        declaration["first_event_hash"] = first.content_hash()
+        declaration["second_event_hash"] = second.content_hash()
+    trigger = canonical_json(declaration)
     return _build_output(
         node,
         lambda: EventSpec(
@@ -463,7 +639,9 @@ def _lower_temporal(
             trigger=trigger,
             features=_union_refs((first.features, second.features)),
             states=_union_refs((first.states, second.states)),
-            observable_lag=second.observable_lag,
+            # ADR-0100 revision 1 §1: from 1.3.0 the upstream event_time already is the second
+            # event's observable time, so the combined event adds no further lag.
+            observable_lag=timedelta(0) if revised else second.observable_lag,
             bar_spec=bar_spec,
             lineage=(first.ref, second.ref),
         ),
@@ -632,8 +810,8 @@ _LOWERERS: Final[
     ]
 ] = {
     PlanOperator.INTERACTION: _lower_interaction,
-    # TRANSFORMATION is dispatched in `lower_typed_plan`: it also needs the plan format version.
-    PlanOperator.TEMPORAL: _lower_temporal,
+    # TRANSFORMATION and TEMPORAL are dispatched in `lower_typed_plan`: they also need the plan
+    # format version (ADR-0099 decision 4, ADR-0100 revision 1).
     PlanOperator.CONDITIONING: _lower_conditioning,
     PlanOperator.ENSEMBLE: _lower_ensemble,
     PlanOperator.NEGATION: _lower_negation,
@@ -645,6 +823,7 @@ def lower_typed_plan(
     *,
     resolution: DirectReferenceResolution,
     created_at: datetime,
+    universes: Iterable[ResearchDatasetManifest] = (),
 ) -> dict[str, VersionedSpec]:
     """Lower every node to one core spec, or refuse the whole plan.
 
@@ -653,6 +832,11 @@ def lower_typed_plan(
     already lowered node map. In a "1.1.0" plan, ``transformation`` with ``rank`` / ``quantile``
     is still ``operator_open`` and refuses the whole plan; in a "1.2.0" plan it lowers to the
     time-series definitions of ADR-0099.
+
+    ``universes`` are the caller-supplied pinned universe manifests for cross-sectional nodes
+    (format "1.3.0", ADR-0100 §2). Like ``resolution`` they are evidence, not a Registry lookup:
+    each node's ``universe_hash`` must equal one manifest's recomputed content hash and its
+    ``universe`` must name that manifest's dataset, otherwise the whole plan is refused.
     """
     if type(plan) is not TypedPlan:
         raise TypeError("plan must be an exact TypedPlan")
@@ -692,13 +876,26 @@ def lower_typed_plan(
     if not isinstance(created_at, datetime) or created_at.utcoffset() is None:
         raise ValueError("created_at must be an explicitly supplied timezone-aware datetime")
     direct = _resolved_inputs(plan, resolution)
+    universe_by_hash = _universe_map(universes)
     specs: dict[str, VersionedSpec] = {}
 
     for node in plan.nodes:
         if node.operator is PlanOperator.TRANSFORMATION:
             # The accepted transform set depends on the plan's own format version (ADR-0099
-            # decision 4), so this lowerer also receives it.
+            # decision 4), so this lowerer also receives it; cross-sectional nodes (ADR-0100 §2)
+            # also need the caller-supplied pinned universe manifests.
             specs[node.node_id] = _lower_transformation(
+                node,
+                direct,
+                specs,
+                created_at,
+                plan_format=plan.schema_version,
+                universes=universe_by_hash,
+            )
+            continue
+        if node.operator is PlanOperator.TEMPORAL:
+            # ADR-0100 revision 1: the temporal lowering depends on the plan's format version.
+            specs[node.node_id] = _lower_temporal(
                 node, direct, specs, created_at, plan_format=plan.schema_version
             )
             continue

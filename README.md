@@ -2,7 +2,7 @@
 
 > 一个长期演化的、模块化、可插拔、可验证的**加密市场自动化研究基础设施**。
 
-**当前阶段：Phase 0（Research Constitution）已完成**（2026-09-24，tag `phase-0-complete`）— 领域契约、状态机、Schema 与测试已就绪，研究宪法已发布为 1.0.0（ADR-0020）；**Phase 1（Market Representation）已开启**（分支 `phase/1`），当前只处于架构决策子阶段（ADR-0021 ~ 0024 已起草为 Proposed，待复核），尚未开始任何数据采集或存储实现。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
+**当前阶段：Phase 0（Research Constitution）已完成**（2026-09-24，tag `phase-0-complete`）；**Phase 1（Market Representation）已开启，E1-CAP-1 容量边界阻断，尚未验收**。详见 [PROJECT_STATUS.md](PROJECT_STATUS.md)（当前状态以其为准）。
 
 ## 它是什么 / 不是什么
 
@@ -70,7 +70,7 @@ hlens-autoresearch/
 ## 开发环境
 
 - Python 3.13，由 [uv](https://docs.astral.sh/uv/) 管理，与系统 Python 隔离（[ADR-0003](docs/adr/0003-python-version-and-uv.md)）。
-- 依赖保持最小：`pydantic`（契约）+ `pytest` / `ruff` / `mypy`（工程基线）。
+- 主依赖（`pyproject.toml`）：`pydantic`、`pydantic-settings`（契约与配置）、`pyiceberg[pyarrow,pyiceberg-core,sql-postgres]`、`pyarrow`（Iceberg 数据平面）、`httpx`（公开行情采集）、`fastapi`（只读 API）；可选 `api-server` extra 提供 `uvicorn`（ADR-0063）；`pytest` / `ruff` / `mypy` 为工程基线。
 
 ```bash
 uv sync                                   # 创建 .venv 并安装依赖

@@ -3,14 +3,16 @@
 Commits (or, on replay, proves identical) one fixed-size chunk of Research Dataset rows at a
 time, through the frozen ``CatalogAdapter.commit_batch`` idempotency (``(table, batch_id)`` +
 independently recomputed fingerprint, ADR-0021 D-01 / ``core/contracts/catalog.py``) plus a
-readback comparison over the ADR-0075 bounded ``scan_columns`` projection — never by extending
+readback comparison over the ADR-0075 bounded ``scan_column_batches`` stream — never by extending
 the frozen core ``CatalogAdapter`` Protocol or by walking Iceberg snapshot history (ADR-0077
 §6.2.6). The writer holds no state across calls: everything it needs after a restart is read back
 from the table, matching ``infrastructure/dataset/builder.py``'s v2 ``_materialize`` pattern.
 
 Working set per call: one chunk's rows (bounded by the caller's ``chunk_rows``), one commit
 request/result and one bounded readback of that same chunk — never the selection's row count or
-chunk count.
+chunk count. Every read streams the fixed snapshot through ``scan_column_batches`` (ADR-0075:
+no PyIceberg high-level planner, whose manifest / entry / task lists grow with the table's file
+count, i.e. with the chunks of every build) and stops as soon as its verdict is decided.
 
 Integrity, fail closed (``CatalogIntegrityError``):
 
@@ -34,7 +36,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
-from pyiceberg.expressions import And, EqualTo, GreaterThan, GreaterThanOrEqual
+from pyiceberg.expressions import (
+    And,
+    BooleanExpression,
+    EqualTo,
+    GreaterThan,
+    GreaterThanOrEqual,
+)
 from pyiceberg.schema import assign_fresh_schema_ids
 
 from core.contracts.catalog import (
@@ -77,6 +85,40 @@ def _check_chunk_table(definition: RegisteredTableDefinition) -> None:
 
 def _ordinal(row: Mapping[str, Any]) -> int:
     return int(row["row_ordinal"])
+
+
+def _scan_at_most(
+    adapter: RevisionCatalog,
+    table: str,
+    *,
+    columns: tuple[str, ...],
+    row_filter: BooleanExpression,
+    snapshot_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """At most ``limit`` rows of one fixed snapshot, streamed; the reader is always closed.
+
+    ADR-0075 bounded scan: one data file and one Arrow batch at a time, never the high-level
+    planner. Callers pass a ``limit`` one past what a lawful table can hold, so stopping there
+    cannot change their verdict.
+    """
+    rows: list[dict[str, Any]] = []
+    reader = adapter.scan_column_batches(
+        table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+    )
+    try:
+        for record_batch in reader:
+            remaining = limit - len(rows)
+            if record_batch.num_rows > remaining:
+                record_batch = record_batch.slice(0, remaining)
+            rows.extend(record_batch.to_pylist())
+            if len(rows) >= limit:
+                break
+    finally:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
+    return rows
 
 
 class IcebergChunkWriter:
@@ -152,7 +194,9 @@ class IcebergChunkWriter:
             ) from last
 
         snapshot = result.snapshot.snapshot_id
-        found = self._adapter.scan_columns(
+        # One row past the chunk is enough to prove an extra row; no more is ever held.
+        found = _scan_at_most(
+            self._adapter,
             table,
             columns=tuple(field.name for field in self._table.arrow_schema),
             row_filter=And(
@@ -160,7 +204,8 @@ class IcebergChunkWriter:
                 EqualTo("chunk_index", chunk_index),  # type: ignore[call-arg, arg-type]
             ),
             snapshot_id=snapshot,
-        ).to_pylist()
+            limit=len(expected) + 1,
+        )
         if sorted(found, key=_ordinal) != expected:
             raise CatalogIntegrityError(
                 f"chunk {chunk_index} of {selection_id} reads back differently at {snapshot}"
@@ -170,7 +215,8 @@ class IcebergChunkWriter:
         if not replayed:
             # A hole: some later chunk of this selection is already committed even though this
             # one had never been (ADR-0077 §4.4) — proof of tampering or a bypassed writer.
-            ahead = self._adapter.scan_columns(
+            ahead = _scan_at_most(
+                self._adapter,
                 table,
                 columns=("chunk_index",),
                 row_filter=And(
@@ -180,7 +226,7 @@ class IcebergChunkWriter:
                 snapshot_id=snapshot,
                 limit=1,
             )
-            if ahead.num_rows:
+            if ahead:
                 raise CatalogIntegrityError(
                     f"{selection_id} has a chunk beyond {chunk_index} already committed: a hole"
                 )
@@ -206,7 +252,8 @@ class IcebergChunkWriter:
         snapshot = self._head(table)
         if snapshot is None:
             raise CatalogIntegrityError(f"{selection_id} has no committed chunk to seal")
-        extra = self._adapter.scan_columns(
+        extra = _scan_at_most(
+            self._adapter,
             table,
             columns=("chunk_index",),
             row_filter=And(
@@ -216,7 +263,7 @@ class IcebergChunkWriter:
             snapshot_id=snapshot,
             limit=1,
         )
-        if extra.num_rows:
+        if extra:
             raise CatalogIntegrityError(
                 f"{selection_id} has a chunk at or beyond chunk_count {chunk_count}"
             )

@@ -50,7 +50,7 @@ from infrastructure import contract_version
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_EVIDENCE_MANIFESTS, DATASET_MANIFESTS
 from infrastructure.pit import assumption as archive_assumption
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import BatchCommit, RevisionCatalog, scan_rows, scanned_rows
 from infrastructure.universe import listing_assumption
 
 __all__ = [
@@ -146,7 +146,7 @@ def manifest_assumptions(
     pit = manifest.point_in_time
     try:
         archive = archive_assumption.assumption_bound(pit)
-        listing = listing_assumption.assumption_bound(pit)
+        listing = listing_assumption.bound_binding(pit)
     except (
         archive_assumption.AssumptionSpecError,
         listing_assumption.AssumptionSpecError,
@@ -156,7 +156,7 @@ def manifest_assumptions(
         ) from exc
     return ManifestAssumptions(
         archive_event_time=archive_assumption.ASSUMPTION_BINDING if archive else None,
-        listing_backfill=listing_assumption.ASSUMPTION_BINDING if listing else None,
+        listing_backfill=listing,
     )
 
 
@@ -312,11 +312,14 @@ class ManifestStore:
 
     def _row(self, content_hash: str) -> Mapping[str, Any] | None:
         columns = tuple(field.name for field in DATASET_MANIFESTS.arrow_schema)
-        rows = self._adapter.scan_columns(
+        # Streamed at the head (ADR-0075); two rows already prove a duplicate.
+        rows = scan_rows(
+            self._adapter,
             _TABLE,
             columns=columns,
             row_filter=EqualTo("manifest_content_hash", content_hash),  # type: ignore[call-arg, arg-type]
-        ).to_pylist()
+            limit=2,
+        )
         if len(rows) > 1:
             raise CatalogIntegrityError(f"manifest {content_hash} is persisted twice")
         return rows[0] if rows else None
@@ -340,14 +343,17 @@ def _present(adapter: RevisionCatalog, table: str, content_hash: str) -> bool:
     no manifest of that form can exist there.
     """
     try:
-        found = adapter.scan_columns(
+        # Streamed at the head (ADR-0075); the first row settles it.
+        found = scan_rows(
+            adapter,
             table,
             columns=("manifest_content_hash",),
             row_filter=EqualTo("manifest_content_hash", content_hash),  # type: ignore[call-arg, arg-type]
+            limit=1,
         )
     except TableNotFound:
         return False
-    return bool(found.num_rows)
+    return bool(found)
 
 
 def _check_one_form(adapter: RevisionCatalog, content_hash: str, *, found: bool, v3: bool) -> None:
@@ -452,19 +458,28 @@ class DatasetEvidenceManifestStore:
 
     def recorded_version(self, selection_id: str) -> str | None:
         """The contract version of the persisted manifest of ``selection_id``, else ``None``."""
-        rows = self._adapter.scan_columns(
+        # Streamed at the head (ADR-0075): the first row and the row count are all that is held
+        # (the count is reported exactly, so the stream is not cut short).
+        first: Mapping[str, Any] | None = None
+        count = 0
+        with scanned_rows(
+            self._adapter,
             _EVIDENCE_TABLE,
             columns=("manifest_content_hash", "contract_schema_version"),
             row_filter=EqualTo("selection_id", selection_id),  # type: ignore[call-arg, arg-type]
-        ).to_pylist()
-        if not rows:
+        ) as rows:
+            for row in rows:
+                if first is None:
+                    first = row
+                count += 1
+        if first is None:
             return None
-        if len(rows) > 1:
+        if count > 1:
             raise CatalogIntegrityError(
-                f"selection {selection_id} has {len(rows)} persisted evidence manifests"
+                f"selection {selection_id} has {count} persisted evidence manifests"
             )
         return contract_version.replay_version(
-            rows[0]["contract_schema_version"],
+            first["contract_schema_version"],
             what=f"the evidence manifest of selection {selection_id}",
         )
 
@@ -548,24 +563,34 @@ class DatasetEvidenceManifestStore:
     # ------------------------------------------------------------------ internals
 
     def _check_selection(self, selection_id: str, content_hash: str) -> None:
-        found = self._adapter.scan_columns(
+        # Streamed at the head (ADR-0075), holding only the smallest other hash: the one the
+        # message has always named (the first of the sorted distinct others).
+        smallest: Any = None
+        with scanned_rows(
+            self._adapter,
             _EVIDENCE_TABLE,
             columns=("manifest_content_hash",),
             row_filter=EqualTo("selection_id", selection_id),  # type: ignore[call-arg, arg-type]
-        ).column("manifest_content_hash")
-        others = sorted({value for value in found.to_pylist() if value != content_hash})
-        if others:
+        ) as rows:
+            for row in rows:
+                value = row["manifest_content_hash"]
+                if value != content_hash and (smallest is None or value < smallest):
+                    smallest = value
+        if smallest is not None:
             raise CatalogIntegrityError(
-                f"selection {selection_id} already has another evidence manifest {others[0]}"
+                f"selection {selection_id} already has another evidence manifest {smallest}"
             )
 
     def _row(self, content_hash: str) -> Mapping[str, Any] | None:
         columns = tuple(field.name for field in DATASET_EVIDENCE_MANIFESTS.arrow_schema)
-        rows = self._adapter.scan_columns(
+        # Streamed at the head (ADR-0075); two rows already prove a duplicate.
+        rows = scan_rows(
+            self._adapter,
             _EVIDENCE_TABLE,
             columns=columns,
             row_filter=EqualTo("manifest_content_hash", content_hash),  # type: ignore[call-arg, arg-type]
-        ).to_pylist()
+            limit=2,
+        )
         if len(rows) > 1:
             raise CatalogIntegrityError(f"evidence manifest {content_hash} is persisted twice")
         return rows[0] if rows else None

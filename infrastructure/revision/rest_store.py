@@ -128,7 +128,7 @@ from infrastructure.revision.row_integrity import (
     batch as _batch,
     batch_rows as _batch_rows,
 )
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import BatchCommit, RevisionCatalog, scan_rows
 
 __all__ = [
     "DEFAULT_ELEMENT_MICROBATCH_ROWS",
@@ -915,11 +915,16 @@ class RestRevisionStore:
         *,
         limit: int | None = None,
     ) -> list[Mapping[str, Any]]:
+        """Matching rows at the current head, streamed; at most ``limit`` (ADR-0075 bounded scan).
+
+        Not ``scan_columns``: PyIceberg's high-level planner grows with the table's file count
+        (one commit per response / element batch). The reader stops at ``limit`` rows (two prove
+        a duplicate), so no caller's verdict can change.
+        """
         columns = tuple(field.name for field in definition.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            definition.table, columns=columns, row_filter=row_filter, limit=limit
-        ).to_pylist()
-        return rows
+        return scan_rows(
+            self._adapter, definition.table, columns=columns, row_filter=row_filter, limit=limit
+        )
 
     def _current_snapshot_id(self, table: str) -> str | None:
         info = self._adapter.load_table(table)

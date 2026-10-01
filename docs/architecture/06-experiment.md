@@ -41,7 +41,7 @@
 | `outcome_ref` | 结果标签 `outcome:name@semver`；同上 |
 | `plugin_versions` | 所有插件：键严格为 `name@semver`，值为 SHA-256 `content_hash` |
 | `dependency_hashes` | 直接依赖的内容绑定：键为 `Ref` 的规范串 `kind:name@semver`，值为 64 位小写十六进制 SHA-256。`hypothesis_ref`、`strategy_ref`、`risk_policy_ref`、`outcome_ref`、`cost_model_ref` 中**所有非空引用必须出现**，缺一即拒绝 |
-| `params` | 全部参数（含默认值展开） |
+| `params` | 全部参数（含默认值展开）；保留键 `hlens.p11.inputs@1.0.0` 记录 P11 同源重算所需的执行与验证输入（规范 JSON，ADR-0100 修订 2；旧运行无此键，不回填） |
 | `param_search_space` | 若有参数搜索：完整搜索空间与尝试次数 |
 | `seeds` | 全部随机种子 |
 | `environment_lock` | 依赖锁文件哈希 + Python 版本 + 平台。仍是**复合描述字符串**，其结构化表达后续另定（ADR-0015 §D-21.3） |

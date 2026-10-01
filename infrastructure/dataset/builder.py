@@ -147,7 +147,7 @@ from infrastructure.universe.builder import (
     check_listing_bindings,
 )
 from infrastructure.universe.listing_assumption import (
-    ASSUMPTION_BINDING as LISTING_ASSUMPTION_BINDING,
+    ASSUMPTION_BINDINGS as LISTING_ASSUMPTION_BINDINGS,
 )
 
 __all__ = [
@@ -239,11 +239,12 @@ KNOWN_BINDINGS: Final = frozenset(
         lr.LISTING_STATUS_BINDING,
     }
 )
-#: ``KNOWN_BINDINGS`` plus the ADR-0051 listing backfill assumption (D-LIST, accepted
-#: 2026-09-28): a spec may bind it (exact id, version and hash), it is never required. Kept out of
-#: ``KNOWN_BINDINGS`` itself, whose published envelopes and hashes are pinned as the Phase 1
-#: registry; the manifest binds it through its PIT spec like any other availability policy.
-ACCEPTED_BINDINGS: Final = KNOWN_BINDINGS | {LISTING_ASSUMPTION_BINDING}
+#: ``KNOWN_BINDINGS`` plus every published version of the ADR-0051 listing backfill assumption
+#: (D-LIST, accepted 2026-09-28; 1.0.0 empty, 1.1.0 populated): a spec may bind one (exact id,
+#: version and hash), it is never required. Kept out of ``KNOWN_BINDINGS`` itself, whose published
+#: envelopes and hashes are pinned as the Phase 1 registry; the manifest binds it through its PIT
+#: spec like any other availability policy.
+ACCEPTED_BINDINGS: Final = KNOWN_BINDINGS | frozenset(LISTING_ASSUMPTION_BINDINGS.values())
 
 _SLICES: Final[Mapping[str, timedelta]] = {
     "agg_trades": timedelta(hours=1),

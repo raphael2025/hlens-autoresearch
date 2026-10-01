@@ -28,7 +28,9 @@ members, plus the gate observation for ``conditioned``), capped at the size of t
 
 Construction refuses (fail closed, ``ValueError``): a spec without ``composition``; a composite
 with its own ``params`` / ``param_search_space`` (a composite has no tunable parameter — the base's
-point is fixed by the base spec, so another point is another base spec and another composite); a
+point is fixed by the base spec, so another point is another base spec and another composite; a
+subclass may admit one exact, non-tunable declaration per composition type, and then requires
+it: a spec of that type must carry exactly those ``params``, empty ones included); a
 reference missing from the resolution table or resolved to a provider that does not support that
 spec's hash; a self-reference or a reference cycle through the table's composite specs; ``signals``
 that do not cover every referenced strategy's signals; and ensemble members whose ``risk_policy`` or
@@ -46,7 +48,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
-from typing import Final
+from typing import ClassVar, Final
 
 from core.contracts.strategy import (
     SignalObservation,
@@ -74,6 +76,8 @@ _CONTEXT: Final = Context(prec=50, rounding=ROUND_HALF_EVEN)
 _WEIGHT_QUANTUM: Final = Decimal("1e-18")
 
 type _Key = tuple[datetime, str]
+#: One of the three composition classes (``StrategySpec.composition`` is their tagged union).
+type _CompositionType = type[ConditionedStrategy | EnsembleStrategy | NegatedStrategy]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,16 +126,29 @@ class _Composite:
 
     __slots__ = ("parts", "signal_ids", "spec")
 
-    def __init__(self, spec: StrategySpec, table: Mapping[str, ResolvedStrategy]) -> None:
+    def __init__(
+        self,
+        spec: StrategySpec,
+        table: Mapping[str, ResolvedStrategy],
+        declarations: Mapping[_CompositionType, Mapping[str, object]],
+    ) -> None:
         if not isinstance(spec, StrategySpec):
             raise ValueError("a StrategySpec is required")
         composition = spec.composition
         if composition is None:
             raise ValueError(f"{spec.ref} has no composition; it is not a composite strategy")
-        if spec.params or spec.param_search_space:
+        declared = declarations.get(type(composition))
+        # Without a declaration for this composition type the spec must carry no params; with
+        # one, its params must equal the declaration exactly (empty params are refused too: the
+        # declaration is part of the served spec's identity, not optional).
+        params_ok = (
+            not spec.params if declared is None else _same_params(spec.params, declared)
+        )
+        if spec.param_search_space or not params_ok:
             raise ValueError(
                 f"{spec.ref}: a composite strategy has no parameters of its own; the referenced "
-                "specs fix their points"
+                "specs fix their points (only a served declaration, e.g. the P7 lowering's, is "
+                "admitted, exactly and required when the provider declares one)"
             )
         _check_acyclic(spec, table)
         self.spec = spec
@@ -164,6 +181,14 @@ class _Composite:
         self.parts = tuple(parts)
 
 
+def _same_params(params: Mapping[str, object], declared: Mapping[str, object]) -> bool:
+    """Exact equality, type included (``True`` is not ``1``)."""
+    return set(params) == set(declared) and all(
+        type(params[key]) is type(value) and params[key] == value
+        for key, value in declared.items()
+    )
+
+
 def _check_table(table: Mapping[str, ResolvedStrategy]) -> dict[str, ResolvedStrategy]:
     out: dict[str, ResolvedStrategy] = {}
     for key, entry in table.items():
@@ -183,7 +208,20 @@ class CompositeStrategyProvider:
     ``resolution`` maps ``str(ref)`` of every referenced strategy to its spec and provider
     (explicit; no registry lookup). ``instrument_type`` is the execution context of the targets —
     explicit, no default; ``SPOT`` refuses negated short targets (gap ST-4).
+
+    Subclasses may narrow the served compositions (``COMPOSITIONS``), change the descriptor
+    identity (``NAME`` / ``VERSION``) and admit an exact, non-tunable ``params`` declaration per
+    composition type (``DECLARED_PARAMS``) — the P7 execution Providers in
+    ``research.strategies.p7_compositions`` do. The base class keeps its identity and refuses any
+    ``params``.
     """
+
+    NAME: ClassVar[str] = "research_composite"
+    VERSION: ClassVar[str] = "0.1.0"
+    #: ``None``: every composition type; otherwise only these.
+    COMPOSITIONS: ClassVar[tuple[_CompositionType, ...] | None] = None
+    #: Exact ``params`` admitted per composition type (none by default).
+    DECLARED_PARAMS: ClassVar[Mapping[_CompositionType, Mapping[str, object]]] = {}
 
     def __init__(
         self,
@@ -204,10 +242,16 @@ class CompositeStrategyProvider:
             key = str(spec.ref)
             if key in self._specs:
                 raise ValueError(f"{key} is given more than once")
-            self._specs[key] = _Composite(spec, table)
+            if (
+                self.COMPOSITIONS is not None
+                and isinstance(spec, StrategySpec)
+                and type(spec.composition) not in self.COMPOSITIONS
+            ):
+                raise ValueError(f"{key}: {self.NAME} does not serve this composition type")
+            self._specs[key] = _Composite(spec, table, self.DECLARED_PARAMS)
         self._descriptor = StrategyProviderDescriptor(
-            name="research_composite",
-            version="0.1.0",
+            name=self.NAME,
+            version=self.VERSION,
             deterministic=True,
             supported_strategies=FrozenMapping(
                 {key: item.spec.content_hash() for key, item in self._specs.items()}
