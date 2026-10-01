@@ -4,6 +4,7 @@
 
 ## 当前基线
 
+- **2026-10-01 更新**：四项任务卡（E1-ARCHIVE-REUSE、E1-RAW-WINDOW-REUSE、E1-V2-REPLAY、P7-CS-EXEC）均已收口（`fe842b3`、`63d09a4`），全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed；ruff / format / mypy 通过），随 PR #20 整合入 `main`；见 [W1 门禁修复记录](../reviews/2026-10-01-w1-gate-repair.md)。下列较早基线描述保留作历史；E1-CAP-1 与 Phase 验收仍开放。
 - 代码权威基线为 `main@b5f80fe`，且 `origin/main` 同步；PR #17–#19 均已合入，GitHub 当前无开放 PR，PR #19 为 `MERGED`、非 Draft。主线最新 HEAD 未运行全仓门禁或 Phase 验收。
 - 本地快照为 13 个分支 / 13 个 worktree；当前根 worktree 在 `phase/1@4c2356c`，有计划 / 状态文档改动；4 个 Claude feature worktree 有未提交文件，详见下表。计数为 2026-10-01 快照。
 - `phase/1@47446f4` 的旧选择性 Phase 1 infrastructure suite 曾有 `11 failed, 2287 passed, 88 skipped`；失败已逐项分诊，当前完整选择集复跑为 `2298 passed, 88 skipped in 855.34s`。这是候选分支结果，不代表 `main` 全仓门禁或 Phase 验收。
@@ -17,12 +18,12 @@
 | Phase / 模块 | `main@b5f80fe` 状态 | 未合入工作 / 缺口 | 依赖与边界 |
 |---|---|---|---|
 | P0.5 Knowledge | 实现已在主线，未验收 | 本地 `phase/1` 有 126 项定向回归结果，未合入；种子 tags/assets 等待具名人工审阅 | 不自动补人工标签；golden hash 属后续验证。 |
-| P1 Data / Catalog / Normalizer | ADR-0075/0076/0100 的 bounded scan、ID stream 与严格归档解析路径已在主线；E1 archive 与 Raw window 有重复读取缺口，容量未验证 | `phase/1` 有 archive-spool reuse 候选；`feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` 有重叠 Catalog/E1 候选 | 依次复核 archive reuse 与 Raw window reuse；多 archive 顺序处理 / 关闭；P1/E1 与 Dataset / `core/` 契约任务串行。候选 probe 不作为主线容量证据。 |
-| P1 Dataset / Quality | ADR-0077/0093/0094 的 v3 路径已在主线；DQ-10 v2 replay 关联缺陷仍在 main | `phase/1` 有 v2 replay 修正；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity registry | DQ-10 修复见唯一缺口清单；不得恢复新 v2 写入；Dataset 与 `core/` 契约改动串行。 |
+| P1 Data / Catalog / Normalizer | ADR-0075/0076/0100 的 bounded scan、ID stream 与严格归档解析路径已在主线；E1 archive 与 Raw window 有重复读取缺口，容量未验证 | archive / Raw window 复用已收口（2026-10-01）；`feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` 有重叠 Catalog/E1 候选待审 | 依次复核 archive reuse 与 Raw window reuse；多 archive 顺序处理 / 关闭；P1/E1 与 Dataset / `core/` 契约任务串行。候选 probe 不作为主线容量证据。 |
+| P1 Dataset / Quality | ADR-0077/0093/0094 的 v3 路径已在主线；DQ-10 v2 replay 关联缺陷仍在 main | DQ-10 v2 replay 已收口（2026-10-01）；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity registry | DQ-10 修复见唯一缺口清单；不得恢复新 v2 写入；Dataset 与 `core/` 契约改动串行。 |
 | P2 State | 计算 / 持久化路径在主线，未验收 | `feature/p2-state` 及 P11 worktree 有 State CLI / report 候选 | 先拆分 P2 与 P11 共享改动；branch-only ADR 不构成 main 授权；契约任务不得并行。 |
 | P3 Event / P4 Outcome | Provider / 存储 / 操作入口在主线，未验收 | 无已确认可直接执行的普通代码缺口；Catalog 建表是运行操作 | 依赖 Phase 1 数据；不以本计划代替运行操作或验收。 |
 | P5 Strategy / P6 Matrix | 研究与验证代码在主线，未验收 | 未发现已批准的直接实现缺口；Profile 数值与 Promotion 是决策 / 验收门 | 不猜 Profile，不绕过 Promotion / Validation。 |
-| P7 Discovery | ADR-0088/0099/0100 语义和 Provider 在主线；compiler 对 `rank_cs` / `quantile_cs` 仍 fail closed | `phase/1` 有 P7-CS-EXEC 候选；`feature/p7-bind` 有独立 binding / evidence 候选 | P7-CS-EXEC 单独执行，binding 候选另审；不得与 E1 或 `core/` 并行；跨类型组合保持 fail closed。 |
+| P7 Discovery | ADR-0088/0099/0100 语义和 Provider 在主线；compiler 对 `rank_cs` / `quantile_cs` 仍 fail closed | P7-CS-EXEC 已收口（2026-10-01）；`feature/p7-bind` 有独立 binding / evidence 候选待审 | P7-CS-EXEC 单独执行，binding 候选另审；不得与 E1 或 `core/` 并行；跨类型组合保持 fail closed。 |
 | P8 Robustness / P9 Calibration | 主线有报告与合成校准实现，未验收 | 暂无确认的 Accepted-ADR 代码缺口；待调试项须有具体失败证据 | 依赖 W1；不得更改验证阈值或 Profile。 |
 | P10 Router | 纸面路由 / deviation 报告在主线，未验收 | `feature/p10-deviation` 有 API / DTO / research / Web 候选，其中 Web 当前有未提交改动 | 按主线 ADR 与 DTO 逐项对账；只读 / 纸面边界保持。 |
 | P11 Research Loop | ADR-0098/0100 与 PR #19 的 authority / read-only audit view 已在主线，未验收 | `feature/p11-ops`、`feature/p11-tests`、`claude/module-completion` 有 lifecycle CLI、baseline export、degradation batch 候选 | 先处理与 P2 重叠提交；真实运行需要部署与合格 repro inputs；不伪造旧输入。 |

@@ -42,9 +42,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
 - Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；main 正式矩阵已部分运行后中断。旧候选分支的容量数值不能外推为 `main` 的结果
-- 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写（多数为框架 + 补全），未测试、未验收
-- Next Milestone：按模块计划复核候选并串行收口四项已批准代码缺口 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
-- 仍开放：P7-CS-EXEC 尚未进入 `main` / 未验证；E1-CAP-1 完整容量结论未得、DQ-9 未定；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
+- 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写，全仓测试门禁于 2026-10-01 首次全绿；未逐 Phase 验收
+- Next Milestone：在与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。四项已批准代码缺口已于 2026-10-01 收口（`docs/plans/2026-09-28-remaining-code-gaps.md`）
+- 仍开放：E1-CAP-1 完整容量结论未得、DQ-9 未定；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
 
@@ -149,8 +149,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
-- `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；E1-CAP-1 正式矩阵中断，未判定。
-- 当前工作分支：`phase/1@4c2356c`，包含 P0.5 Knowledge、P7-CS-EXEC、E1/Dataset 与 infrastructure 回归修复候选；未合入 `main`，不计为主线完成。E1 archive spool reuse 有定向检查结果，仍需独立 review；Raw window reuse 尚待实现。
-- `origin/main` 与本地 `main` 已同步；PR #17–#19 均为 MERGED、无开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态；当前数量以 `PROJECT_STATUS.md` 的盘点快照为准。
-- 下一步：逐项审阅分支候选并按计划串行收口 E1 archive reuse、Raw window reuse、DQ-10 v2 replay、P7-CS-EXEC；之后仅在生产路径与 `main` 一致的提交上重跑完整 E1 矩阵。分支结果不代表主线完成或 Phase 验收。
+- Phase 0 基线：tag `phase-0-complete`
+- `main` ← `phase/1` 经 PR #20 整合（2026-10-01）：四项代码缺口收口；全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过）。见 `docs/reviews/2026-10-01-w1-gate-repair.md`
+- 历史契约固定值的核对方式：`tests/contract_version_support.py::at_contract_version` 在新解释器里按记录时的契约版本重建；只有证明差异仅来自契约信封或已接受 ADR 的有意变化时才可重钉
+- 下一步：在与 `main` 一致的提交上跑 E1-CAP-1 正式矩阵；未合入 worktree 候选仍按模块计划逐项审阅
