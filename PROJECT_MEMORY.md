@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-09-30 执行 Compaction：删除测试计数、命令输出、分支 / SHA 细节与已进入 ADR / docs 的内容；历史见 Git、ADR 与 `docs/reviews/`。
+> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main`；当前模块代码计划与短期进度见 `PROJECT_STATUS.md` 及 `docs/plans/2026-09-28-remaining-code-gaps.md`。历史实现记录见 Git、ADR 与 `docs/reviews/`。
 
 ## 1. Project Identity
 
@@ -43,7 +43,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
 - Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；ADR-0100 已写两轮有界化，未测量。旧候选分支的容量数值不能外推为 `main` 的结果
 - 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写（多数为框架 + 补全），未测试、未验收
-- Next Milestone：Raphael 本地全仓门禁 → 逐模块调试 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收
+- Next Milestone：按批准范围完成剩余底层代码收口 → Raphael 安排统一调试 / 门禁 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
 - 仍开放：P7 横截面执行接线；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
@@ -105,7 +105,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0091：登记处完整性审计严格只读；Failure Registry 不提供历史防篡改证明
 - ADR-0095：生产 Worker 由部署方显式受信 Runtime Factory 组合
 - ADR-0096：TrialLedger 完全相同的登记作只读幂等确认，不增加 trial
-- ADR-0100（2026-09-30，Raphael 直接指令）：补完剩余底层代码——P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs`（计划格式 1.3.0，执行未接通）、P11 指标闭集 `hlens.p11.monitoring-metrics@2.0.0` 与默认 `AuthorityEnvironment`、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案（默认关、只用独立预登记密封窗口）；修订 1 细化 1.3.0 时间事件（无二次滞后、按发生时刻度量窗口、绑定上游哈希）
+- ADR-0100（2026-09-30，Raphael 直接指令）：补完剩余底层代码——P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` lower 与 Provider（尚未接入通用编译 / loop 执行，仍明确拒绝）、P11 指标闭集与默认 `AuthorityEnvironment`、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案（默认关、只用独立预登记密封窗口）；修订 1 细化 1.3.0 时间事件。剩余任务见当前模块计划。
 - D-P11-WINDOW（ADR-0049 遗留）开放；D-STATE-INC 暂缓（ADR-0035）
 
 ## 6. Active Constraints
@@ -145,11 +145,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 旧策略或旧结论进入新系统时必须重新登记并重新验证，不能直接信任
 - Phase 0 审查链：C1 `FIX_BEFORE_CLOSE` → ADR-0018 / 0019 → C3 `READY_FOR_HUMAN_CONSTITUTION_GATE` → ADR-0020；记录见 `docs/reviews/`
 - 授权演变：2026-09-23 Codex 协调者 → 2026-09-24 "授权所有"（Codex）→ 2026-09-28 Claude Code PM → 2026-09-30 早段 Codex PM 段落 → 2026-09-30 Raphael 在主会话指令 Claude Code 接管（冲突见 §1）
-- 远端曾有 68 个 `codex/*` 分支：已逐一核对，独有逻辑已补回，属被取代分支，待清理；旧恢复点保存在 `refs/archive/`
+- 2026-10-01：17 个 Codex 临时分支 tip 已保存至 `refs/archive/2026-10-01/branches/codex/`，分支与干净 Codex worktree 已清理；Claude feature worktree 的未提交 / 未合入内容仍需逐项审阅，不计为主线完成。具体当前数量见 `PROJECT_STATUS.md` 快照。
 
 ## 9. Last Known Good State
 
 - Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
-- `main` = `87d3a63`（PR #17，2026-09-30 合并：整合线 + ADR-0098 / 0099 + 深度审查修复）——**未测试**
-- 分支 `claude/modest-bardeen-zbu3vk` = ADR-0100 批次 + 审查修复，尚未进入 `main`——**未测试**
-- 下一步：合并 ADR-0100 批次 → Raphael 本地全仓门禁（`uv run pytest` / `ruff check` / `ruff format --check` / `mypy`）→ 逐模块调试 → E1-CAP-1 测量
+- `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；Phase 1 E1-CAP-1 未测量
+- `origin/main` 与本地 `main` 已同步；PR #19 分支已合并，远端当前没有开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态。
+- 下一步：按 `docs/plans/2026-09-28-remaining-code-gaps.md` 收口代码；统一测试、调试和容量测量留待后续授权窗口，不因文档更新或代码合并视为验收

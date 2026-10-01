@@ -1,6 +1,7 @@
 # HLENS-AutoResearch 全栈代码完成计划
 
-> **注（2026-09-30）**：多项已由 ADR-0098/0099/0100 完成或取代；ADR-0090 号未使用。当前状态以 `PROJECT_STATUS.md` 为准。
+> **历史记录说明（2026-10-01）**：本文件保留 2026-09-26 起的批次、审查与失败证据，不再作为当前任务清单；当前剩余底层代码计划见 [`docs/plans/2026-09-28-remaining-code-gaps.md`](2026-09-28-remaining-code-gaps.md)，模块状态见 [`docs/plans/2026-09-28-module-foundation-completion.md`](2026-09-28-module-foundation-completion.md)。
+> 本文件中的基线、分支数量和后续动作均为各历史记录当时快照；当前状态以 `PROJECT_STATUS.md` 与上方计划为准。
 
 日期：2026-09-26  
 用途：交给 Claude Code Opus 作为执行目标；Claude 负责编码与每步文档 / Git，Codex 负责决策、协调、复核和恢复点把关。  
