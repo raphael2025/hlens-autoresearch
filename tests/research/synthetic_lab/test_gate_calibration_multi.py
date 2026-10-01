@@ -43,6 +43,7 @@ from research.synthetic_lab.gate_calibration import (
 from research.validation.gates import ProfileFieldMissing, profile_value
 from research.validation.stats import UnsupportedMethod
 from tests import factories
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 from tests.research.synthetic_lab import gate_fixtures as fx
 from tests.research.synthetic_lab.test_gate_calibration import (
     TOY_EFFECT,
@@ -77,7 +78,7 @@ def pipeline_report() -> GateCalibrationReport:
 # --------------------------------------------------------------------------------------
 
 
-def test_mode_off_keeps_every_single_instrument_report_hash() -> None:
+def _mode_off_keeps_every_single_instrument_report_hash() -> None:
     assert run_gate_calibration(_toy_setup()).report_hash == PRE_G5_TOY_HASH
     assert run_gate_calibration(_raising_setup()).report_hash == PRE_G5_RAISING_HASH
     pipeline = run_gate_calibration(fx.setup(1))
@@ -90,6 +91,12 @@ def test_mode_off_keeps_every_single_instrument_report_hash() -> None:
         for by_arm in candidate["gates"].values():
             assert all("fail_rate" not in gate for gate in by_arm.values())
         assert all("instruments" not in run for run in candidate["runs"])
+
+
+def test_mode_off_keeps_every_single_instrument_report_hash() -> None:
+    # the pre-G5 hashes were recorded at contract 2.2.0: every object built at 2.2.0
+    call = f"{__name__}:_mode_off_keeps_every_single_instrument_report_hash"
+    assert at_contract_version(PINNED_CONTRACT_VERSION, call) is None
 
 
 # --------------------------------------------------------------------------------------
@@ -180,10 +187,12 @@ def _toy_multi(detector: object = None, **fields: object) -> MultiInstrumentCali
 #: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
 #: test passes inside ``contract_schema_version_scope("2.1.0")``).
 #: 2.1.0 values (evidence, git history): f10b41aa…
+#: Recorded at contract 2.2.0: checked with every contract object built at 2.2.0
+#: (``at_contract_version``) after the envelope-only 2.3.0 – 2.5.0 minors.
 TOY_MULTI_HASH = "bca62e54c1c8e16b5fefdb537414f9f54e2f4f40e400a2d4465c7cd727aa9bc3"
 
 
-def test_mode_on_is_deterministic_and_pinned() -> None:
+def _mode_on_is_deterministic_and_pinned() -> None:
     first = run_multi_instrument_calibration(_toy_multi())
     second = run_multi_instrument_calibration(_toy_multi())
     assert first.report_hash == second.report_hash == TOY_MULTI_HASH
@@ -192,6 +201,11 @@ def test_mode_on_is_deterministic_and_pinned() -> None:
     assert other.report_hash != first.report_hash
     body = {k: v for k, v in first.to_payload().items() if k != "report_hash"}
     assert json.loads(json.dumps(body)) == body
+
+
+def test_mode_on_is_deterministic_and_pinned() -> None:
+    call = f"{__name__}:_mode_on_is_deterministic_and_pinned"
+    assert at_contract_version(PINNED_CONTRACT_VERSION, call) is None
 
 
 def test_instrument_seeds_are_derived_from_the_run_seed() -> None:

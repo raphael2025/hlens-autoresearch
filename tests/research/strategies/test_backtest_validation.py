@@ -18,6 +18,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,7 +35,7 @@ from core.contracts.validation_profile import (
     SignificanceParams,
     WalkForwardParams,
 )
-from core.domain.base import Kind, Ref
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Kind, Ref
 from core.domain.research import GateResult, RunState, Verdict, derive_verdict
 from core.domain.specs import OutcomeSpec
 from core.errors import ReasonCode
@@ -66,6 +67,7 @@ from research.validation import RobustnessParams, ValidationContext, to_json
 from research.validation.g4 import run_robustness
 from research.validation.robustness import RobustnessCheck
 from tests import factories
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
 BOUNDARY = datetime(2024, 1, 5, tzinfo=UTC)
@@ -1211,20 +1213,60 @@ def test_remainders_are_read_on_the_dataset_path_only() -> None:
     assert ("G4.capacity.estimated", "carry_over_unfilled") not in _gates(gates)
 
 
+#: The contract version the research report / run hashes pinned here and in the strategy, router
+#: and synthetic-lab tests were recorded at (2026-09-26/27, ADR-0055 2.2.0; ``a8490bf`` /
+#: ``6d887b7``). The 2.3.0 – 2.5.0 minors changed only the envelope every content hash includes,
+#: so these pins are checked on what the 2.2.0 code built (``at_contract_version``); any other
+#: change still breaks them.
+def _envelope_free(document: Any) -> Any:
+    """``document`` without any ``schema_version``."""
+    if isinstance(document, dict):
+        return {k: _envelope_free(v) for k, v in document.items() if k != "schema_version"}
+    if isinstance(document, list):
+        return [_envelope_free(item) for item in document]
+    return document
+
+
 #: ``ValidationReport.content_hash()`` of the full evaluation on the code before B67 (``255ce1a``),
 #: computed twice on that source: the dataset path (default ``next_bar_open``, no remainders) and
-#: the synthetic path. B67 must reproduce them bit for bit.
+#: the synthetic path. B67 must reproduce them bit for bit. Recorded at contract 2.2.0
+#: (``PINNED_CONTRACT_VERSION``).
 PRE_B67_DATASET_REPORT_HASH = "8ed6bf10ce3a1a2b1cab21d383468f92aece3603c74fcfb23006739d566b3a6a"
 PRE_B67_SYNTHETIC_REPORT_HASH = "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76"
+#: Report fields that bind a contract object by its content hash (which includes its envelope),
+#: or that are not part of the report's content (``created_at``).
+_ENVELOPE_BOUND = ("created_at", "experiment_hash", "validation_profile_hash")
+
+
+def _default_model_reports(tmp: str) -> dict[str, Any]:
+    """The dataset- and synthetic-path reports of the planted market: hashes and JSON dumps."""
+    market = _market(seed=7, planted=True)
+    dataset, _ = _evaluate(market, Path(tmp) / "dataset", dataset_bars=_proven(market))
+    synthetic, _ = _evaluate(market, Path(tmp) / "synthetic")
+    assert dataset.validation is not None and synthetic.validation is not None
+    reports = (dataset.validation.report, synthetic.validation.report)
+    return {
+        "hashes": [report.content_hash() for report in reports],
+        "reports": [report.model_dump(mode="json") for report in reports],
+    }
 
 
 def test_the_default_model_reports_are_the_pre_b67_ones(tmp_path: Path) -> None:
-    market = _market(seed=7, planted=True)
-    dataset, _ = _evaluate(market, tmp_path / "dataset", dataset_bars=_proven(market))
-    synthetic, _ = _evaluate(market, tmp_path / "synthetic")
-    assert dataset.validation is not None and synthetic.validation is not None
-    assert dataset.validation.report.content_hash() == PRE_B67_DATASET_REPORT_HASH
-    assert synthetic.validation.report.content_hash() == PRE_B67_SYNTHETIC_REPORT_HASH
+    # the pins were recorded at contract 2.2.0: reproduced bit for bit when every contract
+    # object is built at 2.2.0
+    then = at_contract_version(
+        PINNED_CONTRACT_VERSION, f"{__name__}:_default_model_reports", str(tmp_path / "then")
+    )
+    assert then["hashes"] == [PRE_B67_DATASET_REPORT_HASH, PRE_B67_SYNTHETIC_REPORT_HASH]
+    # at the current contract the reports differ from those only by the envelope (and the
+    # hashes binding envelope-carrying objects)
+    now = _default_model_reports(str(tmp_path / "now"))
+    for current, old in zip(now["reports"], then["reports"], strict=True):
+        assert current["schema_version"] == CONTRACT_SCHEMA_VERSION
+        assert old["schema_version"] == PINNED_CONTRACT_VERSION
+        for key in _ENVELOPE_BOUND:
+            del current[key], old[key]
+        assert _envelope_free(current) == _envelope_free(old)
 
 
 def test_the_default_model_has_no_remainders_and_is_unchanged() -> None:

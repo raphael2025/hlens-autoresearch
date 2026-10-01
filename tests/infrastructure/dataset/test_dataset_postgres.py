@@ -29,7 +29,10 @@ def test_end_to_end_and_restart_rebuild_on_postgres(pg: World) -> None:
     pg.trades()
     pg.report()
     spec = pg.spec()
-    first = pg.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
+    # ADR-0077 DQ-10: the first v2 build is seeded as a pre-cutoff one; the rebuild is the replay
+    first = ds.seed_historical_v2(
+        pg.builder(), FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END
+    )
     assert len(first.selection.rows) == 3 and not first.replayed
     pg.h.reopen()  # a fresh process on the same catalog
     second = pg.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)

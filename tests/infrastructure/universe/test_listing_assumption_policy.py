@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding, PolicyRole
 from core.domain.base import FrozenMapping
@@ -138,8 +139,8 @@ def test_a_version_with_another_versions_hash_is_refused() -> None:
 
 
 def test_binding_two_versions_at_once_is_refused() -> None:
-    both = _spec(backfill.ASSUMPTION_BINDING_1_0_0, backfill.ASSUMPTION_BINDING)
-    with pytest.raises(backfill.AssumptionSpecError):
+    with pytest.raises(ValidationError, match="policy_id 不得重复"):
+        both = _spec(backfill.ASSUMPTION_BINDING_1_0_0, backfill.ASSUMPTION_BINDING)
         backfill.assumption_bound(both)
 
 

@@ -308,9 +308,11 @@ def test_historical_24_evidence_manifest_replays_through_legacy_quality_source(
     verifier = StreamingEvidenceVerifier(
         w.h.adapter, builder=builder, chunks=chunks, sources=sources_for
     )
-    loaded = ManifestStore(w.h.adapter, builder, evidence_verifier=verifier).load_any(
-        historical.content_hash()
-    )
+    loaded = ManifestStore(
+        w.h.adapter,
+        builder,  # type: ignore[arg-type]
+        evidence_verifier=verifier,
+    ).load_any(historical.content_hash())
     assert loaded == historical
     assert quality_source_types == [PinnedQualityEvidence]
 
@@ -408,7 +410,7 @@ def test_dataset_v3_consumes_exact_bound_canonical_and_listing_reports(
         def quality_factory(
             adapter: Any,
             storage: StorageAdapter,
-            request_pit: PointInTimeSpec,
+            pit: PointInTimeSpec,
             data_type: str,
             *,
             view: PinnedCatalogView,
@@ -416,7 +418,7 @@ def test_dataset_v3_consumes_exact_bound_canonical_and_listing_reports(
             params: BoundedQualitySourceParams,
         ) -> BoundedQualityEvidence:
             assert canonical_scratch_directory == w.h.canonical_scratch_directory
-            return _source(w, request_pit, evidence, params, view)
+            return _source(w, pit, evidence, params, view)
 
         writes_before = (evidence.stages, evidence.publishes)
         request = DatasetEvidenceRequest(FIRST_SLICE_UNIVERSE, pit, "agg_trades", START, END)

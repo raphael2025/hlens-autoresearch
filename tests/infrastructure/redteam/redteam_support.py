@@ -50,11 +50,16 @@ def build(
     window: tuple[datetime, datetime] = (START, END),
     **spec_fields: Any,
 ) -> DatasetBuilt:
-    """One F3 build; the spec defaults to every current head except the dataset's own table."""
+    """One v2 F3 build (``legacy_v2_build``: a seeded pre-DQ-10 build, or its public replay).
+
+    The spec defaults to every current head except the dataset's own table.
+    """
     if spec is None:
         spec_fields.setdefault("skip", OWN)
         spec = w.spec(**spec_fields)
-    return w.builder().build(FIRST_SLICE_UNIVERSE, spec, data_type, window[0], window[1])
+    return ds.legacy_v2_build(
+        w.builder(), FIRST_SLICE_UNIVERSE, spec, data_type, window[0], window[1]
+    )
 
 
 def outputs(w: World) -> tuple[str | None, ...]:

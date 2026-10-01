@@ -12,7 +12,7 @@ missing table entry.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -159,8 +159,8 @@ def test_assumed_and_observed_members_cannot_be_swapped_in_a_manifest(w: World) 
     w.listed(ds.TRADING, L1)
     w.trades()
     w.report()
-    built = w.builder().build(
-        FIRST_SLICE_UNIVERSE, bound(w, interval=(FLOOR, SIM)), "agg_trades", START, END
+    built = ds.seed_historical_v2(
+        w.builder(), FIRST_SLICE_UNIVERSE, bound(w, interval=(FLOOR, SIM)), "agg_trades", START, END
     )
     genuine = built.manifest
     assert any(m.assumption is not None for m in genuine.members)

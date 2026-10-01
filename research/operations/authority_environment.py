@@ -750,4 +750,3 @@ def default_environment(
             (EVIDENCE_VERIFIER_ARGUMENT,),
         )
     return _open(evidence_verifier)
-

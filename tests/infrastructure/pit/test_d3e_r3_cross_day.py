@@ -174,6 +174,17 @@ def _raw_edge_ids(edges: Sequence[Any]) -> list[str]:
     return found
 
 
+def _selection_signature(selection: Any) -> tuple[Any, ...]:
+    return (
+        selection.observation_key,
+        selection.simulation_time,
+        selection.knowledge_cutoff,
+        selection.status,
+        selection.selected_revision_id,
+        getattr(selection, "head_count", len(getattr(selection, "maximal_heads", ()))),
+    )
+
+
 def _cross_midnight_two_days(h: RestHarness) -> dict[str, Any]:
     """Key 100 has REST on DAY and DAY_1 (different event times); each day has an equal
     archive counterpart and one single-day key. Returns the ingest bookkeeping."""
@@ -473,16 +484,15 @@ def test_iter_bounded_maps_three_day_spanning_edges_once(
         h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
     )
     legacy = selector.select(spec, "agg_trades", SYMBOL, start, end)
-    mapped_for_spanning: list[Any] = []
-    original = PitSelector._mapped_edges
+    mapped_for_spanning: list[str] = []
+    original = rules.map_channel_edge
 
-    def capture_key_edges(self: PitSelector, *args: Any, **kwargs: Any) -> dict[str, list[Any]]:
-        mapped = original(self, *args, **kwargs)
-        if kwargs.get("only_key") == SPANNING:
-            mapped_for_spanning.extend(mapped.get(SPANNING, ()))
-        return mapped
+    def capture_key_edge(raw: Any, edge_id: str, *args: Any, **kwargs: Any) -> Any:
+        if raw.observation_key == SPANNING:
+            mapped_for_spanning.append(edge_id)
+        return original(raw, edge_id, *args, **kwargs)
 
-    monkeypatch.setattr(PitSelector, "_mapped_edges", capture_key_edges)
+    monkeypatch.setattr(rules, "map_channel_edge", capture_key_edge)
     params = PitRunParams(
         row_batch_rows=1,
         edge_batch_rows=1,
@@ -493,13 +503,12 @@ def test_iter_bounded_maps_three_day_spanning_edges_once(
     with selector.iter_bounded(spec, "agg_trades", SYMBOL, start, end, params=params) as records:
         actual = [record.selection for record in records]
 
-    assert sorted(actual, key=lambda item: (item.observation_key, item.simulation_time)) == sorted(
-        legacy.selections, key=lambda item: (item.observation_key, item.simulation_time)
+    assert sorted(map(_selection_signature, actual)) == sorted(
+        map(_selection_signature, legacy.selections)
     )
-    mapped_raw = _raw_edge_ids(mapped_for_spanning)
     expected_raw = {edge_id for edge_id, _, _ in _spanning_edge_triples(h)}
-    assert len(mapped_raw) == len(set(mapped_raw)) == 3
-    assert set(mapped_raw) == expected_raw
+    assert len(mapped_for_spanning) == len(set(mapped_for_spanning)) == 3
+    assert set(mapped_for_spanning) == expected_raw
 
 
 def _doctor(edge: ChannelEdge, change: str) -> ChannelEdge:

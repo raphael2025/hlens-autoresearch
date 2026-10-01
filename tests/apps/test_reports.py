@@ -8,6 +8,7 @@ research plane is expected to.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -186,7 +187,8 @@ def test_an_ill_formed_or_tampered_loop_round_is_refused(tmp_path: Path, case: s
     report_id = content_hash(payload)
     _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, report_id, payload)
     store = ReportStore(tmp_path)
-    with pytest.raises(ReportMalformed, match="LoopRoundRecord"):
+    # refused by the LoopRoundRecord contract, or before it by the report kind's required fields
+    with pytest.raises(ReportMalformed, match="LoopRoundRecord|lacks required field"):
         store.get(ReportKind.RESEARCH_LOOP_ROUND, report_id)
     assert store.list(ReportKind.RESEARCH_LOOP_ROUND) == []
     client = TestClient(create_app(reports_root=tmp_path))
@@ -195,7 +197,8 @@ def test_an_ill_formed_or_tampered_loop_round_is_refused(tmp_path: Path, case: s
     assert listing["reports"] == []
     # skipped, but reported (2026-09-26): the id and the reason, never silently dropped
     [invalid] = listing["invalid"]
-    assert invalid["id"] == report_id and "LoopRoundRecord" in invalid["reason"]
+    assert invalid["id"] == report_id
+    assert re.search("LoopRoundRecord|lacks required field", invalid["reason"])
 
 
 def test_a_valid_loop_round_under_another_name_is_refused(tmp_path: Path) -> None:

@@ -689,6 +689,17 @@ def _request_point(
     return point
 
 
+def _float_text(value: Any) -> Any:
+    """``value`` (JSON-shaped) with every float as its ``decimal_text``."""
+    if isinstance(value, float):
+        return decimal_text(value)
+    if isinstance(value, dict):
+        return {key: _float_text(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_float_text(item) for item in value]
+    return value
+
+
 class ExperimentStage:
     """Runs every trial registered this round (see module docs)."""
 
@@ -1054,7 +1065,8 @@ class ExperimentStage:
                 k: decimal_text(v) if isinstance(v, float) else v
                 for k, v in sorted(strategy_params(repro.params).items())
             },
-            "run_inputs": None if run_inputs is None else run_inputs.payload(),
+            # as ``params``: floats as decimal text, so the hashed record holds no float
+            "run_inputs": None if run_inputs is None else _float_text(run_inputs.payload()),
             "experiment": str(experiment.ref),
             "experiment_hash": repro.experiment_hash,
             "run_id": run_id,

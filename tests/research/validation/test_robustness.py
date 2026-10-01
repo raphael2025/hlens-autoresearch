@@ -14,10 +14,12 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
 from core.contracts.strategy import FillRemainder
+from core.domain.base import CONTRACT_SCHEMA_VERSION, contract_schema_version_scope
 from core.domain.research import Verdict, derive_verdict
 from core.errors import ReasonCode
 from research.validation import (
@@ -465,28 +467,50 @@ def _estimated(check: RobustnessCheck) -> list[tuple[str, str]]:
 
 
 #: sha256 of this capacity check's gates + details (``_payload_hash``) on the code before B67
-#: (``255ce1a``, which had no ``remainders`` parameter), computed twice on that source.
+#: (``255ce1a``, which had no ``remainders`` parameter), computed twice on that source. Recorded
+#: at contract 2.2.0 (``6d887b7``): the gates' envelope is part of the payload, so after the
+#: envelope-only 2.3.0 – 2.5.0 minors it is checked on the check built at 2.2.0.
 PRE_B67_CAPACITY_PAYLOAD_HASH = "847eefcf40a70729c97c2dcf2bc21bf5d91e29b6cefcdddc089035360f14bf87"
+PRE_B67_CONTRACT_VERSION = "2.2.0"
 
 
-def _payload_hash(check: RobustnessCheck) -> str:
-    payload = {
+def _payload(check: RobustnessCheck) -> dict[str, Any]:
+    return {
         "gates": [g.model_dump(mode="json") for g in check.gates],
         "details": check.details,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _payload_hash(check: RobustnessCheck) -> str:
+    return hashlib.sha256(json.dumps(_payload(check), sort_keys=True).encode()).hexdigest()
+
+
+def _envelope_free(document: Any) -> Any:
+    if isinstance(document, dict):
+        return {k: _envelope_free(v) for k, v in document.items() if k != "schema_version"}
+    if isinstance(document, list):
+        return [_envelope_free(item) for item in document]
+    return document
 
 
 def test_no_or_zero_remainders_leave_the_capacity_check_unchanged() -> None:
-    fills = _fills()
-    reference = _checked(fills)
-    assert "capacity" in reference.details
-    assert _payload_hash(reference) == PRE_B67_CAPACITY_PAYLOAD_HASH  # the pre-B67 payload
-    zero = (_remainder(0, "0"), _remainder(5, "0"))
-    for remainders in (None, (), zero):
-        check = _checked(fills, remainders=remainders)
-        assert check == reference
-        assert _payload_hash(check) == PRE_B67_CAPACITY_PAYLOAD_HASH
+    with contract_schema_version_scope(PRE_B67_CONTRACT_VERSION):  # the pin's contract version
+        fills = _fills()
+        reference = _checked(fills)
+        assert "capacity" in reference.details
+        assert _payload_hash(reference) == PRE_B67_CAPACITY_PAYLOAD_HASH  # the pre-B67 payload
+        zero = (_remainder(0, "0"), _remainder(5, "0"))
+        for remainders in (None, (), zero):
+            check = _checked(fills, remainders=remainders)
+            assert check == reference
+            assert _payload_hash(check) == PRE_B67_CAPACITY_PAYLOAD_HASH
+    # at the current contract the same checks differ from it only by the envelope
+    current = _checked(_fills())
+    assert {g.schema_version for g in current.gates} == {CONTRACT_SCHEMA_VERSION}
+    assert {g.schema_version for g in reference.gates} == {PRE_B67_CONTRACT_VERSION}
+    assert _envelope_free(_payload(current)) == _envelope_free(_payload(reference))
+    for remainders in (None, (), (_remainder(0, "0"), _remainder(5, "0"))):
+        assert _checked(_fills(), remainders=remainders) == current
 
 
 def test_a_positive_remainder_is_inconclusive_and_computes_nothing() -> None:

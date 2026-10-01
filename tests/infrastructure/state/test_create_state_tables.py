@@ -40,7 +40,11 @@ def test_apply_composes_registry_but_ensures_only_state_tables(
 
     def ensure(received: object) -> tuple[Any, ...]:
         observed["adapter"] = received
-        return (SimpleNamespace(table=STATE_STATES.table, definition=STATE_STATES.binding, created=True),)
+        return (
+            SimpleNamespace(
+                table=STATE_STATES.table, definition=STATE_STATES.binding, created=True
+            ),
+        )
 
     monkeypatch.setattr(create_state_tables, "open_postgres_catalog_adapter", open_adapter)
     monkeypatch.setattr(create_state_tables, "ensure_state_tables", ensure)
@@ -51,7 +55,7 @@ def test_apply_composes_registry_but_ensures_only_state_tables(
 
 
 def test_apply_redacts_catalog_error(monkeypatch: Any, capsys: Any) -> None:
-    secret = "postgresql://state-test:secret@example.invalid/catalog"
+    secret = "postgresql://state-test:test-password@example.invalid/catalog"
 
     @contextmanager
     def open_adapter(_settings: object, _registry: Any) -> Any:

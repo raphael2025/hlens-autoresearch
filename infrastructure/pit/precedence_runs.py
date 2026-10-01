@@ -100,32 +100,52 @@ def _maximal_heads_root(
     reached_root: RunRef | None = None
     while frontier_root is not None:
         descendants_root = _expand_frontier(
-            storage, frontier_root, edges_root, capacity=capacity,
-            merge_fanout=merge_fanout, limits=limits,
+            storage,
+            frontier_root,
+            edges_root,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
         )
         if descendants_root is None:
             break
         reached_root = _merge_id_sets(
-            storage, reached_root, descendants_root, capacity=capacity,
-            merge_fanout=merge_fanout, limits=limits,
+            storage,
+            reached_root,
+            descendants_root,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
         )
         next_frontier = _subtract_id_sets(
-            storage, descendants_root, expanded_root, capacity=capacity,
-            merge_fanout=merge_fanout, limits=limits,
+            storage,
+            descendants_root,
+            expanded_root,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
         )
         if next_frontier is None:
             break
         next_expanded_root = _merge_id_sets(
-            storage, expanded_root, next_frontier, capacity=capacity,
-            merge_fanout=merge_fanout, limits=limits,
+            storage,
+            expanded_root,
+            next_frontier,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
         )
         if next_expanded_root is None:  # pragma: no cover - both inputs are nonempty roots
             raise RuntimeError("cannot merge non-empty expanded and frontier runs")
         expanded_root = next_expanded_root
         frontier_root = next_frontier
     return _subtract_id_sets(
-        storage, candidates_root, reached_root, capacity=capacity,
-        merge_fanout=merge_fanout, limits=limits,
+        storage,
+        candidates_root,
+        reached_root,
+        capacity=capacity,
+        merge_fanout=merge_fanout,
+        limits=limits,
     )
 
 

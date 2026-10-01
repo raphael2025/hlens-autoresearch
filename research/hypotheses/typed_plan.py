@@ -81,11 +81,11 @@ __all__ = [
 #: node carries no ``window``; it requires ``universe`` (the pinned universe snapshot, written as
 #: ``research_dataset:<namespace.table>@<snapshot_id>``, i.e. the ``DatasetRef`` of a
 #: ``ResearchDatasetManifest``) and ``universe_hash`` (that manifest's content hash);
-#: ``quantile_cs`` also requires ``buckets`` (integer >= 2). Under 1.3.0 ``window`` is therefore required per
-#: transform (every time-series transform) instead of for every transformation node; time-series
-#: nodes keep exactly their 1.2.0 grammar and meaning. "1.1.0" / "1.2.0" plans still parse with
-#: their original grammar (``rank_cs`` / ``quantile_cs`` are unknown transforms there) and keep
-#: their payload, content hash and meaning.
+#: ``quantile_cs`` also requires ``buckets`` (integer >= 2). Under 1.3.0 ``window`` is therefore
+#: required per transform (every time-series transform) instead of for every transformation node;
+#: time-series nodes keep exactly their 1.2.0 grammar and meaning. "1.1.0" / "1.2.0" plans still
+#: parse with their original grammar (``rank_cs`` / ``quantile_cs`` are unknown transforms there)
+#: and keep their payload, content hash and meaning.
 PLAN_FORMAT_VERSION: Final = "1.3.0"
 _LEGACY_PLAN_FORMAT_VERSION: Final = "1.1.0"
 _RANK_TS_PLAN_FORMAT_VERSION: Final = "1.2.0"
@@ -701,10 +701,11 @@ def compile_plan(
     plan's hash-verified direct references), an explicit timezone-aware ``created_at`` and an
     explicit ``allowlist`` (e.g. ``typed_plan_compiler.P7_OPERATOR_ALLOWLIST``) are required, and
     every node's lowered definition must map to an allowlisted Provider. ``universes`` (the
-    caller-supplied pinned universe manifests) are passed to the lowering so cross-sectional nodes
-    can lower; their execution is not supported by the compiled wiring, so such a plan is refused
-    with ``cross_sectional_execution_unsupported``. Trial counting and admission rules are
-    unchanged; see ``research.hypotheses.typed_plan_compiler``.
+    caller-supplied pinned universe manifests) are passed to the lowering. Cross-sectional nodes
+    compile only as the root, and ``CompiledPlan.build_providers`` requires those pinned manifests
+    again to construct their dedicated request/result Provider; outputs cannot feed single-series
+    plan nodes. Trial counting and admission rules are unchanged; see
+    ``research.hypotheses.typed_plan_compiler``.
     """
     if not isinstance(plan, TypedPlan):
         raise TypeError("plan must be a TypedPlan")

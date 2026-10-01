@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from core.contracts.knowledge import KnowledgeProviderError, KnowledgeQuery, KnowledgeResult
+from core.domain.base import CONTRACT_SCHEMA_VERSION
 from core.domain.research import EvidenceLevel, KnowledgeItem, KnowledgeStatus
 from plugins.knowledge import LocalKnowledgeProvider, LocalKnowledgeStore
 from tests.contract_suites import knowledge as suite
@@ -142,7 +143,7 @@ def test_a_tagged_answer_is_a_valid_deterministic_result(
     assert KnowledgeResult.model_validate_json(result.model_dump_json()) == result
     assert result.query_hash == query.content_hash()
     assert provider.search(query).result_hash == result.result_hash
-    assert result.schema_version == "2.2.0"
+    assert result.schema_version == CONTRACT_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("check", suite.KNOWLEDGE_CHECKS, ids=lambda c: c.__name__)
@@ -211,4 +212,4 @@ def test_the_reviewed_write_path_keeps_tags_and_assets(tmp_path: Path) -> None:
     assert review.item_hash == tagged.content_hash()
     found = LocalKnowledgeProvider(items_dir).search(KnowledgeQuery(assets_any=("btc",)))
     assert [item.name for item in found.items] == ["factor_tagged"]
-    assert found.items[0].schema_version == "2.2.0"
+    assert found.items[0].schema_version == CONTRACT_SCHEMA_VERSION

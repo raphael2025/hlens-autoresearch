@@ -18,9 +18,9 @@ Two lookback shapes are used, matching each indicator's own definition:
 - **Growing trailing run** (ATR, RSI, MACD line / signal, ADX): Wilder-style smoothing has no fixed
   lookback of its own — each new bar updates a running average seeded once enough bars are seen, and
   every bar since the seed keeps influencing the current value. These providers use the
-  *maximal contiguous run ending at the latest visible bar* (``_contiguous_tail``): with more visible
-  history the seed happens earlier and the smoothed value differs, by design. A run shorter than the
-  indicator's minimum bar count (stated per provider below) gives ``None``.
+  *maximal contiguous run ending at the latest visible bar* (``_contiguous_tail``): with more
+  visible history the seed happens earlier and the smoothed value differs, by design. A run shorter
+  than the indicator's minimum bar count (stated per provider below) gives ``None``.
 
 Objects (ADR-0085 §"特征" table; names chosen here, not fixed by the ADR):
 

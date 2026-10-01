@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from pathlib import Path
 from typing import IO, Any, Final, Self, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -679,8 +680,10 @@ class SpooledArchive:
 class _ArrowBatchSpool:
     """Write and replay fixed-row RecordBatches without retaining all parsed batches in memory."""
 
-    def __init__(self, schema: pa.Schema) -> None:
-        self._file = tempfile.TemporaryFile(mode="w+b")
+    def __init__(self, schema: pa.Schema, scratch_directory: Path | None = None) -> None:
+        self._file = tempfile.TemporaryFile(
+            mode="w+b", dir=None if scratch_directory is None else str(scratch_directory)
+        )
         try:
             self._writer = pa.ipc.new_file(self._file, schema)
         except BaseException:
@@ -781,7 +784,10 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
 
 
 def parse_archive_spooled(
-    request: ArchiveParseRequest, storage: StorageAdapter
+    request: ArchiveParseRequest,
+    storage: StorageAdapter,
+    *,
+    scratch_directory: Path | None = None,
 ) -> SpooledParseOutcome:
     """Strictly parse to owned Arrow-batch spool; expose it only after all checks succeed.
 
@@ -790,7 +796,7 @@ def parse_archive_spooled(
     """
     schema = AGG_TRADES_ROW_SCHEMA if request.data_type == "agg_trades" else KLINES_1M_ROW_SCHEMA
     try:
-        spool = _ArrowBatchSpool(schema)
+        spool = _ArrowBatchSpool(schema, scratch_directory)
     except OSError as exc:
         raise StorageError(
             f"archive parser input or temporary spool I/O failed ({type(exc).__name__})"
@@ -798,7 +804,11 @@ def parse_archive_spooled(
     chunk_rows = min(_CHUNK_ROWS, _SPOOL_CHUNK_ROWS)
     try:
         outcome = _parse_storage(
-            request, storage, batch_sink=spool.write_batch, chunk_rows=chunk_rows
+            request,
+            storage,
+            batch_sink=spool.write_batch,
+            chunk_rows=chunk_rows,
+            scratch_directory=scratch_directory,
         )
         if isinstance(outcome, ArchiveRejection):
             spool.close()
@@ -836,7 +846,10 @@ def _discard_batch(_batch: pa.RecordBatch) -> None:
 
 
 def parse_archive_row_count(
-    request: ArchiveParseRequest, storage: StorageAdapter
+    request: ArchiveParseRequest,
+    storage: StorageAdapter,
+    *,
+    scratch_directory: Path | None = None,
 ) -> int | ArchiveRejection:
     """Strictly parse exactly as :func:`parse_archive_spooled` does, keeping only the row count.
 
@@ -851,6 +864,7 @@ def parse_archive_row_count(
         storage,
         batch_sink=_discard_batch,
         chunk_rows=min(_CHUNK_ROWS, _SPOOL_CHUNK_ROWS),
+        scratch_directory=scratch_directory,
     )
     if isinstance(outcome, ArchiveRejection):
         return outcome
@@ -866,6 +880,7 @@ def _parse_storage(
     *,
     batch_sink: Callable[[pa.RecordBatch], None] | None,
     chunk_rows: int | None = None,
+    scratch_directory: Path | None = None,
 ) -> tuple[pa.Table | None, str, int] | ArchiveRejection:
     try:
         _check_request_identity(request)
@@ -879,7 +894,9 @@ def _parse_storage(
                 f"storage refused the object: {type(exc).__name__}",
             ) from exc
         with handle:
-            with tempfile.TemporaryFile(mode="w+b") as input_spool:
+            with tempfile.TemporaryFile(
+                mode="w+b", dir=None if scratch_directory is None else str(scratch_directory)
+            ) as input_spool:
                 byte_count, digest = _spool_bounded(
                     handle, input_spool, request.object_ref.size + 1
                 )

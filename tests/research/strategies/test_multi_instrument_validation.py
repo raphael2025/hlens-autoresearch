@@ -47,6 +47,7 @@ from research.strategies.validation import (
 )
 from research.validation.instruments import INSTRUMENT_INFIX
 from research.validation.returns import from_backtest
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 from tests.research.strategies import test_backtest_validation as single
 from tests.research.synthetic_lab import gate_fixtures as lax
 
@@ -226,13 +227,16 @@ def _instrument_gates(result: StrategyEvaluation, name: str) -> dict[str, Verdic
 #: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
 #: test passes inside ``contract_schema_version_scope("2.1.0")``).
 #: 2.1.0 values (evidence, git history): d5ca922f…, de88c4e2…
+#: Recorded at contract 2.2.0: checked with every contract object built at 2.2.0
+#: (``single.at_contract_version``) after the envelope-only 2.3.0 – 2.5.0 minors.
 PINNED_SINGLE_REPORT_HASHES = {
     "planted_synthetic": "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76",
     "manifest_mismatch": "f04c916426661ffaae886914f00e49cb93f1c6fffdb9645dc5d0d489bdf4e751",
 }
 
 
-def test_the_single_instrument_path_is_byte_identical(tmp_path: Path) -> None:
+def _single_instrument_path_hashes(tmp: str) -> dict[str, str]:
+    tmp_path = Path(tmp)
     market = single._market(seed=7, planted=True)
     ctx = replace(single._context(_candidate()), created_at=single.T0)
     planted, _ = single._evaluate(market, tmp_path / "a", context=ctx)
@@ -244,7 +248,6 @@ def test_the_single_instrument_path_is_byte_identical(tmp_path: Path) -> None:
         "planted_synthetic": planted.validation.report.content_hash(),
         "manifest_mismatch": mismatch.validation.report.content_hash(),
     }
-    assert hashes == PINNED_SINGLE_REPORT_HASHES
     gates = {g.gate_id for g in planted.validation.report.gates}
     assert "G0.single_instrument_adapter" in gates
     assert (
@@ -252,6 +255,14 @@ def test_the_single_instrument_path_is_byte_identical(tmp_path: Path) -> None:
     )
     extra = single._extra(planted)
     assert "instruments" not in extra and "per_instrument" not in extra
+    return hashes
+
+
+def test_the_single_instrument_path_is_byte_identical(tmp_path: Path) -> None:
+    hashes = at_contract_version(
+        PINNED_CONTRACT_VERSION, f"{__name__}:_single_instrument_path_hashes", str(tmp_path)
+    )
+    assert hashes == PINNED_SINGLE_REPORT_HASHES
 
 
 # =========================================================================================

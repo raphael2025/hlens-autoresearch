@@ -72,7 +72,7 @@ from core.contracts.feature import (
 )
 from core.domain.base import FrozenMapping, Ref
 from core.domain.specs import FeatureSpec
-from plugins.features.bars import BAR_1M_INPUT, DEFAULT_SCALE, _LOG_CONTEXT
+from plugins.features.bars import _LOG_CONTEXT, BAR_1M_INPUT, DEFAULT_SCALE
 
 __all__ = [
     "GarmanKlassVolatilityProvider",

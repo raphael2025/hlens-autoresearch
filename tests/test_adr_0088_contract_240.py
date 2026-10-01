@@ -241,7 +241,12 @@ def test_2_4_0_and_every_earlier_minor_stay_published() -> None:
     assert ADR_0088_VERSION == "2.4.0"
     assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
-        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+        "2.0.0",
+        "2.1.0",
+        "2.2.0",
+        "2.3.0",
+        "2.4.0",
+        "2.5.0",
     )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
@@ -446,7 +451,10 @@ def test_a_2_3_0_payload_reads_as_recorded_with_its_hash_unchanged(
 
 
 def test_an_old_effect_without_a_kind_still_reads_as_return_autocorrelation() -> None:
-    payload = json.loads(GOLDEN_AT_2_3_0[-1][1])
+    # Select the SyntheticMarketSpec golden by model, not by position: since 9925f0a (ADR-0088)
+    # the UniverseMember golden is the last entry, so `[-1]` never pointed at this payload.
+    ((_, recorded, pinned),) = (g for g in GOLDEN_AT_2_3_0 if g[0] is SyntheticMarketSpec)
+    payload = json.loads(recorded)
     del payload["effects"][0]["kind"]
     for read in (
         SyntheticMarketSpec.model_validate(payload),
@@ -455,7 +463,7 @@ def test_an_old_effect_without_a_kind_still_reads_as_return_autocorrelation() ->
         (effect,) = read.effects
         assert isinstance(effect, PlantedEffect)
         assert effect.kind == "return_autocorrelation"
-        assert read.content_hash() == GOLDEN_AT_2_3_0[-1][2]
+        assert read.content_hash() == pinned
 
 
 def test_2_3_0_objects_can_sit_inside_current_2_5_0_objects() -> None:

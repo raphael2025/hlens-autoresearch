@@ -34,6 +34,7 @@ from research.router import (
     report_store_resolver,
 )
 from research.router.evidence import VALIDATION_REPORT_KIND
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 from tests.factories import HASH_EXPERIMENT, HASH_PROFILE, validation_profile
 from tests.research.router.test_paper import BARS, LIFECYCLE, STATES, STRATEGIES, ZERO, A, B, _run
 from tests.research.router.test_router_completion import (
@@ -54,6 +55,8 @@ from tests.research.router.test_router_completion import (
 #: still hold when the test builds every object at 2.1.0 (verified: the unmodified test passes
 #: inside ``contract_schema_version_scope("2.1.0")``). 2.1.0 values (evidence, git history):
 #: d3c8cc3b…, stops 64c34061…, 6528f56b…, cbc771dc…
+#: Recorded at contract 2.2.0: checked with every contract object built at 2.2.0
+#: (``at_contract_version``) after the envelope-only 2.3.0 – 2.5.0 minors.
 TRUST_REPORTS_RUN_HASH = "ed62d7c73313331ae9e429fceec3e9d18c5cb75b661be6e130990e4870aea149"
 TRUST_STOP_FLAT = "bff151b450dd125758410b9ed78e352030d36a27cc58a95f5d2ed8216b630382"
 TRUST_STOP_NO_CANDIDATE = "274b2162f939a8fed92dfa7a39536fbfc35f5e28f13191f9ab51c8799b0abca7"
@@ -405,7 +408,8 @@ def test_an_evidence_mode_stop_before_verification_records_no_checks() -> None:
 # ------------------------------------------------------------------ trust mode byte-identical
 
 
-def test_trust_mode_hashes_and_payloads_are_unchanged(tmp_path: Path) -> None:
+def _trust_mode_hashes_and_payloads(tmp: str) -> None:
+    tmp_path = Path(tmp)
     run = _run()
     assert run.run_hash == BASELINE_RUN_HASH and run.eligibility is None
     assert _paper(validation_reports={A: REPORT_A, B: REPORT_B}).run_hash == TRUST_REPORTS_RUN_HASH
@@ -433,6 +437,11 @@ def test_trust_mode_hashes_and_payloads_are_unchanged(tmp_path: Path) -> None:
         assert "eligibility" not in payload
     written = json.loads(write_router_paper_run(tmp_path, run).path.read_text(encoding="utf-8"))
     assert "eligibility" not in written and "validation_reports" not in written
+
+
+def test_trust_mode_hashes_and_payloads_are_unchanged(tmp_path: Path) -> None:
+    call = f"{__name__}:_trust_mode_hashes_and_payloads"
+    assert at_contract_version(PINNED_CONTRACT_VERSION, call, str(tmp_path)) is None
 
 
 def test_the_run_report_carries_the_evidence_only_in_evidence_mode(tmp_path: Path) -> None:

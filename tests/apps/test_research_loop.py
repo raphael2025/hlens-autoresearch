@@ -605,7 +605,7 @@ def test_degradation_events_never_move_lifecycle_state() -> None:
 
 def test_worker_loop_modules_depend_only_on_core_and_the_stdlib() -> None:
     allowed_roots = {"apps", "core", "__future__", "collections", "dataclasses", "datetime"}
-    allowed_roots |= {"decimal", "enum", "typing", "re"}
+    allowed_roots |= {"contextlib", "decimal", "enum", "typing", "re"}
     for name in ("loop.py", "degradation.py"):
         tree = ast.parse((REPO / "apps" / "worker" / name).read_text(encoding="utf-8"))
         roots = {

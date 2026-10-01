@@ -45,8 +45,8 @@ def test_old_envelopes_reject_the_new_stream_and_record_model() -> None:
             rule_version="1.0.0",
             rule_hash="a" * 64,
             observation_key="key-1",
-            simulation_time="2024-01-01T00:00:00Z",
-            knowledge_cutoff="2024-01-01T00:00:00Z",
+            simulation_time="2024-01-01T00:00:00Z",  # type: ignore[arg-type]
+            knowledge_cutoff="2024-01-01T00:00:00Z",  # type: ignore[arg-type]
             head_count=2,
             ordinal=0,
             revision_id="r-1",

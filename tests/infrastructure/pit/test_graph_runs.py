@@ -40,7 +40,7 @@ def test_graph_validation_spills_high_cardinality_chain_and_matches_contract(
         records, edges = _chain(48)
         RevisionGraph(revisions=records, precedence_evidence=edges)
         maximum_pending = 0
-        base_builder = graph_runs.RunSetBuilder
+        base_builder = graph_runs.RunSetBuilder  # type: ignore[attr-defined]
 
         class ObservedRunSetBuilder(base_builder):  # type: ignore[misc, valid-type]
             def add(self, row: Any) -> None:
@@ -69,7 +69,7 @@ def test_run_backed_heads_prototype_matches_materialized_contract(
         available = {item.revision_id: T0 for item in records}
         expected = selector_module._heads(records, edges, T0, T0, available)
         calls = 0
-        original = selector_module.validate_pit_graph_runs
+        original = selector_module.validate_pit_graph_runs  # type: ignore[attr-defined]
 
         def observed(*args: Any, **kwargs: Any) -> None:
             nonlocal calls

@@ -24,7 +24,7 @@ from infrastructure.bars.pair import (
     pair_manifests,
 )
 from infrastructure.bars.verified import VerifiedManifestCache
-from infrastructure.dataset.builder import DatasetBuilt, DatasetBuildSummary
+from infrastructure.dataset.builder import DatasetBuildSummary, DatasetBuilt
 from infrastructure.feature.dataset import DatasetBindingError
 from tests.infrastructure.bars import v3_support as v
 from tests.infrastructure.bars.test_manifest_pair import MID_INTERVAL
@@ -139,7 +139,7 @@ def test_a_different_v3_instrument_set_is_refused(w: World) -> None:
     w.listed()
     w.listed(ds.ETH_HALT, at=MID_INTERVAL)
     w.bars(count=v.BARS)
-    w.report("klines_1m")
+    v.report(w)
     chain = _Chain(w)
     with pytest.raises(ManifestPairError, match="part of the feature interval only"):
         pair_manifests(w.builder(), *chain.v2_hashes)
@@ -152,9 +152,7 @@ def test_a_different_v3_adr_0032_choice_is_refused(w: World, assumed_side: str) 
     v.ingest(w)
     chain = _Chain(
         w,
-        feature_spec=v.spec_of(
-            w, with_assumption=assumed_side == "feature", interval=v.INTERVAL
-        ),
+        feature_spec=v.spec_of(w, with_assumption=assumed_side == "feature", interval=v.INTERVAL),
         price_spec=v.spec_of(w, with_assumption=assumed_side == "price"),
     )
     for pairing in (

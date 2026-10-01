@@ -124,9 +124,20 @@ SUITE_TIMES = tuple(T0 + minute * MINUTE for minute in range(0, 17))
 
 
 def _perturb(item: FeatureObservation) -> FeatureObservation:
+    # Neither affine nor monotone: RSI, %B and ADX are invariant under ``x -> a*x + b`` price
+    # maps, and period-2 %B depends only on the direction of each move, so an order-preserving
+    # map would leave the causal-perturbation check without teeth. One offset per bar (by its
+    # minute) flips directions while keeping each bar's OHLC ordering and positive prices; every
+    # third bar is also widened so that the next bar is inside it, which ADX(1) — 100 whenever
+    # exactly one directional move is positive — can see.
     values = dict(item.values)
+    phase = item.event_time.minute % 3
+    offset = Decimal(37) * phase
     for name in ("open", "high", "low", "close"):
-        values[name] = values[name] * 2 + 1  # type: ignore[operator]
+        values[name] = values[name] * 2 + 1 + offset  # type: ignore[operator]
+    if phase == 1:
+        values["high"] = values["high"] * 10
+        values["low"] = Decimal(1)
     values["volume"] = values["volume"] * 2 + 1  # type: ignore[operator]
     return item.model_copy(update={"values": values})
 

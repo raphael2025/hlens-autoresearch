@@ -1,4 +1,4 @@
-"""Archive lineage verification releases every strict-parser spool immediately."""
+"""Archive lineage verification bounds and releases strict-parser spools."""
 
 from __future__ import annotations
 
@@ -207,7 +207,7 @@ def test_member_validation_failure_closes_current_archive_spool(
     assert all(spool._spool.closed for spool in opened)
 
 
-def test_archive_row_count_closes_its_strict_parse_spool(
+def test_archive_row_count_reuses_and_closes_its_strict_parse_spool(
     harness: StoreHarness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=3))
@@ -234,9 +234,14 @@ def test_archive_row_count_closes_its_strict_parse_spool(
 
     for _ in range(2):
         assert verifier.archive_row_count("agg_trades", "BTCUSDT", result.archive_revision_id) == 3
-    # E1 bounding: the first (uncached) call strictly parses to a spool and closes it; the
-    # second call, served from the lineage cache, still re-runs the strict parse on every call,
-    # but through the count-only path (same rules, no parsed rows spooled).
+    columns = tuple(field.name for field in BINANCE_SPOT_AGG_TRADES.arrow_schema)
+    rows = harness.rows(BINANCE_SPOT_AGG_TRADES.table, columns)
+    verifier.verify_archive_elements(BINANCE_SPOT_AGG_TRADES, "agg_trades", "BTCUSDT", rows[:1])
+    verifier.verify_archive_elements(BINANCE_SPOT_AGG_TRADES, "agg_trades", "BTCUSDT", rows[1:])
+    # The first call strictly parses the archive once; the pinned cache reuses its validated
+    # spool on subsequent windows instead of reparsing the full object.
     assert len(opened) == 1
-    assert all(spool._spool.closed for spool in opened)
-    assert counted == [(result.archive_revision_id, 3)]
+    assert not opened[0]._spool.closed
+    assert counted == []
+    verifier.close()
+    assert opened[0]._spool.closed

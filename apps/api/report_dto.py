@@ -221,9 +221,7 @@ def _check_degradation_evidence(path: Path, evidence: object) -> None:
         lifecycle.get("record_hashes"), list
     ):
         raise invalid("lifecycle lacks its history_hash / record_hashes")
-    if not isinstance(source.get("dataset_id"), str) or not _is_sha256(
-        source.get("manifest_hash")
-    ):
+    if not isinstance(source.get("dataset_id"), str) or not _is_sha256(source.get("manifest_hash")):
         raise invalid("source is not a (dataset_id, manifest_hash) identity")
     if not all(
         _is_sha256(baseline.get(field))

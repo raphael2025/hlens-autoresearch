@@ -68,7 +68,7 @@ def _request(**overrides: Any) -> EventRequest:
 
 def test_phase3_appends_five_contiguous_models(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 146
+    assert len(names) == 148  # +2 PitConflict* models: ADR-0094 (b6f9e11)
     start = names.index("EventInputPoint")
     assert start >= 87  # appended after every earlier model
     assert names[start : start + 5] == tuple(model.__name__ for model in EVENT_MODELS)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -11,7 +11,7 @@ from core.contracts.storage import StageRequest
 from infrastructure.canonical import normalizer as normalizer_module
 from infrastructure.canonical.normalizer import CanonicalNormalizer
 from infrastructure.pit import selector as selector_module
-from infrastructure.pit.runs import RunLimits, RunSetBuilder
+from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder
 from infrastructure.pit.selector import PitRunParams, PitSelector, _root_rows
 from infrastructure.streaming import runs as streaming_runs
 from tests.infrastructure.canonical import canonical_support as c
@@ -29,7 +29,7 @@ _PARAMS = PitRunParams(
 
 
 class _CountingReader:
-    def __init__(self, inner: Any, owner: _CountingStorage) -> None:
+    def __init__(self, inner: BinaryIO, owner: _CountingStorage) -> None:
         self._inner = inner
         self._owner = owner
         self._closed = False
@@ -89,8 +89,8 @@ class _ObservedProofBuilder(RunSetBuilder):
         self.max_pending_refs = 0
         self.max_ref_levels = 0
         self.finish_calls = 0
-        self.root = None
-        super().__init__(self.counting_storage, **kwargs)
+        self.root: RunRef | None = None
+        super().__init__(self.counting_storage, **kwargs)  # type: ignore[arg-type]
 
     def add(self, row: Mapping[str, Any]) -> None:
         super().add(row)
@@ -112,9 +112,9 @@ class _ObservedProofBuilder(RunSetBuilder):
 
 def _observe_proof_builders(monkeypatch: pytest.MonkeyPatch) -> list[_ObservedProofBuilder]:
     observed: list[_ObservedProofBuilder] = []
-    original = selector_module.RunSetBuilder
+    original = selector_module.RunSetBuilder  # type: ignore[attr-defined]
 
-    class CapturingBuilder(original):
+    class CapturingBuilder(original):  # type: ignore[misc, valid-type]
         def __new__(cls, storage: Any, *args: Any, **kwargs: Any) -> Any:
             if kwargs.get("key") is selector_module._proof_row_sort_key:
                 instance = _ObservedProofBuilder(storage, **kwargs)
@@ -236,10 +236,10 @@ def test_bounded_batch_request_run_write_failure_clears_writer_state(
     archive, _ = _multi_batch_chain(h, count=5)
     normalizer = c.normalizer(h, clock=StepClock(start=K_E), microbatch_rows=2)
     verified = normalizer.verify_unit(c.ARCHIVE_AGGS.table, archive)
-    original_builder = normalizer_module.RunSetBuilder
+    original_builder = normalizer_module.RunSetBuilder  # type: ignore[attr-defined]
     created: list[Any] = []
 
-    class CapturingBuilder(original_builder):
+    class CapturingBuilder(original_builder):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             created.append(self)

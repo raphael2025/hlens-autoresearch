@@ -293,10 +293,10 @@ def test_current_schema_count_grew_to_38(tmp_path: Path) -> None:
     """ADR-0016 后 current 模型数 37 → 38，Phase 1 B1 后 → 46，B2 后 → 59，B3 后 → 74，F4 后 → 79，
     P0.5 后 → 82，P9 后 → 87，P11 地基后 → 88，P7 后 → 91，P2 后 → 96，P5 后 → 113，
     P3 后 → 118，P4 后 → 126，P11 审计契约（ADR-0050）后 → 134，ADR-0054 后 → 135，
-    ADR-0077 后 → 141，ADR-0088 后 → 146；
+    ADR-0077 后 → 141，ADR-0088 后 → 146，ADR-0094 后 → 148；
     全量导出与已提交内容逐文件一致。"""
     written = export_json_schemas(tmp_path)
-    assert len(CONTRACT_MODELS) == 146
+    assert len(CONTRACT_MODELS) == 148  # +2 PitConflict* models: ADR-0094 (b6f9e11)
     assert len(written) == len(CONTRACT_MODELS)
     committed = {path.name for path in CURRENT_SCHEMA_DIR.glob("*.schema.json")}
     assert committed == {path.name for path in written.values()}

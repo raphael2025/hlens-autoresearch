@@ -168,14 +168,16 @@ class _MemorySampler:
                 limit = "max" if raw_limit == "max" else int(raw_limit)
         except (OSError, ValueError):
             pass
-        self.samples.append({
-            "phase": phase,
-            "monotonic_ns": time.monotonic_ns(),
-            "rss_kib": rss_kib,
-            "cgroup_path": cgroup_path,
-            "cgroup_memory_current_bytes": current,
-            "cgroup_memory_max_bytes": limit,
-        })
+        self.samples.append(
+            {
+                "phase": phase,
+                "monotonic_ns": time.monotonic_ns(),
+                "rss_kib": rss_kib,
+                "cgroup_path": cgroup_path,
+                "cgroup_memory_current_bytes": current,
+                "cgroup_memory_max_bytes": limit,
+            }
+        )
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval_seconds):
@@ -305,27 +307,34 @@ def run_diagnostic(
                 candidates = _table_count(graph.database, "candidates")
                 visited = _table_count(graph.database, "visited")
                 eliminated = _table_count(graph.database, "eliminated")
-                edge_rows = int(graph.database.execute(
-                    "SELECT COUNT(*) FROM edges AS e JOIN visited AS v ON v.revision_id=e.newer"
-                ).fetchone()[0])
+                edge_rows = int(
+                    graph.database.execute(
+                        "SELECT COUNT(*) FROM edges AS e JOIN visited AS v ON v.revision_id=e.newer"
+                    ).fetchone()[0]
+                )
                 # head_summary issues one indexed adjacency query for each candidate seed and
                 # each visited node; this SQL-derived count describes their total output rows.
-                seed_edge_rows = int(graph.database.execute(
-                    "SELECT COUNT(*) FROM edges AS e JOIN candidates AS c ON c.revision_id=e.newer"
-                ).fetchone()[0])
-                observed.append({
-                    "cutoff_ordinal": ordinal,
-                    "cutoff_utc": instant.isoformat(),
-                    "elapsed_seconds": elapsed,
-                    "sql_statements": dict(sorted(counts.items())),
-                    "candidate_nodes": candidates,
-                    "visited_predecessor_nodes": visited,
-                    "eliminated_candidate_nodes": eliminated,
-                    "visited_adjacency_edge_rows": edge_rows,
-                    "candidate_seed_edge_rows": seed_edge_rows,
-                    "head_count": head_count,
-                    "singleton_head": singleton,
-                })
+                seed_edge_rows = int(
+                    graph.database.execute(
+                        "SELECT COUNT(*) FROM edges AS e "
+                        "JOIN candidates AS c ON c.revision_id=e.newer"
+                    ).fetchone()[0]
+                )
+                observed.append(
+                    {
+                        "cutoff_ordinal": ordinal,
+                        "cutoff_utc": instant.isoformat(),
+                        "elapsed_seconds": elapsed,
+                        "sql_statements": dict(sorted(counts.items())),
+                        "candidate_nodes": candidates,
+                        "visited_predecessor_nodes": visited,
+                        "eliminated_candidate_nodes": eliminated,
+                        "visited_adjacency_edge_rows": edge_rows,
+                        "candidate_seed_edge_rows": seed_edge_rows,
+                        "head_count": head_count,
+                        "singleton_head": singleton,
+                    }
+                )
                 memory.sample(f"after_cutoff_{ordinal}")
             graph.database.set_trace_callback(None)
             settings = _pragma_settings(graph.database)

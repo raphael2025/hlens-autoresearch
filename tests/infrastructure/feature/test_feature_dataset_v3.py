@@ -164,7 +164,7 @@ def test_a_v3_interval_evaluation_outside_the_members_span_is_refused(w: World) 
     w.listed()
     w.listed({"BTCUSDT": "HALT", "ETHUSDT": "TRADING"}, at=halt)
     w.bars()
-    w.report("klines_1m")
+    v.report(w)
     data = _Datasets(w, v.spec_of(w, interval=v.INTERVAL))
     still = halt - timedelta(seconds=1) + LAG
     for on_v3 in (False, True):

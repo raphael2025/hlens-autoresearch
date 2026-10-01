@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -45,7 +45,7 @@ class _CountingStorage:
 
 class _CountingReader:
     def __init__(self, reader: Any, storage: _CountingStorage) -> None:
-        self._reader = reader
+        self._reader: BinaryIO = reader
         self._storage = storage
         self._closed = False
 

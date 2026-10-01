@@ -1,8 +1,8 @@
 """``tsmom_bars_vol_scaled@1.0.0`` through the G0 – G4 validator wiring (strategy-library gap).
 
 docs/research/strategy-library.md listed the volatility-targeted variant as having "no G0 – G4
-wiring or golden experiment". These tests run the library entry (strategy → ``vol_target_bars`` risk →
-backtest → ``PipelineBacktestValidator``) on the same TEST ONLY synthetic setup as
+wiring or golden experiment". These tests run the library entry (strategy → ``vol_target_bars`` risk
+→ backtest → ``PipelineBacktestValidator``) on the same TEST ONLY synthetic setup as
 ``test_backtest_validation`` (every number there is an arbitrary, uncalibrated fixture value):
 
 - with its risk signal (``bar_realized_vol_60``) the report covers G0 – G4, the re-run reproduces

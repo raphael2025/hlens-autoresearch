@@ -356,12 +356,20 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
 #: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
 #: test passes inside ``contract_schema_version_scope("2.1.0")``).
 #: 2.1.0 values (evidence, git history): e241ceb2…, 86b2adda…, a0dc0b91…; fingerprint 175c1a47…
+#: Re-pinned for ADR-0100 修订 2 (``ca8bd57``, 2026-10-01): each new run records its
+#: same-source inputs (``hlens.p11.inputs@1.0.0``) in the hashed ``repro.params`` and the
+#: experiment row's ``run_inputs`` — the ADR states the record enters the run's content hash —
+#: and that row renders its floats as decimal text (W1 fix: no float in a hashed record). The
+#: 2.2.0 values below held up to ``ca8bd57^`` (verified by bisect, 2026-10-01).
+#: 2.2.0 values (evidence, git history): cd8e1512…, c94401f4…, 9acaa76b…
 PINNED_RECORD_HASHES = [
-    "cd8e1512a4fd9eb38bf81505a17b8a5f02ef265d5e79d9e671ebe008710572c6",
-    "c94401f473862a7ff09cd14b251c6e38b083f41e79ba1910f271b45642f338a6",
-    "9acaa76b70c4d15576bba1ea8ca1b3d19849fe52830c139378a3a2f0bb5f54c5",
+    "6dca257dbf87f267129f4087dcc95244fd2bc318e90fe3f89d3c40be8626d56c",
+    "eef9f1d7fcae4c5cb7aed3a9a2538270f9b6eb5720a11ffa3b4829f457ff75d6",
+    "503116d5b6037089f127a3929d986de96ab79faf2f081e93cb524e40ae8ba558",
 ]
-PINNED_FINGERPRINT_HASH = "fbbd152b2e3c06cedfbbfb4eaffb095a3c657399e8dd35058e60df6904fc5b9d"
+#: Fingerprint re-pinned for contracts 2.3.0 – 2.5.0: envelope change only — built entirely at
+#: 2.2.0 (scope entered before any import) it is still ``fbbd152b…`` (verified 2026-10-01).
+PINNED_FINGERPRINT_HASH = "196485afb1be414e7c01f781c2b08289849612fcc75e2fb15cdae233654d6c1a"
 
 
 def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:

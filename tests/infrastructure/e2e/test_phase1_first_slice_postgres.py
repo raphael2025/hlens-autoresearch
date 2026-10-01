@@ -47,7 +47,10 @@ def test_first_slice_dataset_end_to_end_and_restart_rebuild_on_postgres(pg: ds.W
     pg.report("klines_1m", symbols=(BTC, ETH), listing=True)
 
     spec = pg.spec()
-    first = pg.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", DAY_START, DAY_END)
+    # ADR-0077 DQ-10: the first v2 build is seeded as a pre-cutoff one; the rebuild is the replay
+    first = ds.seed_historical_v2(
+        pg.builder(), FIRST_SLICE_UNIVERSE, spec, "klines_1m", DAY_START, DAY_END
+    )
     assert len(first.selection.rows) == 2 * KLINE_COUNT and not first.replayed
     assert [ds.symbol_of(m) for m in first.manifest.members] == ["BTC-USDT", "ETH-USDT"]
 

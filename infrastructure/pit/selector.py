@@ -2004,9 +2004,7 @@ def _pit_bounded_stream(
                         params=params,
                         limits=limits,
                     )
-                    raw_edge_rows = raw_edge_stack.enter_context(
-                        _root_rows(storage, raw_edge_root)
-                    )
+                    raw_edge_rows = raw_edge_stack.enter_context(_root_rows(storage, raw_edge_root))
                     raw_edge_groups = iter(
                         itertools.groupby(raw_edge_rows, key=_pit_edge_group_key)
                     )

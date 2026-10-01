@@ -1,95 +1,75 @@
-# 剩余底层代码缺口清单（2026-09-28）：交 Codex 派子代理实施
+# 剩余底层代码完成计划
 
-> **注（2026-09-30）**：多项已由 ADR-0098/0099/0100 完成或取代；ADR-0090 号未使用。当前状态以 `PROJECT_STATUS.md` 为准。
+> 本文件是当前唯一的代码缺口清单。执行视图见[模块底层代码完成计划](2026-09-28-module-foundation-completion.md)；项目验收工作包见[全项目验收 WBS](2026-09-28-project-completion-wbs.md)。历史批次与失败证据保留在[全栈代码完成历史](2026-09-26-all-code-completion-plan.md)，不在此重写。
 
-- **基线**：`phase/1-foundation-completion@3c957d0`。
-- **来源**：6 路只读审计 GAP-1～6。覆盖全部模块、roadmap 验收项、研究库文档、ADR 中的 OPEN 项，以及生产代码没有调用点的公开 API。审计原文保存在 PM 会话中，本文件已去重、核实，并纠正了过时条目。
-- **决策权**：本文件中的「PM 决定」由 Claude Code（PM）依 Raphael 2026-09-28 的授权（CLAUDE.md §0）作出。子代理只负责实现，不重新决定。标为「先写 ADR」的项，实施前先把决定写成 Accepted ADR（编号按下文），再编码。
+## 基线与状态规则
 
-## 0. 子代理共同规则（Codex 派工时逐字附上）
+- 代码完成基线为 `main@b5f80fe`，与 `origin/main` 同步。PR #17（ADR-0098/0099）、PR #18（ADR-0100）及 PR #19 均已合并；GitHub 核对结果均为 `MERGED`，PR #19 不是 Draft。远端当前有 `main` 和已合并 PR #19 的源分支，无开放 PR；CI 未配置。
+- 本地盘点快照：13 个分支、13 个 worktree。主 worktree 在 `phase/1@4c2356c`，含本轮计划 / 状态文档修改；独立 main probe worktree 为 detached `b5f80fe`。4 个 Claude worktree 有未提交文件，属于进行中；分支 / worktree 数量是本轮快照，不是长期事实。
+- `main` 是代码完成状态的权威基线。分支代码和测试只记为 `IN_PROGRESS`，不计入主线完成。
+- `CODE_DONE`：实现已审阅、整合入 `main` 并通过全仓 pytest / ruff / format / mypy 门禁；容量测量与 Phase 验收仍是独立门。
+- `IN_MAIN_UNVERIFIED`：实现已在主线，测试、检查、容量测量或验收仍未完成；不重复列为代码缺口。
+- `IN_PROGRESS`：实现 / 修复只存在于未合入分支或 worktree；须独立审阅后才可整合。
+- `CODE_GAP`：主线缺实现，且已 Accepted ADR / 已批准 roadmap 足以约束实现，无需新架构决定。
+- `BLOCKED` / `DEFERRED`：依赖人工输入、外部条件、新决策或明确暂缓，不进入可执行代码队列。
+- 本次只更新计划与状态文档；未运行测试、lint、类型检查、build、probe、数据生成或 Phase 验收。未来代码任务可包含必要测试，但本次不声称验证通过。
 
-1. 先读 `CLAUDE.md`、`AGENTS.md`，再读本文件对应条目，以及条目里引用的 ADR 和文档。
-2. 每个子代理使用独立 worktree 与 `feature/*` 分支，基于 `phase/1-foundation-completion` 的最新 HEAD，只在条目列出的**文件边界**内写入。边界外需要改动的地方写进报告，不要改。
-3. 研究诚信规则不可让步：
-   - H3：不改验证门、阈值、成本模型、数据切分、指标定义；
-   - H4：不削弱测试；
-   - H6：不删除失败记录。
-   另外：没有任何默认数值（窗口、阈值、容量参数一律由调用方显式传入）；不写实盘或网络下单代码，不读取密钥。
-4. `core/` 只允许「批 3」的单一契约任务修改，而且那个任务运行期间不能有其他任务在跑。
-5. 按 D-DEBUG，本轮只写代码与测试，**不运行** pytest / ruff / mypy。若 Raphael 已开启调试，按调试规则运行，并在 `systemd-run` 内存上限下执行。
-6. 交付内容：commit SHA、改动文件、已实现条款、新增测试名、OPEN 项、边界外需要改的地方。
+## 当前可执行代码缺口
 
-## 1. 已完成、只需同步文档（批 0，1 个子代理）
+| ID / 模块 | 主线缺口与依据 | 文件边界 | 依赖、并行限制 | 代码完成条件 | 状态 |
+|---|---|---|---|---|---|
+| E1-ARCHIVE-REUSE / P1 Normalizer | 主线 pinned verifier 跨 256 行窗口会重新严格解析同一 archive。`main@b5f80fe` 正式探针在 100k `verify_archive` 单阶段耗时 366.084 秒，见[中断记录](../reviews/2026-10-01-e1-cap1-main-partial.md)。ADR-0100 §6 支持保留严格校验的有界实现。 | `infrastructure/parser/binance_archive.py`、`infrastructure/revision/row_integrity.py`、`infrastructure/canonical/normalizer.py`、对应测试与 memory probe | 依赖 ADR-0100、严格 D1 parser 和 canonical scratch 决定；与其它 P1/E1/Dataset 及 `core/` 契约任务串行。至多缓存一个 archive spool，多 archive 顺序处理并关闭。 | 同一 ObjectRef 跨窗口只严格解析一次；spool 与 parser 输入显式使用 canonical scratch；行校验、拒绝语义和错误优先级保持不变；close / eviction 可靠释放资源；必要回归和代码审查完成。容量结果另由 E1-CAP-1 决定。 | `CODE_DONE`（2026-10-01）：`phase/1` 候选经独立审阅；`63d09a4` 补齐非 frozen pin 的 verifier / archive spool 释放；随 PR 整合入 `main`。容量结果另由 E1-CAP-1 决定。 |
+| E1-RAW-WINDOW-REUSE / P1 Normalizer | 主线 `_raw_window` 对每个 proof / canonical window 都会重新扫描 Raw catalog。候选 archive-spool 诊断的 100k `verify_archive` 降至 78.207 秒，但 500k stage 在运行超过 15 分钟、读取约 17.7 GB 后被中断；这表明重复 Raw 查询仍是待解决成本，不能视为容量 FAIL/PASS。 | `infrastructure/canonical/normalizer.py`、必要的 bounded scratch/index helper、normalizer / row-integrity tests、memory probe | 依赖 ADR-0075/0100 的固定快照、有界扫描与 E1-CAP-1 语义；须先审阅 ARCHIVE-REUSE 候选；与其它 E1、Dataset、`core/` 契约任务串行。磁盘索引 / spool 必须有界、确定关闭，不缓存整日 Raw rows 于内存。 | 一次有界、确定性的 Raw 源读取可供后续窗口复用；保留位置排序、缺号、重复位置、lineage / row-integrity 拒绝行为；正常、失败和 close 路径均释放 scratch；回归证明不会逐窗口重扫；正式容量验证另行执行。 | `CODE_DONE`（2026-10-01，`fe842b3`）：首窗口一次过滤扫描（窄读不变），第二窗口起整单元一次 spool 到 canonical scratch（Arrow IPC 1024 行重切片 + SQLite 位置索引），后续窗口读 spool；错误语义不变、所有关闭路径释放。容量另测。 |
+| E1-V2-REPLAY / P1 Dataset | 主线 DQ-10 只读重放路径在历史 v2 manifest 查询中未按 selection batch 的 snapshot 关联；候选改为从 `selection_id` 查 batch snapshot，再核对 manifest snapshot 一致。依据主线 ADR-0077 DQ-10。 | `infrastructure/dataset/builder.py`、Dataset v2 compatibility / golden tests | 依赖主线已接受 ADR-0077；与其他 Dataset / `core/` 契约任务串行；不得增加新的 v2 writer。 | 已存在的 v2 manifest 可经公开入口重放；缺失、重复、snapshot 不匹配均 fail closed；既有 golden replay 保持兼容；必要回归通过并单独记录范围。 | `CODE_DONE`（2026-10-01）：候选经审阅；`63d09a4` 增加重新派生 manifest 与已持久化不一致时拒绝写入、selection 多 snapshot fail closed，变异测试验证守卫有效。 |
+| P7-CS-EXEC / P7 Discovery | 主线提供 `rank_cs` / `quantile_cs` 定义与 Provider，但 `typed_plan_compiler` 仍拒绝其执行编译。候选只允许显式 pinned universe 下的横截面根 Provider，禁止隐式接入单序列节点或 Research Loop。依据 ADR-0088/0099/0100。 | `research/hypotheses/typed_plan_compiler.py`、`typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试与 P7 文档 | 依赖主线 Accepted ADR；独立 P7 任务，不与 E1 或 `core/` 契约并行。若要横截面输出进入单序列组合器或 Research Loop，先提出架构决定。 | 显式 pinned manifest 可绑定并实例化专用 Provider；缺失/错误绑定、非法根及跨类型消费 fail closed；执行开关仍默认关闭；正反例回归与审查完成。 | `CODE_DONE`（2026-10-01）：候选经审阅；`63d09a4` 增加直接引用横截面 FeatureSpec 作为单序列输入时编译期拒绝；执行开关仍默认关闭。 |
 
-| ID | 内容 | 文件 |
+以上四项主线实现缺口已于 2026-10-01 在 `phase/1` 收口并经全仓门禁（见[W1 门禁修复记录](../reviews/2026-10-01-w1-gate-repair.md)），随 phase/1 → main PR 整合。原记录：截至 `main@b5f80fe` 确认的四项主线实现缺口。PR #18 已覆盖 ADR-0100 定义的底层能力批次和 E1 bounded scan 基础实现，但不包含上述 archive reuse、Raw window reuse、DQ-10 replay 修正或 P7 横截面 compiler 接线；PR #19 的 P11/P12 只读审计视图也不再列为代码任务。不得将 branch-only 候选表述为主线已完成；本计划不授权合并或推送。
+
+## 主线已有实现、仍待验证
+
+- ADR-0075：`infrastructure/catalog/iceberg_adapter.py` 有固定 snapshot 的逐 manifest / data-file 批次扫描。
+- ADR-0076：`infrastructure/canonical/normalizer.py` 默认返回固定摘要，完整 ID 通过有序 `iter_revision_ids()` 流式读取。
+- ADR-0077/0093/0094：Quality / Dataset 有界 manifest、内容寻址 evidence stream、v3 chunk pipeline 与兼容读取路径已在主线。
+- ADR-0098/0100 与 PR #19：P11 authority/read-only audit 和 P12 proposal audit view 已在主线；P11 真实运行仍需要部署与合格运行输入。
+- PR #18 的 ADR-0100 实现批次已在主线。除本清单明确列出的执行接线与复用缺口外，不将 ADR-0098/0099/0100 的既有交付重复登记为未开始任务。
+- 上述仅描述源码交付；不能代表测试、静态检查、容量或 Phase 验收通过。E1-CAP-1 的 32 MiB 完整进程门仍开放，DQ-9 仍待有效容量证据。
+
+## 未合入主线的进行中工作
+
+以本轮 worktree 快照为准；分支提交、未提交文件及其定向测试均不作为主线完成证据。ADR-0101–0107 仅存在分支，尚非 main 上的授权依据。
+
+| 模块 | 分支 / worktree | 工作状态 |
 |---|---|---|
-| DOC-1 | `03-data.md` §7.1 仍写着 ADR-0077 的两张新表「尚未登记」，实际已登记在 `phase1_tables.py` 第 16、17 项 | `docs/architecture/03-data.md` |
-| DOC-2 | risk-library R-4 仍写「接入管线尚未授权」，实际已由 `0cfddbf` 接入 `run_with_risk` | `docs/research/risk-library.md` |
-| DOC-3 | ADR-0037 manifest pairing 注记仍写「属后续批次」，实际 `ValidatorSetup.manifest_pair` 已接好（`research/strategies/validation.py`） | `docs/adr/0037-*.md`（只追加实施注记） |
-| DOC-4 | outcome-library O-1 未同步，实际 `refuse_outcome_input` 已接入 `research/validation/pipeline.py` | `docs/research/outcome-library.md` |
-| DOC-5 | `infrastructure/feature/dataset.py` 的 docstring 仍称「只能读私有属性，待后续」，实际公开访问器已存在（F-C） | 仅改 docstring |
+| P0.5 Knowledge | `phase/1` | 有定向实现与检查结果；种子 tags/assets 仍需具名人工审阅。 |
+| P1 Dataset / Quality | `phase/1`、`feature/p1-entry` | DQ-10 replay 候选；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity-registry 改动，须按文件审阅。 |
+| P1 Catalog / E1 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing`、`phase/1` | Catalog scan 与 E1 archive-spool 候选重叠；逐 commit / 文件去重，不整支合并，不以候选 probe 声称 CAP-1 通过。 |
+| P2 State | `feature/p2-state`、共享 P11 worktree | State compute / report CLI 候选；与 P11 重叠处须先拆分。 |
+| P7 Discovery | `phase/1`、`feature/p7-bind` | CS execution 候选与 binding / evidence 候选分开审阅，不假设互相覆盖。 |
+| P10 Router | `feature/p10-deviation` | Deviation API / DTO / research / Web 候选；有未提交 Web 文件，按当前主线 DTO 与只读边界核对。 |
+| P11 Operations | `feature/p11-ops`、`feature/p11-tests`、`claude/module-completion` | lifecycle CLI / baseline export / degradation batch 候选；与 P2 共享提交先按净差异拆分。 |
+| P14 Migration | `feature/p14-migration` | migration target / reference backtester 候选；branch-only ADR 与未提交文件不能授权具体 target。 |
 
-## 2. 批 1：可并行，互不重叠，不碰 `core/`
+候选历史测试记录（Phase 1 infrastructure `2298 passed, 88 skipped`、DQ-10 `35 passed`、P7-CS-EXEC `105 passed`、E1 parser/verifier/normalizer `216 passed`）保留作候选 evidence；它们不等价于 main 全仓门禁、正式 E1 容量结果或 Phase 验收。`phase/1` 受影响策略回归唯一 B67 hash 失败已在变更前提交精确复现；失败证据不删除、不重钉 golden。
 
-| ID | 模块 | 目标 | PM 决定 | 文件边界 | Done 条件 | 规模 |
-|---|---|---|---|---|---|---|
-| RET-1 | P12 / Control Plane | 退役接线：`retire()` 与 `RetirementRegistry` 目前都没有生产调用点 | 仿照 `research/evolution/replacement_job.py` 新增显式退役 job。输入：退役对象、`DegradationCheck` 证据（逐份核验，与 replacement 同等强度）、具名人工 reviewer（拒绝自动化身份）。流程：调用 `retire()`，写入调用方传入的 `RetirementRegistry`。**不做自动退役**，也不接入持续循环 | 新 `research/evolution/retirement_job.py`；`tests/research/evolution/` | job 可调用；证据不全、无 reviewer、重复退役都拒绝；测试覆盖 | S |
-| OPS-1 | 运维 | 各登记处的完整性核对缺少 CLI 入口 | 按 Accepted ADR-0091 新增严格只读的快照校验 API，禁止创建目录 / 锁、禁止 anchor 自动修复；链式登记处按已有格式校验，anchor 多一条时报告不一致；无可选 anchor 标为 `UNANCHORED`；Failure Registry 标为 `STRUCTURAL_ONLY`，不宣称可检测合法历史改写 | `infrastructure/registry/{registry,profile_freeze,retirement}.py`、`research/strategies/failure_registry.py`、新 `infrastructure/tools/registry_audit.py`；对应测试 | 四类都输出独立结构化结果；可证明的坏 hash / anchor / schema / 部分尾行能检出；审计不创建或写任何文件 | M |
-| OPS-2 | 可观测性 | 08-deployment 承诺「stdout 结构化 JSON 日志」，目前没有实现 | 用 stdlib `logging` 加 JSON formatter，不引入新依赖。只提供模块与 `configure_logging()`；各 serve 入口的接线在批 2 完成 | 新 `infrastructure/observability/logging.py`、`__init__.py`；`tests/infrastructure/observability/` | 输出单行 JSON，字段固定；测试覆盖 | S |
-| OPS-3 | apps/api | 08-deployment 写的是 `/healthz`、`/readyz`，实际只有 `/health` | 保留 `/health`，新增 `/healthz`（存活）和 `/readyz`（就绪：依赖的读取源可用），并同步更新 openapi 与 README | `apps/api/app.py`、`apps/api/openapi.json`、`apps/api/README.md`、`tests/apps/` | 三个端点均可访问；只读 | S |
-| DATA-1 | P1 Representation | 成交量 bar（roadmap Phase 1 输出）尚未实现 | 规则 `hlens.canonical.volume-bar@1.0.0`，仿照 `infrastructure/canonical/resample.py`。源表 `canonical.trades`，按累计**基础资产成交量**达到调用方显式给出的阈值时收 bar，不设默认值。bar 的时间与可见时间取最后一笔成交；跨日不重置。分块读取，复用 ADR-0075 的有界扫描 | 新 `infrastructure/canonical/volume_bar.py`；`tests/infrastructure/canonical/` | 规则哈希固定；阈值必须显式给出；有界读取；精确值测试 | M |
-| DATA-3 | P1 Feature | E4 派生 bar 只支持 v2 manifest | 为 `feature_request_from_derived_bars` 增加可选参数 `evidence_verifier`，改走 `load_verified_any`，做法同 C1 对 `bars/dataset.py` 的改造；v2 行为逐位不变。同时完成 DOC-5 | `infrastructure/feature/dataset.py`；`tests/infrastructure/feature/` | v3 可用；v2 不变 | M |
-| DATA-4 | P1 / P11 | `SealedDatasetPair` 的 v3 分支没有测试 | 补齐 v3 的 evaluable / release / signals / binding 测试，以及 v2+v3 混配被拒绝的测试；不改产品代码 | `tests/infrastructure/e2e/test_research_loop_dataset_g5_units.py` 或同目录新文件 | 覆盖齐全 | S |
-| EVT-1 | P3 Event | 现有事件 Provider 从不填写 `EventSpec.bar_spec`（ADR-0088），导致 `temporal` 组合对现有事件库一律拒绝 | 各算子的 `spec()` 增加可选透传参数 `bar_spec: Ref | None`，**不自动推导**。交互算子的上游事件 bar_spec 一致时继承，不一致即拒绝 | `plugins/events/{features,windows,states,interactions,dsl}.py`；`tests/plugins/events/` | 可以透传；交互继承并校验 | M |
-| EVT-2 | P3 Event | 缺少「以另一个 Feature 为动态阈值」的算子，例如 `\|r\| > k·σ` | 新增 `feature_relative_threshold_cross(feature, level_feature, multiplier, direction)`，`multiplier` 必须显式给出；比较语义参照 `return_shock`；补内置 Manifest 和 entry point | `plugins/events/features.py`、`plugins/events/__init__.py`、`infrastructure/plugins/builtin/events.py`、`pyproject.toml`（仅 entry-points 段）、测试 | 契约套件、精确值、不看未来 | S-M |
-| EVT-3 | P3 Event | 库中没有「压缩后扩张」的具体条目 | 用 `state_switch(volatility_squeeze, from=squeeze, to=expansion)` 登记为具体事件条目 | `docs/research/event-library.md`（如需要，补一个 spec 工厂到 `plugins/events/states.py`） | 条目可复现 | S |
-| STATE-1 | P2 State | 没有 `state.*` 物理表与运行 artifact store（Event 已有） | **先写 ADR-0089**，仿照 ADR-0056 / 0066 登记 `state.*` 表（列、分区、只追加），提供默认无副作用、加 `--apply` 才建表的显式建表命令 | 新 `infrastructure/state/{table_definition,iceberg,store,create_state_tables}.py`；`tests/infrastructure/state/`；`docs/adr/0089-*.md` | 表定义、store、命令都存在；未在真实 Catalog 执行 | M |
-| VAL-1 | P8 验证 | `verify_report` 不核验 `GateResult.value` 是否真由声明的 `metric` 算出 | **ADR-0092 Accepted**：Promotion 使用宿主组合根注入的 trusted replay Provider；绑定 report / run / experiment / Profile 并逐门比对 metric、`value` 与 `value_exact`；阈值 → 门集 → 重算检查。无 Provider、拒绝或任何输出不符时以 `report_value_not_recomputed` 失败关闭。G5 不二次开封，只能使用首次 one-shot 执行时绑定报告的可信证据；当前无内建 provider / 持久 G5 replay artifact，故当前无可用 trusted provider 时不能 Promotion。 | `research/validation/verification.py`、`research/promotion/{service.py,__init__.py}`、测试、`docs/architecture/07-validation.md` §2.1、`docs/adr/0092-*.md`、ADR 索引 | 拒绝路径有测试 | M |
-| SYN-1 | P9 | `gate_calibration` 的 arm 类型写死为 `PlantedEffect`，GARCH / Jump 效应无法参与检出力评估 | arm 类型泛化为 `SyntheticEffect` 联合，并为 GARCH / Jump 定义 `arm_id` 规则（参照 `planted_arm_id`）；旧 arm 的 id 与报告字节不变 | `research/synthetic_lab/gate_calibration.py`、测试 | 新效应可以作为 arm；旧输出逐位不变 | M |
-| MAT-1 | P6 矩阵 | 收益序列与状态网格不重合时，缺少 as-of 状态归属 | **先修订 ADR-0039**：归属到 `t` 之前最近一个可见状态，容忍窗口 `max_state_age` 必须显式给出、不设默认值，超出窗口视为未知状态；不改已有的「精确对齐」行为 | `research/experiments/state_strategy.py`、测试、`docs/adr/0039-*.md`（追加修订） | 可选 as-of 模式；原模式不变 | S-M |
-| RETRO-1 | P8 | `retro_audit()` 没有生产调用点 | 最小 CLI：`python -m research.validation.retro_audit_cli`，显式传入 Strategy Registry 路径与 Failure Registry 路径，收集 `AuditSubject` 后调用 `retro_audit` 并写报告；Registry 为空时正常结束 | 新 `research/validation/retro_audit_cli.py`、测试 | CLI 可运行（测试用临时登记处） | S |
+## 阻塞、人工门与明确暂缓
 
-## 3. 批 2：依赖批 1，组内可并行
-
-| ID | 模块 | 目标 | PM 决定 | 文件边界 | 依赖 | 规模 |
-|---|---|---|---|---|---|---|
-| APP-1 | P13 | `ExecutionService` 没有进程入口 | 新增 `apps/execution/serve.py`，形状同 `apps/api/serve.py`：接线 `AuditTrail(path)`、`FileEventBus`，由操作者提供 `RiskLimits` / `CostModel`（不设默认值），接入 OPS-2 日志；实盘保持关闭（ADR-0084） | `apps/execution/serve.py`、测试 | OPS-2 | M |
-| APP-2 | worker | 非 loop 任务没有通用进程入口 | 新增 `apps/worker/serve.py`：可插拔 handler 注册表加 CLI，复用 `JobRunner` 的幂等与持久化结果，接入 OPS-2；不自动调度 | `apps/worker/serve.py`、测试 | OPS-2 | M |
-| APP-3 | apps / reports | v3 dataset manifest、退役记录、插件发现结果都没有只读查询 | 新增 `research/reports/{dataset_manifest,retirement}.py`，只投影身份、假设、计数，不输出整表；在 `ReportKind` 中新增两个 kind，并在 `report_dto.py` 与 web 端登记；新增只读端点 `GET /plugins/{kind}`（直接调用 `discover`，失败则整体报告），配一个 web 页面 | `research/reports/`、`apps/api/{store,report_dto,app}.py`、`apps/web/src/`、测试 | RET-1（退役数据）、PLG-1 可选 | M |
-| PLG-1 | 插件 | 05-plugin 中的 Plugin Registry（按 `name@version` 查找）不存在 | 新增 `infrastructure/plugins/registry.py`：接收 `discover()` 的结果，按 `name@version` 查找，不 import 具体类。**本轮不改现有组合根的直接 import**，生产接线随 P7-2 的启用决定一起做 | 新文件、测试 | — | S-M |
-| RISK-1 | P5 / P11 | 研究循环和数据集路径不提供 `risk_signals`，信号型风控在循环中永远空仓 | **先修订 ADR-0049**：比照策略信号，新增风控信号的 PIT 选择通道，由循环按风险政策声明的信号引用取值；取不到时仍按 fail closed / 空仓的现有语义处理 | `research/loop/dataset_source.py`、`research/loop/stages.py`、测试、`docs/adr/0049-*.md`（追加修订） | — | M |
-| RISK-2 | P5 风控库 | 风控参数空间不强制；同一 `name@version` 的不同 overrides 会互相覆盖 | 风险政策必须声明参数空间，Provider 拒绝空间外的参数点；overrides 必须产生新的版本 ref（沿用「已发布版本不可变」规则）；风控参数点计入 C-T1 的 trial family（保守计数） | `research/strategies/{volatility_target,drawdown_control}.py`、`research/strategies/_params.py`（如需要）、测试、`docs/research/risk-library.md` | — | S-M |
-| DATA-2 | P1 Feature | `canonical.trades` 没有任何 Feature 输入构造器 | 新增 `trade_observations` / `feature_request_from_trades`，分块、有界读取，复用 ADR-0077 的 chunk 模式，块大小显式给出，禁止一次性全部载入内存；可以基于 DATA-1 的成交量 bar | `infrastructure/feature/observations.py`、`infrastructure/feature/dataset.py`、测试 | DATA-1、DATA-3（同文件，须在其后） | L |
-| P7-2a | P7 | lowering 之后没有 Provider 执行实现 | 在 `research/hypotheses/typed_plan_providers.py` 中为已接受语义的算子实现纯 Provider（interaction、transformation 的三种、temporal、conditioning / ensemble / negation 映射到 `research/strategies/composite.py`），并建立注册表。**`TypedPlan.runnable` 仍为 False，`compile_plan` 仍拒绝**；放行留给调试之后另立 ADR | 新文件、`tests/research/hypotheses/` | — | L |
-
-## 4. 批 3：契约 2.5.0（单一 `core/` 任务，运行期间不能有其他任务，之后是依赖它的实现）
-
-| ID | 目标 | PM 决定 | 文件边界 |
-|---|---|---|---|
-| CORE-250 | 契约 2.5.0，纯 additive | **先写 ADR-0090**。① 新增 `CrossSectionalFeatureSpec`：多标的输入、截面日期网格、`rank` / `quantile` 方法与分位算法枚举、缺值处理，所有参数显式给出；② 为 G4 统计量（PBO / DSR / Sharpe 等）增加 Decimal 精确兄弟字段，规则同 ADR-0052 的 `*_exact` 与 `gate-value-quantization`。新增字段的默认值不能改变旧对象的哈希（按 ADR-0052 §4 盘点） | `core/`、`schemas/`、契约测试、`docs/architecture/02-domain.md`、`docs/adr/0090-*.md` |
-| P7-1 | `transformation` 的 `rank` / `quantile` lowering 到 `CrossSectionalFeatureSpec` | 仿照 `_lower_transformation`；`runnable` 仍为 False | `research/hypotheses/` |
-| VAL-2 | G4 写入 Decimal 精确值 | `robustness.py` 同时写入 `*_exact`；float 字段保留，只作展示 | `research/validation/robustness.py`、测试 |
-
-## 5. 本轮不做（附原因，供知悉）
-
-| 项 | 类别 | 原因 / 阻塞 |
+| 项 | 分类 | 当前处理 |
 |---|---|---|
-| P11 ACTIVE / source / metric 权威解析（ADR-0080） | B | 需要真实数据源与生命周期权威 head |
-| 真实联网 LLM Provider 与执行沙箱 | B | 需要网络与凭据策略，另立 ADR |
-| ADR-0051 `POLICY_TABLE` 下界，以及 DQ-9 参数 | B | 调试阶段联网核实与容量实测 |
-| 知识库 4 条新种子的黄金哈希 | B | 需要运行计算，调试阶段完成 |
-| 知识库种子 tags / assets | B | 需要具名人工审阅 |
-| P14 迁移目标与文件型 golden | B | 还没有迁移目标 |
-| Docker Compose（Stage 2）、密钥管理器 | B | 部署阶段，不属于底层代码 |
-| Metrics / OpenTelemetry（Stage 3） | C | 属于 Phase 4 之后 |
-| 有状态出场规则（配对交易、止损） | C | 需要扩展 `StrategyProvider` 签名（H1），收益存疑 |
-| 现货做空成本（ST-4） | 已定 | 维持 long_only，`negated` 在现货下拒绝 |
-| HMM / 训练型状态、事件研究 CAR、meta-labeling、Kind.FACTOR、事件增量执行器 | C | 研究方向选择 |
-| 分位状态的 `seed` 是否保留（S-2） | 已定 | 保留，不改 |
-| Router 生命周期映射进入 `run_hash` | 已定 | 暂缓，会改变既有哈希 |
-| P12-LOOP 循环内替换 | 已定 | 维持暂缓 |
-| 启用 P7 运行（`runnable=True`） | 已定 | 调试通过后另立 ADR |
+| E1-CAP-1：完整进程 ≤32 MiB | 容量 / 验证门 | main 的正式 probe 在 10k 全阶段及 100k verify_archive 后中断；候选 full-shape probe 的 500k verify_archive 在超过 15 分钟后中断。均无总容量 PASS/FAIL 结论；保留门槛。 |
+| ADR-0077 DQ-9 参数 | 容量证据依赖 | 获得有效容量证据后再确定，不由局部 smoke 外推。 |
+| P0.5 seed tags/assets | 人工决定 | 等具名审阅者，不自动填标签。 |
+| P11 真实运行 | 部署 / 合格输入 | 需要部署环境与符合 ADR-0100 的 repro inputs。 |
+| P14 具体迁移 | 外部输入 / 决策 | 目标系统与代表性 golden data 未提供前不做 adapter。 |
+| 真实 Catalog 建表 | 独立运行操作 | `event.*` / `state.*` 建表与本轮文档工作分开。 |
+| Profile 数值、风险预算、市场结论 | 人工 / 研究决策 | 不猜数值，不用代码代替决定或校准。 |
+| P7 / P12 执行开关 | 明确关闭 | 默认关闭；代码存在不构成启用授权。 |
+| 全仓门禁与 Phase 验收 | 验证 / 验收 | 独立后续门；本轮未运行。 |
 
-## 6. 建议派工顺序
+## 执行顺序
 
-批 0 → 批 1（15 项，可同时开 8–10 个子代理）→ 批 2（8 项）→ 批 3（先单独跑 CORE-250，完成后 P7-1 与 VAL-2 并行）。每批结束后由 Codex 整合到 `phase/1-foundation-completion`，再派下一批。
+1. 逐文件只读审阅未合入 worktree 与 main Accepted ADR，给重叠提交去重；不因共享提交或分支名直接合并 / 删除。
+2. 串行处理 P1：先复核 archive spool reuse，再按 bounded scratch 方案解决逐窗口 Raw 查询；保持 D1 与 lineage 语义不变。
+3. 单独完成 DQ-10 v2 replay 候选的审阅 / 收口；不得恢复 v2 写入。
+4. 单独完成 P7-CS-EXEC；不扩展到 Research Loop 或单序列隐式消费。
+5. 仅在逐项证明主线仍缺、且 main 已接受 ADR / roadmap 唯一限定语义时，才新增任务卡。
+6. E1-CAP-1、全仓门禁与 Phase 验收仍各自独立；不以局部回归或文档整理代替。

@@ -35,7 +35,7 @@ def test_maximal_heads_spills_and_walks_dangling_multi_hop_nodes(
             ]
         )
         maximum_pending = 0
-        base_builder = precedence_runs.RunSetBuilder
+        base_builder = precedence_runs.RunSetBuilder  # type: ignore[attr-defined]
 
         class ObservedRunSetBuilder(base_builder):  # type: ignore[misc, valid-type]
             def add(self, row: Any) -> None:
@@ -54,7 +54,7 @@ def test_maximal_heads_spills_and_walks_dangling_multi_hop_nodes(
         )
         legacy = maximal_heads(
             [
-                SimpleNamespace(
+                SimpleNamespace(  # type: ignore[misc]
                     revision_id=revision_id,
                     observation_key="key",
                     supersedes=(),
@@ -62,7 +62,7 @@ def test_maximal_heads_spills_and_walks_dangling_multi_hop_nodes(
                 for revision_id in ("old-head", "branch-head", "new-head", "branch-head")
             ],
             [
-                SimpleNamespace(
+                SimpleNamespace(  # type: ignore[misc]
                     observation_key="key",
                     revision_id=newer,
                     superseded_revision_id=older,
@@ -86,7 +86,7 @@ def test_iter_bounded_keeps_parity_without_unmeasured_external_traversal(
     )
     expected = selector.select(spec, "agg_trades", SYMBOL, START, END)
     calls = 0
-    original = selector_module.maximal_heads_from_runs
+    original = selector_module.maximal_heads_from_runs  # type: ignore[attr-defined]
 
     def observed(*args: Any, **kwargs: Any) -> tuple[str, ...]:
         nonlocal calls

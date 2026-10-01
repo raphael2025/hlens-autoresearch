@@ -269,22 +269,41 @@ def test_cross_sectional_lowering_refuses_without_the_pinned_manifest() -> None:
 
 
 @pytest.mark.parametrize("transform", ["rank_cs", "quantile_cs"])
-def test_compile_plan_lowers_cross_sectional_nodes_then_refuses_execution(transform: str) -> None:
-    """ADR-0100 §2: ``universes=`` reaches the lowering, but the compiled single-series wiring
-    cannot drive CrossSectionalRequest / Result, so compilation refuses with an explicit code."""
+def test_compile_plan_builds_cross_sectional_provider_for_pinned_universe(transform: str) -> None:
+    """ADR-0100 §2: CS nodes compile through their dedicated request/provider shape."""
     overrides: dict[str, Any] = {"buckets": 4} if transform == "quantile_cs" else {}
     plan, resolution = _cs_plan(transform, **overrides)
 
+    compiled = compile_plan(
+        plan,
+        resolution=resolution,
+        created_at=NOW,
+        allowlist=P7_OPERATOR_ALLOWLIST,
+        switch=P7ExecutionSwitch(enabled=True),
+        universes=(UNIVERSE,),
+    )
+    providers = compiled.build_providers(universes=(UNIVERSE,))
+
+    assert compiled.runnable is True
+    assert providers["xs"].descriptor.supports(
+        compiled.nodes[0].spec.ref, compiled.nodes[0].spec.content_hash()
+    )
+
+
+def test_cross_sectional_provider_build_requires_the_compiled_universe_manifest() -> None:
+    plan, resolution = _cs_plan("rank_cs")
+    compiled = compile_plan(
+        plan,
+        resolution=resolution,
+        created_at=NOW,
+        allowlist=P7_OPERATOR_ALLOWLIST,
+        switch=P7ExecutionSwitch(enabled=True),
+        universes=(UNIVERSE,),
+    )
+
     with pytest.raises(PlanCompileRefused) as refused:
-        compile_plan(
-            plan,
-            resolution=resolution,
-            created_at=NOW,
-            allowlist=P7_OPERATOR_ALLOWLIST,
-            switch=P7ExecutionSwitch(enabled=True),
-            universes=(UNIVERSE,),
-        )
-    assert refused.value.code == "cross_sectional_execution_unsupported"
+        compiled.build_providers()
+    assert refused.value.code == "cross_sectional_universe_unbound"
     assert refused.value.where == "xs"
 
 
@@ -317,3 +336,51 @@ def test_cross_sectional_output_binds_via_adr_0078() -> None:
 
     assert len(bindings) == 1
     assert bindings[0].spec.content_hash() == outputs["xs"].content_hash()
+
+
+@pytest.mark.parametrize("transform", ["rank_cs", "quantile_cs"])
+def test_a_cross_sectional_feature_referenced_directly_is_refused_at_compile_time(
+    transform: str,
+) -> None:
+    """A single-series node cannot consume a cross-sectional output, via a node or a reference."""
+    overrides: dict[str, Any] = {"buckets": 4} if transform == "quantile_cs" else {}
+    cs_plan, cs_resolution = _cs_plan(transform, **overrides)
+    cross_sectional = lower_typed_plan(
+        cs_plan, resolution=cs_resolution, created_at=NOW, universes=[UNIVERSE]
+    )["xs"]
+    assert isinstance(cross_sectional, FeatureSpec)
+
+    class Resolver:
+        def resolve(self, ref: Ref) -> VersionedSpec | None:
+            return cross_sectional if ref == cross_sectional.ref else None
+
+    payload = {
+        "schema_version": "1.3.0",
+        "root": "ts",
+        "nodes": [
+            {
+                "id": "ts",
+                "operator": "transformation",
+                "inputs": [
+                    {
+                        "ref": str(cross_sectional.ref),
+                        "content_hash": cross_sectional.content_hash(),
+                    }
+                ],
+                "parameters": {"transform": "difference", "window": 5},
+            }
+        ],
+    }
+    plan = parse_plan_json(json.dumps(payload, separators=(",", ":")), limits=LIMITS)
+    resolution = resolve_direct_references(plan, resolver=Resolver())
+    with pytest.raises(PlanCompileRefused) as refused:
+        compile_plan(
+            plan,
+            resolution=resolution,
+            created_at=NOW,
+            allowlist=P7_OPERATOR_ALLOWLIST,
+            switch=P7ExecutionSwitch(enabled=True),
+            universes=(UNIVERSE,),
+        )
+    assert refused.value.code == "cross_sectional_output_consumption_unsupported"
+    assert refused.value.where == "ts"

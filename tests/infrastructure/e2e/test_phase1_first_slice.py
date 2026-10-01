@@ -111,12 +111,16 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
     reported = {row["report_id"] for row in w.h.rows(DATA_QUALITY_REPORTS)}
     assert set(trade_report_ids) | set(bar_report_ids) <= reported
 
-    # ---- step 5: F2 universe -> F3 DatasetBuilder.build into the production
-    # research.dataset_selections, with the manifest persisted to research.dataset_manifests ----
+    # ---- step 5: F2 universe -> an F3 v2 dataset in the production research.dataset_selections,
+    # with the manifest persisted to research.dataset_manifests. ADR-0077 DQ-10 refuses a new v2
+    # build, so the first build is seeded as a pre-cutoff one; the rebuild below is the public
+    # DatasetBuilder.build replay ----
     expected_bindings = w.bindings()  # every upstream table currently holding a snapshot
     spec = w.spec()  # SIM point simulation; binds exactly `expected_bindings`
     assert spec.snapshot_bindings == expected_bindings
-    built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", DAY_START, DAY_END)
+    built = ds.seed_historical_v2(
+        w.builder(), FIRST_SLICE_UNIVERSE, spec, "klines_1m", DAY_START, DAY_END
+    )
     manifest = built.manifest
 
     assert [ds.symbol_of(m) for m in manifest.members] == ["BTC-USDT", "ETH-USDT"]

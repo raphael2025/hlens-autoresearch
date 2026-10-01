@@ -786,6 +786,7 @@ def iter_pit_conflict_heads(
         limits=limits,
         schema_version=result.schema_version,
     ) as records:
+
         def verified() -> Generator[PitConflictHeadEvidence]:
             ordinal = 0
             previous_revision: str | None = None

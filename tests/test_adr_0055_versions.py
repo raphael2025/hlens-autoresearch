@@ -69,7 +69,12 @@ def test_adr_0055_published_2_2_0_and_every_earlier_minor_stays_published() -> N
     assert ADR_0055_VERSION == "2.2.0"
     assert CONTRACT_SCHEMA_VERSION == "2.5.0"  # ADR-0094 raised the current minor
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
-        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+        "2.0.0",
+        "2.1.0",
+        "2.2.0",
+        "2.3.0",
+        "2.4.0",
+        "2.5.0",
     )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 

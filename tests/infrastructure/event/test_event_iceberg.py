@@ -142,7 +142,7 @@ def test_definition_is_the_logical_table_plus_the_run_block() -> None:
 
 
 def test_phase1_registry_is_untouched() -> None:
-    assert EVENT_EVENTS not in PHASE1_TABLES and len(PHASE1_TABLES) == 15
+    assert EVENT_EVENTS not in PHASE1_TABLES and len(PHASE1_TABLES) == 18  # ADR-0077 added 3
     with pytest.raises(UnknownTableDefinition):
         PHASE1_REGISTRY.resolve(EVENT_EVENTS.binding)
     assert PHASE3_TABLES == (EVENT_EVENTS,)

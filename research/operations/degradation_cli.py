@@ -517,9 +517,7 @@ def main(
             recent = _load_recent(args.recent_manifest)
 
             stage = "operation"
-            with ProfileFreezeRegistry(
-                args.freeze_registry, anchor=args.freeze_anchor
-            ) as freezes:
+            with ProfileFreezeRegistry(args.freeze_registry, anchor=args.freeze_anchor) as freezes:
                 result = run_degradation_check(
                     subject=subject,
                     lifecycle=lifecycle,

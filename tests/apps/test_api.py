@@ -51,7 +51,9 @@ def test_liveness_and_readiness_endpoints_are_read_only(tmp_path: Path) -> None:
     assert client.get("/health").json() == {"status": "ok", "api_version": API_VERSION}
     assert client.get("/healthz").json() == {"status": "ok", "api_version": API_VERSION}
     assert client.get("/readyz").json() == {"status": "ready", "api_version": API_VERSION}
-    assert not jobs.exists()  # a missing journal is an empty read source; readiness must not create it
+    assert (
+        not jobs.exists()
+    )  # a missing journal is an empty read source; readiness must not create it
 
 
 def test_readyz_returns_a_path_free_503_when_a_configured_source_fails(tmp_path: Path) -> None:

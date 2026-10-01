@@ -103,9 +103,7 @@ def test_a_stale_expected_head_writes_nothing(root: Path) -> None:
         stale = registry.head
         registry.append(_transition(SUBJECT, S.IDEA, S.CANDIDATE, None, 0), expected_head=stale)
         with pytest.raises(HeadMismatch):
-            registry.append(
-                _transition(OTHER, S.IDEA, S.CANDIDATE, None, 0), expected_head=stale
-            )
+            registry.append(_transition(OTHER, S.IDEA, S.CANDIDATE, None, 0), expected_head=stale)
         assert len(registry) == 1
 
 

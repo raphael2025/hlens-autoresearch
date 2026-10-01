@@ -245,9 +245,7 @@ def test_promotion_refuses_a_gate_value_that_differs_from_replay() -> None:
         replay,
         gates=(first.model_copy(update={"value": first.value + 1.0}), *replay.gates[1:]),
     )
-    refused = _refusal(
-        replace(evidence, validation_replay_provider=FixedReplayProvider(changed))
-    )
+    refused = _refusal(replace(evidence, validation_replay_provider=FixedReplayProvider(changed)))
     assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
     assert first.gate_id in refused.detail
 
@@ -263,9 +261,7 @@ def test_a_replay_result_bound_to_another_report_is_refused() -> None:
     refused = _refusal(
         replace(
             evidence,
-            validation_replay_provider=FixedReplayProvider(
-                replace(replay, report_hash="0" * 64)
-            ),
+            validation_replay_provider=FixedReplayProvider(replace(replay, report_hash="0" * 64)),
         )
     )
     assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
@@ -300,9 +296,7 @@ class RaisingReplayProvider:
 
 
 def test_a_provider_without_first_run_evidence_fails_closed() -> None:
-    refused = _refusal(
-        replace(toy_evidence(), validation_replay_provider=RaisingReplayProvider())
-    )
+    refused = _refusal(replace(toy_evidence(), validation_replay_provider=RaisingReplayProvider()))
     assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
 
 
@@ -948,7 +942,8 @@ def test_a_standalone_sealed_oos_report_is_still_gate_set_complete() -> None:
     """The G5-only sealed-OOS report of ``toy_evidence`` (the shape ``research/loop`` actually
     produces) is not held to "in-sample stages + G5": it is already complete on its own
     (``research.validation.gate_set`` module docs). This is the happy path's own sealed-OOS
-    report, asserted directly so a regression here is caught independently of the happy-path test."""
+    report, asserted directly so a regression here is caught independently of the happy-path
+    test."""
     _build(toy_evidence())  # does not raise
 
 

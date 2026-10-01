@@ -225,9 +225,7 @@ class StreamingEvidenceVerifier:
         limits = self._builder.rule.limits
         with contract_schema_version_scope(version), ExitStack() as stack:
             stored = {
-                ref.stream: stack.enter_context(
-                    self._builder.iter_evidence(manifest, ref.stream)
-                )
+                ref.stream: stack.enter_context(self._builder.iter_evidence(manifest, ref.stream))
                 for ref in manifest.evidence
             }
 
@@ -239,9 +237,7 @@ class StreamingEvidenceVerifier:
                 stored,
                 listing=_ListingClaims(limits, manifest.point_in_time, self._episodes, reopen),
                 reports=_ReportClaims(limits, reopen),
-                chunks=_ChunkComparer(
-                    self._adapter, manifest, stored[EvidenceStream.CHUNK_PROOFS]
-                ),
+                chunks=_ChunkComparer(self._adapter, manifest, stored[EvidenceStream.CHUNK_PROOFS]),
             )
             derived = self._builder.select(
                 request,
@@ -303,8 +299,7 @@ class StreamingEvidenceVerifier:
         )
         if self._builder.selection_id(request) != manifest.selection_id:
             raise CatalogIntegrityError(
-                f"manifest selection {manifest.selection_id} is not the selection of its own "
-                "inputs"
+                f"manifest selection {manifest.selection_id} is not the selection of its own inputs"
             )
         return request
 
@@ -361,9 +356,7 @@ class _ComparingSink:
         self._reports = reports
         self._chunks = chunks
         self._streams = tuple(
-            ref.stream
-            for ref in manifest.evidence
-            if ref.stream is not EvidenceStream.CHUNK_PROOFS
+            ref.stream for ref in manifest.evidence if ref.stream is not EvidenceStream.CHUNK_PROOFS
         )
         self._ordinals = dict.fromkeys(self._streams, 0)
         self._last_row: Mapping[str, Any] | None = None

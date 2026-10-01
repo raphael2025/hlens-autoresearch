@@ -19,10 +19,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
+from core.contracts.universe import PitConflictHeadEvidence
+from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder, iter_run
@@ -98,11 +100,19 @@ def _gaps_by_revision(records: list[PitBoundedRecord]) -> dict[str, Any]:
     }
 
 
-def _capture_run_set_builders(monkeypatch: pytest.MonkeyPatch) -> list[RunSetBuilder]:
-    instances: list[RunSetBuilder] = []
-    original = selector_module.RunSetBuilder
+class _CapturedRunSetBuilder(RunSetBuilder):
+    """Static shape of the builders ``_capture_run_set_builders`` records."""
 
-    class CapturingRunSetBuilder(original):
+    root_ref: RunRef | None
+
+
+def _capture_run_set_builders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[_CapturedRunSetBuilder]:
+    instances: list[_CapturedRunSetBuilder] = []
+    original = selector_module.RunSetBuilder  # type: ignore[attr-defined]
+
+    class CapturingRunSetBuilder(original):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             self.root_ref: RunRef | None = None
@@ -271,7 +281,7 @@ def test_pit_edge_group_spools_large_key_replayably_and_closes_readers(
     params = replace(TINY_PARAMS, edge_batch_rows=2)
     opened = 0
     closed = 0
-    original_iter_run = selector_module.iter_run
+    original_iter_run = selector_module.iter_run  # type: ignore[attr-defined]
 
     @contextmanager
     def tracking_iter_run(storage: Any, root: RunRef) -> Iterator[Iterator[Any]]:
@@ -360,9 +370,9 @@ def test_pit_key_row_run_replays_and_supports_bounded_random_lookups(
     source_root, _ = selector_module._pit_canonical_row_roots(
         selector,
         view,
-        selector_module.rules.CANONICAL_TABLES["agg_trades"].table,
+        rules.CANONICAL_TABLES["agg_trades"].table,
         "agg_trades",
-        selector_module.rules.SYMBOLS[SYMBOL].symbol,
+        rules.SYMBOLS[SYMBOL].symbol,
         START,
         END,
         params=TINY_PARAMS,
@@ -411,7 +421,7 @@ def test_pit_key_row_run_replays_and_supports_bounded_random_lookups(
 
     opened = 0
     closed = 0
-    original_iter_run = selector_module.iter_run
+    original_iter_run = selector_module.iter_run  # type: ignore[attr-defined]
 
     @contextmanager
     def tracking_iter_run(storage: Any, root: RunRef) -> Iterator[Iterator[Any]]:
@@ -545,11 +555,11 @@ def test_pit_evaluation_yields_high_cardinality_timeline_incrementally(
     monkeypatch.setattr(selector_module, "_heads", alternating_heads)
     selections = selector_module._evaluate(
         "key",
-        records,
+        records,  # type: ignore[arg-type]
         (),
         spec,
         available,
-        head_fn=alternating_heads,  # type: ignore[arg-type]
+        head_fn=alternating_heads,
     )
 
     assert calls == 0
@@ -570,8 +580,8 @@ def test_canonical_key_closure_is_spilled_and_matches_v2_rows(h: RestHarness) ->
         h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
     )
     view = selector._pinned(spec)
-    table = selector_module.rules.CANONICAL_TABLES["agg_trades"].table
-    canonical_symbol = selector_module.rules.SYMBOLS[SYMBOL].symbol
+    table = rules.CANONICAL_TABLES["agg_trades"].table
+    canonical_symbol = rules.SYMBOLS[SYMBOL].symbol
     legacy_rows = selector._canonical_rows(
         view, table, "agg_trades", canonical_symbol, START, END, True
     )
@@ -615,9 +625,7 @@ def test_closure_writer_count_stays_constant_across_disjoint_chains(
         )
         for index in range(chain_count)
     ]
-    table = pa.Table.from_pylist(
-        rows, schema=selector_module.rules.CANONICAL_TABLES["agg_trades"].arrow_schema
-    )
+    table = pa.Table.from_pylist(rows, schema=rules.CANONICAL_TABLES["agg_trades"].arrow_schema)
 
     class BatchView:
         def scan_column_batches(self, _table: str, *, columns: Any, row_filter: Any) -> Any:
@@ -627,9 +635,9 @@ def test_closure_writer_count_stays_constant_across_disjoint_chains(
     active = 0
     max_active = 0
     tracked_created = 0
-    original_builder = selector_module.RunSetBuilder
+    original_builder = selector_module.RunSetBuilder  # type: ignore[attr-defined]
 
-    class TrackingRunSetBuilder(original_builder):
+    class TrackingRunSetBuilder(original_builder):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             nonlocal active, max_active, tracked_created
             super().__init__(*args, **kwargs)
@@ -641,7 +649,7 @@ def test_closure_writer_count_stays_constant_across_disjoint_chains(
 
         def finish(self) -> RunRef | None:
             nonlocal active
-            result = super().finish()
+            result: RunRef | None = super().finish()
             if self._tracks_row_writer:
                 self._tracks_row_writer = False
                 active -= 1
@@ -663,7 +671,7 @@ def test_closure_writer_count_stays_constant_across_disjoint_chains(
         BatchView(),  # type: ignore[arg-type]
         c.TRADES.table,
         "agg_trades",
-        selector_module.rules.SYMBOLS[SYMBOL].symbol,
+        rules.SYMBOLS[SYMBOL].symbol,
         first - timedelta(seconds=1),
         rows[-1]["event_time"] + timedelta(seconds=1),
         params=TINY_PARAMS,
@@ -695,7 +703,7 @@ def test_closure_scan_reader_closes_after_iterator_failure() -> None:
 
     with pytest.raises(OSError, match="injected closure scan failure"):
         with selector_module._scan_batches(
-            FailingView(),
+            FailingView(),  # type: ignore[arg-type]
             "canonical.trades",
             columns=("observation_key",),
             row_filter=None,  # type: ignore[arg-type]
@@ -824,7 +832,7 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
     active_root_readers = 0
     max_active_root_readers = 0
     opened_roots: list[RunRef] = []
-    original_selector_iter = selector_module.iter_run
+    original_selector_iter = selector_module.iter_run  # type: ignore[attr-defined]
 
     @contextmanager
     def count_root_readers(storage: Any, ref: RunRef) -> Iterator[Any]:
@@ -857,7 +865,7 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
     assert 1 < max_active_merge_readers <= TINY_PARAMS.merge_fanout
     assert active_merge_readers == 0
     assert len(opened_roots) > 2  # external merge passes plus bounded root-to-root joins
-    assert max_active_root_readers <= 3  # target + scan + current chain/root
+    assert max_active_root_readers <= 4  # output + raw edges + canonical proof and comparison
     assert active_root_readers == 0
 
 
@@ -1080,9 +1088,9 @@ def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
     actual_row_root, day_root = selector_module._pit_canonical_row_roots(
         selector,
         view,
-        selector_module.rules.CANONICAL_TABLES["agg_trades"].table,
+        rules.CANONICAL_TABLES["agg_trades"].table,
         "agg_trades",
-        selector_module.rules.SYMBOLS[SYMBOL].symbol,
+        rules.SYMBOLS[SYMBOL].symbol,
         START,
         END,
         params=TINY_PARAMS,
@@ -1123,7 +1131,7 @@ def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
         lambda _self, _view, rows_root, **_kwargs: rows_root,
     )
 
-    emitted = []
+    emitted: list[PitConflictHeadEvidence] = []
     with selector.iter_bounded(
         spec,
         "agg_trades",
