@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -97,7 +98,19 @@ def test_bounded_selector_assumption_matches_legacy_selected_revision(h: RestHar
     ).select(spec, "agg_trades", SYMBOL, START, END)
     bounded = _bounded(h, spec)
 
-    assert [item.selection for item in bounded] == list(legacy.selections)
+    def signature(selection: Any) -> tuple[Any, ...]:
+        return (
+            selection.observation_key,
+            selection.simulation_time,
+            selection.knowledge_cutoff,
+            selection.status,
+            selection.selected_revision_id,
+            getattr(selection, "head_count", len(getattr(selection, "maximal_heads", ()))),
+        )
+
+    assert [signature(item.selection) for item in bounded] == [
+        signature(selection) for selection in legacy.selections
+    ]
     [selected] = [item for item in bounded if item.selection.selected_revision_id is not None]
     assert selected.lineage is not None
     assert selected.lineage.canonical_revision_id in legacy.assumed

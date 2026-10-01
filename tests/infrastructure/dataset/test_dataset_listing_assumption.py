@@ -11,11 +11,13 @@ value (DQ-9 OPEN).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding
+from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
     EvidenceStream,
     ResearchDatasetManifest,
@@ -41,16 +43,19 @@ from infrastructure.dataset.builder import (
 from infrastructure.dataset.chunks import IcebergChunkWriter
 from infrastructure.dataset.evidence import evidence_record_bytes
 from infrastructure.dataset.manifests import ManifestStore, manifest_assumptions
+from infrastructure.dataset.quality import BoundedQualityEvidence, BoundedQualitySourceParams
 from infrastructure.dataset.sources import UniverseRunParams, dataset_evidence_sources
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PitRunParams
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
+from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe import listing_assumption as backfill
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseUnconstructible
 from tests.infrastructure.dataset import dataset_support as ds
 from tests.infrastructure.dataset.dataset_support import END, L1, SIM, START, World
-from tests.infrastructure.revision.rest_store_support import utc
+from tests.infrastructure.revision.rest_store_support import DAY, utc
 
 FLOOR = utc(2023, 11, 1)
 TABLE = {"BTCUSDT": FLOOR, "ETHUSDT": FLOOR}
@@ -168,9 +173,9 @@ def test_v2_manifest_binds_the_policy_and_verifies_its_assumed_members(
     observed_window = w.spec(interval=(L1, SIM))
     spec = bound(w, interval=(FLOOR, SIM))
     with pytest.raises(UniverseUnconstructible):  # unbound: unchanged, still refused
-        w.builder().build(FIRST_SLICE_UNIVERSE, unbound, "agg_trades", START, END)
+        w.historical_v2_build(FIRST_SLICE_UNIVERSE, unbound, "agg_trades", (START, END))
 
-    built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
+    built = w.historical_v2_build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", (START, END))
     manifest = built.manifest
 
     # The manifest binds the policy through its PIT spec: name, version and hash.
@@ -209,7 +214,7 @@ def test_v2_manifest_binds_the_policy_and_verifies_its_assumed_members(
 
 def test_an_unbound_manifest_reports_no_listing_assumption(w: World, table: None) -> None:
     ready(w)
-    built = w.builder().build(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", START, END)
+    built = w.historical_v2_build(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", (START, END))
     assumptions = manifest_assumptions(built.manifest)
     assert assumptions.listing_backfill is None
     assert assumptions.key == (False, False)
@@ -231,8 +236,30 @@ def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, 
         universe=FIRST_SLICE_UNIVERSE, pit=spec, data_type="agg_trades", start=START, end=END
     )
     b = DatasetEvidenceBuilder(w.h.adapter, w.h.storage, rule=dataset_evidence_rule(**RULE))
+    from tests.infrastructure.dataset.test_quality_v3_dataset_integration import (
+        _quality_params,
+        _scratch,
+        _source,
+    )
+
+    quality_scratch = _scratch(w.h.tmp_path, "dataset-listing-quality-join")
+    quality_params = _quality_params(quality_scratch)
 
     def factory(item: DatasetEvidenceRequest) -> DatasetEvidenceSources:
+        def quality_factory(
+            adapter: RevisionCatalog,
+            storage: StorageAdapter,
+            request_pit: PointInTimeSpec,
+            data_type: str,
+            *,
+            view: PinnedCatalogView,
+            canonical_scratch_directory: Path,
+            params: BoundedQualitySourceParams,
+        ) -> BoundedQualityEvidence:
+            assert adapter is w.h.adapter
+            assert canonical_scratch_directory == w.h.canonical_scratch_directory
+            return _source(w, request_pit, storage, params, view)
+
         return dataset_evidence_sources(
             w.h.adapter,
             w.h.storage,
@@ -241,6 +268,8 @@ def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, 
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
+            quality_factory=quality_factory,
+            quality_params=quality_params,
         )
 
     chunks = IcebergChunkWriter(w.h.adapter, DATASET_SELECTION_CHUNKS)
@@ -251,8 +280,46 @@ def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, 
     return b, summary
 
 
-def test_v3_evidence_keeps_the_nested_binding_and_verifies(w: World, table: None) -> None:
+def test_v3_evidence_keeps_the_nested_binding_and_verifies(
+    w: World, table: None, tmp_path: Path
+) -> None:
     ready(w)
+    from infrastructure.catalog.phase1_tables import (
+        BINANCE_SPOT_EXCHANGE_INFO,
+        CANONICAL_INSTRUMENT_LISTINGS,
+    )
+    from tests.infrastructure.dataset.test_quality_v3_dataset_integration import (
+        _canonical_reporter,
+        _scratch,
+    )
+    from tests.infrastructure.quality.test_listing_report_v2 import _reporter as listing_reporter
+
+    quality_scratch = _scratch(tmp_path, "dataset-listing-quality-reports")
+    reporter = _canonical_reporter(
+        w.h.adapter,
+        w.h.storage,
+        quality_scratch,
+        lambda: ds.K_Q,
+        w.h.canonical_scratch_directory,
+    )
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        reporter.report("agg_trades", symbol, DAY)
+    listing_scratch = _scratch(tmp_path, "dataset-listing-history-quality")
+    listing_snapshot = w.h.head(CANONICAL_INSTRUMENT_LISTINGS.table)
+    raw_snapshot = w.h.head(BINANCE_SPOT_EXCHANGE_INFO.table)
+    assert listing_snapshot is not None and raw_snapshot is not None
+    listing_reporter(
+        w.x,
+        listing_scratch,
+        lambda: ds.K_Q,
+        adapter=w.h.adapter,
+        evidence=w.h.storage,
+    ).report(
+        {
+            CANONICAL_INSTRUMENT_LISTINGS.table: listing_snapshot,
+            BINANCE_SPOT_EXCHANGE_INFO.table: raw_snapshot,
+        }
+    )
     spec = bound(w, interval=(FLOOR, SIM))
     v2 = w.builder().select(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
     b, summary = _v3_build(w, spec)

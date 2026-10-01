@@ -1,47 +1,57 @@
 # 模块底层代码完成计划（当前模块视图，2026-10-01）
 
-> 当前执行清单以[剩余底层代码完成计划](2026-09-28-remaining-code-gaps.md)为唯一来源；本文件提供模块映射、分支进度和执行顺序。下方 2026-09-28 原计划与任务板保留作历史记录，不作为当前状态依据。
+> 当前执行清单以[剩余底层代码完成计划](2026-09-28-remaining-code-gaps.md)为唯一来源；本文件提供模块映射、候选分支状态、依赖、文件边界、并行限制与代码完成条件。2026-09-28 的原计划与任务板保留作历史记录，不作为当前状态依据。
 
 ## 当前基线
 
-- 基线为最新已合入主线 `main@b5f80fe`（PR #17、#18、#19）；没有开放 PR。主线与远端同步。
-- 最近合入的大批代码未在最新 HEAD 运行全仓测试或阶段验收。模块表里的 `IN_MAIN_UNVERIFIED` 只表示代码在主线，不表示通过验证。
-- 本地保留的 feature worktree 作为 `IN_PROGRESS`，不是主线完成；当前有 4 个 worktree 含未提交改动。具体模块见下表。
-- `phase/1@48c7d01` 已完成 P7-CS-EXEC 定向调试，并修复 E1/Dataset DQ-10 历史 v2 manifest replay lookup；联合定向批次 101 passed / 3 skipped，Dataset v3 子进程 smoke 1 passed，Ruff / mypy 通过。E1-CAP-1 未测，全仓门禁与 Phase 验收未执行。
-- P0.5 Knowledge Store / Provider 与 hypothesis / loop / strategy consumers 定向回归 `126 passed`，Ruff / mypy 通过；种子 tags/assets 的人工审阅仍开放。
+- 代码权威基线为 `main@b5f80fe`，且 `origin/main` 同步；PR #17–#19 已合入，项目状态盘点记录无开放 PR。主线最新 HEAD 未运行全仓门禁或 Phase 验收。
+- 本地分支 / worktree 数量来自 2026-10-01 盘点快照（13 / 12）；当时根 worktree 在 `phase/1@47446f4` 且干净。此后当前 worktree 已包含计划 / 状态文档及 infrastructure 回归修复；Claude 源 worktree 候选状态见下表，均为 `IN_PROGRESS`。
+- `phase/1@47446f4` 的旧选择性 Phase 1 infrastructure suite 曾有 `11 failed, 2287 passed, 88 skipped`；失败已逐项分诊，当前完整选择集复跑为 `2298 passed, 88 skipped in 855.34s`。这是候选分支结果，不代表 `main` 全仓门禁或 Phase 验收。
+- 受影响策略回归 `257 passed, 1 skipped, 1 failed`；唯一旧 B67 dataset-report hash 失败已在改动前的 `47446f4` 上精确复现，保留为已有失败证据，不变更 golden。
+- P7 横截面编译和 feature provider 两个专项测试文件 `41 passed`；该子集不构成完整 P7 候选审查或 Phase 验收。
+- E1-CAP-1（32 MiB）与 DQ-9 均未测 / 未定。任何局部测试结果都不等同容量证据、W1 全仓门禁或 Phase 验收。
 
-## 模块状态与计划映射
+## 模块状态总览
 
-| Phase / 模块 | 主线代码状态 | 当前代码任务 | 进行中候选 / 阻塞 |
+| Phase / 模块 | `main@b5f80fe` 状态 | 未合入工作 / 缺口 | 依赖与边界 |
 |---|---|---|---|
-| P0.5 Knowledge Base | `IN_MAIN_UNVERIFIED`：检索、review 写入、标签/资产路径已实现 | 无已确认代码缺口 | tags/assets 需具名人工审阅；golden hash 留后续生成与验证。 |
-| P1 Data foundation | `IN_MAIN_UNVERIFIED`：ADR-0075 bounded scan、ADR-0076 normalizer summary/ID stream、D1 spooled ingest 已在基线 | 有界 metadata prefix 节点限值已在 `phase/1@48c7d01` 调整并通过关联 probe 测试；E1-CAP-1 / DQ-9 仍未验证 | `feature/e1-catalog`, `feature/e1-ingest`, `feature/e1-listing` 有未合入候选，不计主线完成。 |
-| P1 Dataset / Quality | `IN_MAIN_UNVERIFIED`：ADR-0077 v3 evidence builder、chunk writer、streaming verifier、manifest store、pipeline 已在基线；v2 只读。主线 DQ-10 v2 replay manifest lookup 有 defect，已在 `phase/1@48c7d01` 修正 | 无其他已确认的主线实现缺口；32 MiB 容量门未测 | `feature/p1-entry` 有未提交 Dataset CLI/factory/pinning/profile 与 Quality identity 代码；先核对 ADR-0101 状态与主线。 |
-| P2 State | `IN_MAIN_UNVERIFIED`：State 计算与诊断路径存在 | 无已确认的主线代码缺口 | `feature/p2-state` / `claude/module-completion` 含 CLI 候选；待对账。 |
-| P3 Event / P4 Outcome | `IN_MAIN_UNVERIFIED`：Provider、存储和显式操作路径已有 | 无已确认的主线代码缺口 | 真实 Catalog 操作不属于本轮代码任务；留待获授权运行。 |
-| P5 Strategy / Validation / P6 Matrix | `IN_MAIN_UNVERIFIED`：策略、验证与矩阵逻辑存在 | 无已确认的主线代码缺口 | Profile 数值未冻结；不通过实现推断。 |
-| P7 Discovery | `main@b5f80fe` 对横截面计划仍拒绝编译；`phase/1` 已接入专用 Provider，定向 100 项通过，相关 Ruff / mypy 通过 | 横截面节点仅作为计划根；不适配成单序列输入，也不直接进入只接受 Strategy 根的 Research Loop；执行默认关闭 | `feature/p7-bind` 是另一份未合入候选，不计为本实现；P7-CS-EXEC 改动尚未合入 `main`。 |
-| P8 Retro audit / P9 Calibration | `IN_MAIN_UNVERIFIED`：报告链与合成校准代码已在主线 | 无已确认的主线代码缺口 | fixture 更新、运行回归属于后续调试 / 验证。 |
-| P10 Router | `IN_MAIN_UNVERIFIED`：纸面路由和报告路径存在 | 无已确认的主线代码缺口 | `feature/p10-deviation` 有未提交 Paper deviation Web/API 修改；按 ADR 与当前 DTO 先对账。 |
-| P11 Research Loop | `IN_MAIN_UNVERIFIED`：权威解析、指标闭集、默认环境与报告已有；PR #19 增加只读证据 / 提案审计视图 | 无已确认的主线基础代码缺口 | `feature/p11-ops`, `feature/p11-tests`, `claude/module-completion` 有运维 CLI 候选；真实运行还需部署设置。 |
-| P12 Evolution | `IN_MAIN_UNVERIFIED`：可选 replacement trigger 与审计视图已合入；默认关闭，OOS→PAPER 仍需人工批准 | 无已确认的主线代码缺口 | 后续运行验证独立于代码完成；不启用开关。 |
-| P13 Execution | `IN_MAIN_UNVERIFIED`：仅模拟执行与拒绝 LIVE | 无已确认的主线代码缺口 | 实盘能力不在范围内。 |
-| P14 Migration | `IN_MAIN_UNVERIFIED`：通用 golden / diff / rollback 框架存在 | 暂无可执行 target-adapter 缺口 | `feature/p14-migration` 有未提交目标适配候选；没有目标系统 / golden data 前保持阻塞。 |
-| Apps / shared APIs | `IN_MAIN_UNVERIFIED`：只读 API / Web 查询面存在；PR #19 的 P11/P12 视图已合入 | 随 P7-CS-EXEC 只在必要时补其执行接线 | 无新增写触发或运行控制端点。 |
+| P0.5 Knowledge | 实现已在主线，未验收 | 本地 `phase/1` 有 126 项定向回归结果，未合入；种子 tags/assets 等待具名人工审阅 | 不自动补人工标签；golden hash 属后续验证。 |
+| P1 Data / Catalog | ADR-0075 / 0076 路径已实现，容量未验证 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` 有重叠候选；`phase/1` 调过容量报告 prefix 节点上界 | 候选逐 commit 去重；与 Dataset / `core/` 契约任务串行。E1-CAP-1 / DQ-9 不在代码实现中猜定。 |
+| P1 Dataset / Quality | ADR-0077 / 0093 / 0094 的 v3 路径已在主线；DQ-10 v2 历史 replay 有缺陷 | `phase/1` 有 replay 修正；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity registry | DQ-10 修复范围按 `remaining-code-gaps`；不得恢复新 v2 写入；Dataset 与 `core/` 契约改动串行。 |
+| P2 State | 计算 / 持久化路径存在，未验收 | `feature/p2-state`、`feature/p11-tests`、`claude/module-completion` 有 State CLI / report 候选 | 先拆分 P2 与 P11 共享提交；依据主线 Accepted 决策确定范围；State 契约变更不得并行。 |
+| P3 Event / P4 Outcome | Provider / 存储 / 操作入口在主线，未验收 | 未发现当前已批准的普通代码缺口；Catalog 建表是独立运行操作 | 依赖 Phase 1 数据；不得以本计划代替真实 Catalog 操作或验收。 |
+| P5 Strategy / P6 Matrix | 研究与验证代码在主线，未验收 | 未发现已批准的直接实现缺口；Profile 数值 / Promotion 人工门仍开 | 禁止猜 Profile 或绕过 Promotion / Validation。 |
+| P7 Discovery | ADR-0088 / 0099 / 0100 语义在主线；横截面执行编译接线缺失 | `phase/1` 有 P7-CS-EXEC 候选；`feature/p7-bind` 有 binding / evidence 候选 | P7-CS-EXEC 单独执行；typed binding 候选另审。不得与 E1 或 `core/` 并行；未获批准的跨类型组合 fail closed。 |
+| P8 Robustness / P9 Calibration | 主线有报告与合成校准实现，未验收 | 暂无确认的 Accepted-ADR 代码缺口；待调试项须有具体失败证据 | 依赖 W1；不得更改验证阈值或 Profile。 |
+| P10 Router | 纸面路由 / deviation 报告在主线，未验收 | `feature/p10-deviation` 有 API / DTO / research / Web 候选，其中 Web 当前有未提交改动 | 按主线 ADR 与 DTO 逐项对账；只读 / 纸面边界保持。 |
+| P11 Research Loop | ADR-0098、ADR-0100 与 PR #19 的权威 / 只读视图在主线；未验收 | `feature/p11-ops`、`feature/p11-tests`、`claude/module-completion` 有 lifecycle CLI、baseline export、degradation batch 候选 | 先处理共享提交和 P2 重叠；真实运行需要部署与合格 repro inputs；不伪造旧输入。 |
+| P12 Evolution | 可选 replacement trigger 与审计视图已在主线，默认关闭 | 未发现已批准的普通代码缺口 | OOS→PAPER 仍需人工批准；不得开启运行开关。 |
+| P13 Execution | 仅模拟执行在主线，LIVE 被拒绝 | 无代码缺口；实盘明确不在范围 | 不连接真实账户、不加入下单 / 凭据。 |
+| P14 Migration | 通用迁移框架在主线，未验收 | `feature/p14-migration` 有 target / reference backtester 候选和未提交文件 | ADR-0106 仅在主线被接受后才能作为授权依据；没有目标系统 / golden data 前阻塞。 |
+| Apps / shared APIs | 只读 API / Web 查询面在主线；PR #19 视图已合入 | P10 候选改动按模块归档；当前无单独确认的代码缺口 | 不增加未批准的写触发或运行控制端点。 |
 
-## 当前派工顺序
+## 当前可执行任务卡
 
-1. 对所有 feature worktree 和 branch-only ADR 做只读对账；未合入的实现仍是 `IN_PROGRESS`，不把 ADR-0101–0107 的 branch-only 版本当作主线决策。
-2. E1 的仓库自有代码已按已接受 ADR 静态对账；E1-CAP-1 / DQ-9 留待授权的后续容量测量，不能标为通过。
-3. `phase/1@48c7d01` 的 E1/Dataset DQ-10 历史重放修复及 P7-CS-EXEC 接线通过各自局部验证；尚未合入 `main`。定向通过不代表容量门、全仓门禁或 Phase 验收。
-4. 本轮未运行全仓门禁、容量 probe、数据 / Catalog 操作或 Phase 验收；这些仍是独立后续门槛。
+任务来源、当前状态的唯一清单见[剩余底层代码完成计划](2026-09-28-remaining-code-gaps.md)。下表给出执行视图；候选工作完成后仍需独立审查，不能仅凭分支测试宣称已合入主线。
 
-## 状态分类
+| ID | 依赖 | 文件边界 | 并行限制 | 未来代码完成条件 |
+|---|---|---|---|---|
+| E1-V2-REPLAY（P1 Dataset） | 主线 Accepted ADR-0077 DQ-10；以主线 v2 持久化 manifest 为输入 | `infrastructure/dataset/builder.py`、Dataset v2 / golden compatibility tests | 与 Dataset / `core/` 契约改动串行；不得新增 v2 writer | 历史 v2 manifest 通过公开重放入口正确关联 selection snapshot；snapshot 不匹配 / 缺失 fail closed；兼容 golden 用例通过；提交中记录实际验证范围。 |
+| P7-CS-EXEC（P7） | 主线 Accepted ADR-0088 / 0099 / 0100 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试 / P7 文档 | 独立 P7 工作；不得与 E1 / `core/` 契约并行；不得实现横截面到单序列的隐含转换 | 横截面根计划在显式 pinned universe 下编译和构造专用 Provider；非法根 / 跨类型输入被拒；运行开关默认关闭；测试覆盖成功与拒绝路径，真实检查结果有记录。 |
 
-- **IN_MAIN_UNVERIFIED**：代码已在最新主线，测试或验收未完成。
-- **IN_PROGRESS**：仅在未合入分支或 worktree，可能包含未提交内容。
-- **CODE_GAP**：本计划已确认有 Accepted ADR / roadmap 唯一约束的缺失实现。
-- **BLOCKED / DEFERRED**：需要架构决策、人工输入、外部配置，或明确暂缓；不得当作当前可执行代码任务。
+## 依赖与派工顺序
+
+1. 已完成候选 Phase 1 infrastructure 回归分诊；旧失败历史保留，当前选择集为 `2298 passed, 88 skipped`。该结果不归给 `main`。
+2. 分别审阅同一模块的分支候选与 branch-only ADR，按净差异去重；P2 / P11 重叠提交先由协调者拆边界，P1 / E1 写路径与 `core/` 契约修改串行。
+3. 复核 E1-V2-REPLAY 与 P7-CS-EXEC 的候选补丁，再决定后续整合；代码完成、review、合并、全仓验证和 Phase 验收分别记录。
+4. 只有在逐项源码审查确认主线缺口、且主线 Accepted ADR / roadmap 唯一约束实现后，才新增可执行任务卡。需新决策、人工输入或外部系统的任务不进入当前代码队列。
+
+## 状态定义
+
+- **IN_MAIN_UNVERIFIED**：代码已在最新主线，相关验证 / 验收未完成。
+- **IN_PROGRESS**：仅存在于未合入分支 / worktree，可能含未提交改动。
+- **CODE_GAP**：主线缺失且可由主线已接受 ADR / 已批准 roadmap 唯一约束的实现。
+- **BLOCKED / DEFERRED**：需要新决策、人工输入、外部配置或明确暂缓；不能视为可执行代码缺口。
 
 ---
 

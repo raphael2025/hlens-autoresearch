@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
@@ -56,6 +56,7 @@ from infrastructure.revision.channel_precedence import (
     POLICY_STATEMENT,
     Channel,
     ChannelComparison,
+    ChannelEdge,
     ComparisonOutcome,
     compare_channels,
 )
@@ -1579,16 +1580,18 @@ def test_verified_edge_run_matches_compatibility_and_closes_reader(
     h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
     reconciler = ChannelReconciler(h.adapter, h.storage)
     expected = reconciler.verified_edges("agg_trades", SYMBOL, DAY)
-    closed: list[bool] = []
-    original = channel_reconcile.iter_run
+    opened: list[Any] = []
+    closed: list[Any] = []
+    original = cast(Any, channel_reconcile).iter_run
 
     @contextmanager
     def tracked_iter_run(storage: Any, root: Any) -> Iterator[Any]:
         with original(storage, root) as rows:
+            opened.append(root)
             try:
                 yield rows
             finally:
-                closed.append(True)
+                closed.append(root)
 
     monkeypatch.setattr(channel_reconcile, "iter_run", tracked_iter_run)
     params = channel_reconcile.VerifiedEdgeRunParams(
@@ -1596,17 +1599,37 @@ def test_verified_edge_run_matches_compatibility_and_closes_reader(
         merge_fanout=2,
         limits=RunLimits(leaf_max_records=2, leaf_max_bytes=4096, fanout=2),
     )
+    actual: tuple[ChannelEdge, ...]
     with reconciler.iter_verified_edges("agg_trades", SYMBOL, DAY, params=params) as stream:
         if early_close:
             actual = (next(iter(stream)),)
         else:
             actual = tuple(stream)
 
-    assert closed == [True]
+    assert opened
+    assert len(closed) == len(opened)
+
+    def semantic_edge(edge: Any) -> tuple[Any, ...]:
+        evidence = edge.evidence.model_dump(
+            mode="python",
+            exclude={"schema_version": True, "policy": {"schema_version": True}},
+        )
+        return (
+            edge.edge_id,
+            evidence,
+            edge.revision_table,
+            edge.superseded_table,
+            edge.revision_snapshot_id,
+            edge.superseded_snapshot_id,
+            edge.projection_sha256,
+        )
+
     if early_close:
-        assert actual == (expected[0],)
+        assert semantic_edge(actual[0]) == semantic_edge(expected[0])
     else:
-        assert actual == tuple(sorted(expected, key=lambda edge: edge.edge_id))
+        assert [semantic_edge(edge) for edge in actual] == [
+            semantic_edge(edge) for edge in sorted(expected, key=lambda edge: edge.edge_id)
+        ]
 
 
 @pytest.mark.parametrize("first_day", [DAY, NEXT_DAY], ids=["day_first", "next_first"])

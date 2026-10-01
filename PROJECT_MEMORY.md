@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main@b5f80fe`；E1 bounded 生产路径在主线，E1-CAP-1 / DQ-9 仍未测。`phase/1@850fcec` 的 P0.5 Knowledge 检索 / 消费者定向用例 126 passed；`phase/1@48c7d01` 含 P7-CS-EXEC（100 passed）及 E1/Dataset DQ-10 历史 v2 manifest 重放定位修复（101 passed / 3 skipped，另有子进程 smoke 1 passed）；Ruff / mypy 通过。以上本地改动均未合入主线，不能视为容量门或 Phase 验收。当前代码清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
+> 2026-10-01 恢复点：代码基线仍为 `main@b5f80fe`（PR #17–#19 已合入）；本地 `phase/1` 包含未合入的 P0.5、P1 Dataset DQ-10 与 P7-CS-EXEC 候选，以及 infrastructure 回归修复。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；策略回归为 257 passed / 1 skipped / 1 failed，唯一失败的旧 B67 golden hash 在改动前 `47446f4` 精确复现；P7 横截面专项为 41 passed。候选不计为主线完成，完整 W1、E1-CAP-1 / DQ-9 仍未完成，Phase 1 未验收。当前唯一代码缺口清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -43,7 +43,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
 - Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；ADR-0100 已写两轮有界化，未测量。旧候选分支的容量数值不能外推为 `main` 的结果
 - 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写（多数为框架 + 补全），未测试、未验收
-- Next Milestone：Raphael 安排统一调试 / 门禁 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。P7-CS-EXEC 已有本地恢复提交。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
+- Next Milestone：按模块计划分诊候选回归、复核并收口已批准代码缺口 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。P7-CS-EXEC 与 P1 DQ-10 均有本地候选工作。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
 - 仍开放：P7-CS-EXEC 尚未进入 `main` / 未验证；E1-CAP-1 与 DQ-9 未测；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
@@ -105,7 +105,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0091：登记处完整性审计严格只读；Failure Registry 不提供历史防篡改证明
 - ADR-0095：生产 Worker 由部署方显式受信 Runtime Factory 组合
 - ADR-0096：TrialLedger 完全相同的登记作只读幂等确认，不增加 trial
-- ADR-0100（2026-09-30，Raphael 直接指令）：P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` Provider、P11 指标闭集与默认环境、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案；修订 1 细化 1.3.0 时间事件。`main@b5f80fe` 的横截面 Provider 尚未接 compiler；本地 `phase/1@775245e` 已增加专用根 Provider 构造，输出不能直接进入单序列组合器 / Research Loop。
+- ADR-0100（2026-09-30，Raphael 直接指令）：P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` Provider、P11 指标闭集与默认环境、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案；修订 1 细化 1.3.0 时间事件。`main@b5f80fe` 的横截面 Provider 尚未接 compiler；本地 `phase/1@47446f4` 有专用根 Provider 候选，输出不能直接进入单序列组合器 / Research Loop。
 - D-P11-WINDOW（ADR-0049 遗留）开放；D-STATE-INC 暂缓（ADR-0035）
 
 ## 6. Active Constraints
@@ -151,6 +151,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
 - `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；Phase 1 E1-CAP-1 未测量
-- 当前工作分支：`phase/1@850fcec`，包含 P0.5 Knowledge 定向检查记录及 P7-CS-EXEC、E1/Dataset 定向调试修复；已按局部范围验证但未合入 `main`，不计为主线完成。
+- 当前工作分支：`phase/1`，包含 P0.5 Knowledge、P7-CS-EXEC、E1/Dataset 候选与 infrastructure 回归修复；未合入 `main`，不计为主线完成。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；候选需按模块计划继续复核。
 - `origin/main` 与本地 `main` 已同步；PR #19 分支已合并，远端当前没有开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态。
 - 下一步：继续按模块计划推进其余代码调试；E1-CAP-1 仍须在生产路径与 `main` 一致的提交上测量。P7 / E1 本地结果不代表主线完成或 Phase 验收。

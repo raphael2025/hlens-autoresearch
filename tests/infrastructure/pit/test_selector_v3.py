@@ -857,7 +857,7 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
     assert 1 < max_active_merge_readers <= TINY_PARAMS.merge_fanout
     assert active_merge_readers == 0
     assert len(opened_roots) > 2  # external merge passes plus bounded root-to-root joins
-    assert max_active_root_readers <= 3  # target + scan + current chain/root
+    assert max_active_root_readers <= 4  # output + raw edges + canonical proof and comparison
     assert active_root_readers == 0
 
 

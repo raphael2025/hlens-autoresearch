@@ -115,8 +115,9 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   information-flow gates ``G1.outcome_not_input``, ``G1.label_blind_sides``,
   ``G1.sealed_oos_excluded`` (also per instrument) — refuses every metric of the re-run.
   ``validate`` supplies G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1
-  ``shuffle_timing_p_value`` / ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
-  window's computable labels); G2 ``effective_independent_trades``, ``breakeven_cost_multiple``,
+  ``shuffle_timing_p_value`` / ``shift_timing_p_value`` (base and per-seed gates) and
+  ``..._min_over_seeds`` (scope: all the window's computable labels); G2
+  ``effective_independent_trades``, ``breakeven_cost_multiple``,
   ``breakeven_cost_multiple_vs_stress`` @ ``G2.cost_stress.<i>``,
   ``percentile_vs_random_entry_null`` and G3 ``net_mean_hac_p_greater_adjusted`` (scope: the
   Profile's walk-forward test folds restricted to the window's labels); G4
@@ -186,10 +187,8 @@ from types import MappingProxyType
 from typing import Any, Final, Protocol
 
 from pydantic import ValidationError
-from pyiceberg.expressions import EqualTo
 
 from apps.worker.degradation import DegradationMonitor
-from core.contracts.catalog import TableNotFound
 from core.contracts.cost_model import CostModelSpec
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeProvider, OutcomeUsedAsInput
 from core.contracts.profile_selection import ExperimentMetadata
@@ -225,9 +224,11 @@ from infrastructure.bars.dataset import (
 )
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
-from infrastructure.catalog.phase1_tables import DATASET_EVIDENCE_MANIFESTS
 from infrastructure.dataset.evidence import EvidenceError
-from infrastructure.dataset.manifests import ManifestFormError
+from infrastructure.dataset.manifests import (
+    ManifestFormError,
+    evidence_manifest_hashes_for_selection,
+)
 from infrastructure.feature.dataset import (
     AnyDatasetManifest,
     DatasetBindingError,
@@ -1020,15 +1021,7 @@ def _load_manifest(catalog: DatasetCatalog, manifest_hash: str, what: str) -> An
 
 def _persisted_hashes(catalog: DatasetCatalog, dataset_id: str) -> set[str]:
     """Every v3 manifest content hash persisted under ``dataset_id`` (``selection_id``)."""
-    try:
-        rows = catalog.adapter.scan_columns(
-            DATASET_EVIDENCE_MANIFESTS.table,
-            columns=("manifest_content_hash",),
-            row_filter=EqualTo("selection_id", dataset_id),  # type: ignore[call-arg, arg-type]
-        )
-    except TableNotFound:
-        return set()
-    return {str(value) for value in rows.column("manifest_content_hash").to_pylist()}
+    return evidence_manifest_hashes_for_selection(catalog.adapter, dataset_id)
 
 
 def _scope_mismatch(
@@ -1508,15 +1501,19 @@ def _window_returns(
         raise AuthorityRefused(EXECUTION_MISMATCH, f"the window backtest: {exc}") from exc
     if any(not (window.start < moment <= window.end) for moment in returns.times):
         raise AuthorityRefused(EXECUTION_MISMATCH, "an equity point lies outside the window")
-    return returns, result, {
-        "backtest_provider": descriptor.plugin_key,
-        "backtest_provider_hash": descriptor.content_hash(),
-        "cost_model_ref": str(execution.cost_model.ref),
-        "cost_model_hash": execution.cost_model.content_hash(),
-        "initial_equity": str(execution.initial_equity),
-        "backtest_request_hash": request.content_hash(),
-        "backtest_result_hash": result.result_hash,
-    }
+    return (
+        returns,
+        result,
+        {
+            "backtest_provider": descriptor.plugin_key,
+            "backtest_provider_hash": descriptor.content_hash(),
+            "cost_model_ref": str(execution.cost_model.ref),
+            "cost_model_hash": execution.cost_model.content_hash(),
+            "initial_equity": str(execution.initial_equity),
+            "backtest_request_hash": request.content_hash(),
+            "backtest_result_hash": result.result_hash,
+        },
+    )
 
 
 # ======================================================================================
@@ -1863,8 +1860,7 @@ def _unrecorded_dependency(
         return "param:capacity.impact_coefficient is not recorded by the baseline report"
     if base.startswith("G4.state.") and binding.state_labels is not None:
         return (
-            "the state labeller is caller code the baseline does not record (no spec hash binds "
-            "it)"
+            "the state labeller is caller code the baseline does not record (no spec hash binds it)"
         )
     return None
 
@@ -1975,7 +1971,11 @@ def _window_validation_gates(
             robustness=binding.robustness,
             state_of=None if binding.state_labels is None else binding.state_labels(bars, window),
             bar_volume=(
-                {(bar.instrument, bar.interval_start): bar.volume for bar in bars}
+                {
+                    (bar.instrument, bar.interval_start): bar.volume
+                    for bar in bars
+                    if bar.volume is not None
+                }
                 if binding.bar_volume
                 else None
             ),
@@ -2043,9 +2043,7 @@ class AuthorityProvenance:
 
     def __init__(self, *, _token: object, **values: Any) -> None:
         if _token is not _PROVENANCE_TOKEN:
-            raise TypeError(
-                "AuthorityProvenance can only be created by resolve_degradation_inputs"
-            )
+            raise TypeError("AuthorityProvenance can only be created by resolve_degradation_inputs")
         names = {item.name for item in fields(self)}
         if set(values) != names:
             raise TypeError(f"AuthorityProvenance needs exactly the fields {sorted(names)}")
@@ -2193,9 +2191,7 @@ def _check_baseline_run(
         str(profile.ref),
         profile_hash,
     ):
-        raise AuthorityRefused(
-            BASELINE_BINDING_MISMATCH, "the report or run binds another Profile"
-        )
+        raise AuthorityRefused(BASELINE_BINDING_MISMATCH, "the report or run binds another Profile")
 
 
 def resolve_degradation_inputs(
@@ -2349,15 +2345,13 @@ def resolve_degradation_inputs(
     for item in definitions:
         definition = item.definition
         try:
-            value = definition.compute(inputs, item.gate_id)
+            metric_value = definition.compute(inputs, item.gate_id)
         except AuthorityRefused:
             raise
         except ValueError as exc:
-            raise AuthorityRefused(
-                METRIC_REFUSED, f"{definition.definition_ref}: {exc}"
-            ) from exc
-        if value is not None:
-            values[definition.metric_name] = value
+            raise AuthorityRefused(METRIC_REFUSED, f"{definition.definition_ref}: {exc}") from exc
+        if metric_value is not None:
+            values[definition.metric_name] = metric_value
 
     source = SourceIdentity.of(manifest)
     last_bar = max(bars, key=lambda bar: (bar.interval_start, bar.instrument))
@@ -2389,9 +2383,7 @@ def resolve_degradation_inputs(
         metrics=values,
         as_of=as_of,
     )
-    recent = RecentMetricSet(
-        manifest=recent_manifest, manifest_hash=recent_manifest.content_hash()
-    )
+    recent = RecentMetricSet(manifest=recent_manifest, manifest_hash=recent_manifest.content_hash())
     provenance = AuthorityProvenance(
         _token=_PROVENANCE_TOKEN,
         subject=subject,
@@ -2413,9 +2405,7 @@ def resolve_degradation_inputs(
                 **window_payload,
                 "baseline_run_inputs": None if run_inputs is None else run_inputs.payload(),
                 "window_validation": (
-                    validation.payload()
-                    if validation is not None and needs_validation
-                    else None
+                    validation.payload() if validation is not None and needs_validation else None
                 ),
             }
         ),

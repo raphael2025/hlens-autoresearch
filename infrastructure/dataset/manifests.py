@@ -62,6 +62,7 @@ __all__ = [
     "ManifestStore",
     "ManifestVerifier",
     "evidence_manifest_batch_id",
+    "evidence_manifest_hashes_for_selection",
     "evidence_manifest_row",
     "manifest_assumptions",
     "manifest_batch_id",
@@ -75,6 +76,19 @@ _ATTEMPTS: Final = 8
 
 def manifest_batch_id(content_hash: str) -> str:
     return f"manifest.{content_hash}"
+
+
+def evidence_manifest_hashes_for_selection(adapter: RevisionCatalog, selection_id: str) -> set[str]:
+    """Read v3 manifest hashes for one selection using the infrastructure catalog adapter."""
+    try:
+        rows = adapter.scan_columns(
+            _EVIDENCE_TABLE,
+            columns=("manifest_content_hash",),
+            row_filter=EqualTo("selection_id", selection_id),  # type: ignore[call-arg, arg-type]
+        )
+    except TableNotFound:
+        return set()
+    return {str(value) for value in rows.column("manifest_content_hash").to_pylist()}
 
 
 def manifest_row(manifest: ResearchDatasetManifest) -> dict[str, Any]:

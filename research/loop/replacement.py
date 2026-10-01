@@ -291,9 +291,7 @@ def profile_differences(profile: ValidationProfile, loop_profile: ValidationProf
     return differing
 
 
-def trigger_unsealing_budget(
-    profile: ValidationProfile, explicit: int | None
-) -> tuple[int, str]:
+def trigger_unsealing_budget(profile: ValidationProfile, explicit: int | None) -> tuple[int, str]:
     """The global unsealing budget the trigger's openings count against (module docs, **Budget**):
     the loop Profile's field, else the loop's explicit ``OosUnsealBudget.max_unsealings``; neither
     is refused (``ValueError``), both is refused by ``sourced_parameter`` (C-A4)."""
@@ -738,8 +736,8 @@ class ReplacementTriggerStage:
         found = add(
             getattr(segment, "research_start", None), getattr(segment, "research_end", None)
         )
-        market = getattr(segment, "market", None)
-        bars = getattr(market, "bars", ())
+        segment_market = getattr(segment, "market", None)
+        bars = getattr(segment_market, "bars", ())
         if bars:
             found = add(bars[0].interval_start, bars[-1].interval_end) or found
         for name in ("price_manifest", "feature_manifest"):
@@ -848,9 +846,7 @@ class ReplacementTriggerStage:
         opening, candidate, hypothesis = item.opening, item.candidate, item.hypothesis
         assert opening is not None
         spec = candidate.spec
-        window = next(
-            (w for w in self._trigger.windows if w.window_id == opening.window_id), None
-        )
+        window = next((w for w in self._trigger.windows if w.window_id == opening.window_id), None)
         if window is None:
             return None, f"the opened window {opening.window_id!r} is not a registered window"
         if (
