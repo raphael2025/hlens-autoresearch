@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 恢复点：代码基线仍为 `main@b5f80fe`（PR #17–#19 已合入）；`phase/1` 已有基础回归修复提交 `3975da3`，当前工作区继续承载未合入的 P0.5、P1 Dataset DQ-10、P7-CS-EXEC，以及 E1 archive spool reuse 候选。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；DQ-10 专项 35 passed；P7 专项 105 passed；E1 parser / verifier / normalizer 定向集 216 passed。策略回归唯一旧 B67 golden hash 在改动前 `47446f4` 精确复现。候选不计为主线完成。clean main 的 E1-CAP-1 正式探针在 10k 六 stage 与 100k `verify_archive` 后中断，未形成 PASS / FAIL 容量结论；详情与原始样本见 `docs/reviews/2026-10-01-e1-cap1-main-partial.md`。完整 W1、E1-CAP-1 / DQ-9 仍未完成，Phase 1 未验收。当前唯一代码缺口清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
+> 2026-10-01 恢复点：代码基线为 `main@b5f80fe`，与 `origin/main` 同步；PR #17–#19 均已合入，远端无开放 PR。当前 `phase/1@4c2356c` 有未合入的 P0.5、P1 DQ-10、P7-CS-EXEC 与 E1 archive-spool reuse 工作。候选 Phase 1 infrastructure 选择集 2298 passed / 88 skipped；DQ-10 专项 35 passed；P7 专项 105 passed；E1 parser / verifier / normalizer 定向集 216 passed。候选 full-shape probe 在 100k verify_archive 为 78.207 秒，500k 同阶段超过 15 分钟、读取约 17.7 GB 后中断；这揭示逐窗口 Raw 重扫成本，不构成容量 PASS / FAIL。main 的正式探针在 10k 全阶段与 100k verify_archive 后中断；完整 W1、E1-CAP-1 / DQ-9 未完成，Phase 1 未验收。候选结果不计主线完成。代码队列见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -43,7 +43,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
 - Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；main 正式矩阵已部分运行后中断。旧候选分支的容量数值不能外推为 `main` 的结果
 - 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写（多数为框架 + 补全），未测试、未验收
-- Next Milestone：按模块计划分诊候选回归、复核并收口已批准代码缺口 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。P7-CS-EXEC 与 P1 DQ-10 均有本地候选工作。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
+- Next Milestone：按模块计划复核候选并串行收口四项已批准代码缺口 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
 - 仍开放：P7-CS-EXEC 尚未进入 `main` / 未验证；E1-CAP-1 完整容量结论未得、DQ-9 未定；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
@@ -150,7 +150,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
-- `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；E1-CAP-1 正式矩阵中断，未判定
-- 当前工作分支：`phase/1`，包含 P0.5 Knowledge、P7-CS-EXEC、E1/Dataset 与 infrastructure 回归修复候选；未合入 `main`，不计为主线完成。E1 archive spool reuse 候选已通过定向检查，仍需独立 review 与整合，并完成完整容量矩阵；逐项记录见模块计划。
-- `origin/main` 与本地 `main` 已同步；PR #19 分支已合并，远端当前没有开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态。
-- 下一步：review 并整合符合边界的 E1 archive spool reuse；之后只能在生产路径与 `main` 一致的提交上重跑完整 E1 矩阵。P7 / E1 本地结果不代表主线完成或 Phase 验收。
+- `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；E1-CAP-1 正式矩阵中断，未判定。
+- 当前工作分支：`phase/1@4c2356c`，包含 P0.5 Knowledge、P7-CS-EXEC、E1/Dataset 与 infrastructure 回归修复候选；未合入 `main`，不计为主线完成。E1 archive spool reuse 有定向检查结果，仍需独立 review；Raw window reuse 尚待实现。
+- `origin/main` 与本地 `main` 已同步；PR #17–#19 均为 MERGED、无开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态；当前数量以 `PROJECT_STATUS.md` 的盘点快照为准。
+- 下一步：逐项审阅分支候选并按计划串行收口 E1 archive reuse、Raw window reuse、DQ-10 v2 replay、P7-CS-EXEC；之后仅在生产路径与 `main` 一致的提交上重跑完整 E1 矩阵。分支结果不代表主线完成或 Phase 验收。

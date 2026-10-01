@@ -1,82 +1,74 @@
 # 剩余底层代码完成计划
 
-> 当前清单基线：`main@b5f80fe`（2026-10-01，PR #17–#19 已合入）。本文件是当前唯一的代码缺口清单；模块映射与执行视图见[模块底层代码完成计划](2026-09-28-module-foundation-completion.md)。历史批次和失败证据保留在[全栈代码完成历史](2026-09-26-all-code-completion-plan.md)，不在此重写。
+> 本文件是当前唯一的代码缺口清单。执行视图见[模块底层代码完成计划](2026-09-28-module-foundation-completion.md)；项目验收工作包见[全项目验收 WBS](2026-09-28-project-completion-wbs.md)。历史批次与失败证据保留在[全栈代码完成历史](2026-09-26-all-code-completion-plan.md)，不在此重写。
 
 ## 基线与状态规则
 
-- 当前 `main` 与 `origin/main` 均为 `b5f80fe`。PR #17–#19 已合入；当前远端引用中有 `main` 和 PR #19 的源分支，项目状态盘点记录无开放 PR；CI 未配置。
-- 本地快照：13 个分支、12 个 worktree。核对起点的根 worktree 为 `phase/1@47446f4` 且干净；之后本地工作区增加了计划 / 状态文档及 infrastructure 回归修复，进度见 `PROJECT_STATUS.md`。另有 4 个 Claude worktree 含未提交改动（`feature/p1-entry`、`feature/p7-bind`、`feature/p10-deviation`、`feature/p14-migration`）。分支 / worktree 数量仍是原盘点快照，不代表当前未提交文件数量。
-- 17 个 Codex 临时分支 tip 已归档到 `refs/archive/2026-10-01/branches/codex/` 并清理；远端分支与本地归档是不同状态。该分支数量是本次盘点快照，不作为长期不变事实。
-- `IN_MAIN_UNVERIFIED`：代码在主线，但对应测试 / 检查 / 验收未完成；不重复列为代码缺口，也不得称为通过。
-- `IN_PROGRESS`：代码或文档只在未合入主线的分支 / worktree；不计为主线完成。须逐项对照当前 `main` 与主线 Accepted ADR 后才能整合。
-- `CODE_GAP`：主线缺失实现，且已有主线 Accepted ADR / 已批准 roadmap 唯一约束其语义，可直接实现。
-- `BLOCKED` / `DEFERRED`：依赖新架构决定、人工输入、外部条件或明确暂缓；不属于当前可执行代码任务。
-- 本计划的代码完成可包含新增必要测试。2026-10-01 的文档整理批次未运行检查；后续实现批次的检查范围及结果单独记录，不替代主线门禁或 Phase 验收。
+- 代码完成基线为 `main@b5f80fe`，与 `origin/main` 同步。PR #17（ADR-0098/0099）、PR #18（ADR-0100）及 PR #19 均已合并；GitHub 核对结果均为 `MERGED`，PR #19 不是 Draft。远端当前有 `main` 和已合并 PR #19 的源分支，无开放 PR；CI 未配置。
+- 本地盘点快照：13 个分支、13 个 worktree。主 worktree 在 `phase/1@4c2356c`，含本轮计划 / 状态文档修改；独立 main probe worktree 为 detached `b5f80fe`。4 个 Claude worktree 有未提交文件，属于进行中；分支 / worktree 数量是本轮快照，不是长期事实。
+- `main` 是代码完成状态的权威基线。分支代码和测试只记为 `IN_PROGRESS`，不计入主线完成。
+- `IN_MAIN_UNVERIFIED`：实现已在主线，测试、检查、容量测量或验收仍未完成；不重复列为代码缺口。
+- `IN_PROGRESS`：实现 / 修复只存在于未合入分支或 worktree；须独立审阅后才可整合。
+- `CODE_GAP`：主线缺实现，且已 Accepted ADR / 已批准 roadmap 足以约束实现，无需新架构决定。
+- `BLOCKED` / `DEFERRED`：依赖人工输入、外部条件、新决策或明确暂缓，不进入可执行代码队列。
+- 本次只更新计划与状态文档；未运行测试、lint、类型检查、build、probe、数据生成或 Phase 验收。未来代码任务可包含必要测试，但本次不声称验证通过。
 
-## 当前可执行的主线代码缺口
+## 当前可执行代码缺口
 
-| ID / 模块 | 主线缺口与依据 | 文件边界 | 依赖与并行限制 | 代码完成条件 | 当前状态 |
+| ID / 模块 | 主线缺口与依据 | 文件边界 | 依赖、并行限制 | 代码完成条件 | 状态 |
 |---|---|---|---|---|---|
-| E1-ARCHIVE-REUSE / P1 Normalizer | `main@b5f80fe` 的 pinned verifier 每个 256 行窗口都会重新严格解析整个 archive。主线正式探针在 N=100,000 的 `verify_archive` 单阶段耗时 366.084 秒、RSS 增量 45.7 MiB（见[中断记录](../reviews/2026-10-01-e1-cap1-main-partial.md)）。Accepted ADR-0100 允许保留严格验证与有界 spool；PROJECT_MEMORY 已决定 parser scratch 使用 canonical scratch，不回退 TMPDIR。 | `infrastructure/parser/binance_archive.py`、`infrastructure/revision/row_integrity.py`、`infrastructure/canonical/normalizer.py`、memory probe 与 parser / verifier / normalizer 回归测试 | 依赖 ADR-0100、现行严格 D1 parser 与 canonical scratch 决定；P1 单任务，与其他 E1 / Dataset / `core/` 契约任务串行。最多保留一个 archive spool；多 archive 路径仍顺序处理并关闭。 | 相同 ObjectRef 只严格解析一次并跨窗口复用；最多一个 spool 且由 close / eviction 可靠关闭；archive 输入与 Arrow spool 显式落到 canonical scratch；拒绝、行内容验证与错误优先级不变。定向回归、静态检查、review 完成后，须在与整合 `main` 一致的代码上完成正式 E1 矩阵；32 MiB 门槛不变。 | `IN_PROGRESS`：候选在 `phase/1`，未进入 `main`；主线缺口仍开放。 |
-| E1-V2-REPLAY / P1 Dataset | `main@b5f80fe` 的 ADR-0077 DQ-10 只读兼容入口按不存在的 `selection_id` 列查询 v2 manifest 表，历史 v2 Dataset 重放会失败。候选分支 `phase/1@48c7d01` 改为从 selection batch snapshot 反查 `dataset_snapshot_id`，并校验加载 manifest 与该 snapshot 一致。 | `infrastructure/dataset/builder.py`、Dataset v2 / golden compatibility tests | 依赖主线已接受 ADR-0077；与其他 Dataset / `core/` 契约改动串行。不得恢复新 v2 写入。 | 公开重放入口能读取已持久化 v2 manifest；绑定、不匹配、缺失等负例拒绝；既有 golden replay 保持兼容；相关测试与检查结果在实现批次如实记录。 | `IN_PROGRESS`：候选实现与定向验证存在于 `phase/1`，未合入 `main`。 |
-| P7-CS-EXEC / P7 Discovery | `main@b5f80fe` 对 `rank_cs` / `quantile_cs` 执行接线仍拒绝。候选 `phase/1@48c7d01` 将其加入编译路径，并通过显式 pinned universe 构造专用 Provider；横截面结果只允许作为计划根，不转接为单序列输入。依据 ADR-0088 / 0099 / 0100。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、相应 tests / P7 文档 | 依赖主线 Accepted ADR-0100。单一 P7 任务；不得与 E1 / `core/` 同时修改。若需组合成单序列输入或接入仅接受 Strategy 根的 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 合法横截面根计划可用同一显式 pinned manifest 编译并构造 Provider；无 manifest、错误根节点及跨类型输入均 fail closed；执行开关仍默认关闭；增加相应正反例测试并记录检查结果。 | `IN_PROGRESS`：候选实现与定向验证存在于 `phase/1`，未合入 `main`。 |
+| E1-ARCHIVE-REUSE / P1 Normalizer | 主线 pinned verifier 跨 256 行窗口会重新严格解析同一 archive。`main@b5f80fe` 正式探针在 100k `verify_archive` 单阶段耗时 366.084 秒，见[中断记录](../reviews/2026-10-01-e1-cap1-main-partial.md)。ADR-0100 §6 支持保留严格校验的有界实现。 | `infrastructure/parser/binance_archive.py`、`infrastructure/revision/row_integrity.py`、`infrastructure/canonical/normalizer.py`、对应测试与 memory probe | 依赖 ADR-0100、严格 D1 parser 和 canonical scratch 决定；与其它 P1/E1/Dataset 及 `core/` 契约任务串行。至多缓存一个 archive spool，多 archive 顺序处理并关闭。 | 同一 ObjectRef 跨窗口只严格解析一次；spool 与 parser 输入显式使用 canonical scratch；行校验、拒绝语义和错误优先级保持不变；close / eviction 可靠释放资源；必要回归和代码审查完成。容量结果另由 E1-CAP-1 决定。 | `IN_PROGRESS`：候选已在 `phase/1`，未进主线；候选定向集 216 passed 不代表主线完成或容量通过。 |
+| E1-RAW-WINDOW-REUSE / P1 Normalizer | 主线 `_raw_window` 对每个 proof / canonical window 都会重新扫描 Raw catalog。候选 archive-spool 诊断的 100k `verify_archive` 降至 78.207 秒，但 500k stage 在运行超过 15 分钟、读取约 17.7 GB 后被中断；这表明重复 Raw 查询仍是待解决成本，不能视为容量 FAIL/PASS。 | `infrastructure/canonical/normalizer.py`、必要的 bounded scratch/index helper、normalizer / row-integrity tests、memory probe | 依赖 ADR-0075/0100 的固定快照、有界扫描与 E1-CAP-1 语义；须先审阅 ARCHIVE-REUSE 候选；与其它 E1、Dataset、`core/` 契约任务串行。磁盘索引 / spool 必须有界、确定关闭，不缓存整日 Raw rows 于内存。 | 一次有界、确定性的 Raw 源读取可供后续窗口复用；保留位置排序、缺号、重复位置、lineage / row-integrity 拒绝行为；正常、失败和 close 路径均释放 scratch；回归证明不会逐窗口重扫；正式容量验证另行执行。 | `CODE_GAP`：主线仍逐窗口扫描；候选诊断发现规模成本，尚无修复候选。 |
+| E1-V2-REPLAY / P1 Dataset | 主线 DQ-10 只读重放路径在历史 v2 manifest 查询中未按 selection batch 的 snapshot 关联；候选改为从 `selection_id` 查 batch snapshot，再核对 manifest snapshot 一致。依据主线 ADR-0077 DQ-10。 | `infrastructure/dataset/builder.py`、Dataset v2 compatibility / golden tests | 依赖主线已接受 ADR-0077；与其他 Dataset / `core/` 契约任务串行；不得增加新的 v2 writer。 | 已存在的 v2 manifest 可经公开入口重放；缺失、重复、snapshot 不匹配均 fail closed；既有 golden replay 保持兼容；必要回归通过并单独记录范围。 | `IN_PROGRESS`：候选在 `phase/1`，未进主线；专项结果 35 passed 属候选证据。 |
+| P7-CS-EXEC / P7 Discovery | 主线提供 `rank_cs` / `quantile_cs` 定义与 Provider，但 `typed_plan_compiler` 仍拒绝其执行编译。候选只允许显式 pinned universe 下的横截面根 Provider，禁止隐式接入单序列节点或 Research Loop。依据 ADR-0088/0099/0100。 | `research/hypotheses/typed_plan_compiler.py`、`typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试与 P7 文档 | 依赖主线 Accepted ADR；独立 P7 任务，不与 E1 或 `core/` 契约并行。若要横截面输出进入单序列组合器或 Research Loop，先提出架构决定。 | 显式 pinned manifest 可绑定并实例化专用 Provider；缺失/错误绑定、非法根及跨类型消费 fail closed；执行开关仍默认关闭；正反例回归与审查完成。 | `IN_PROGRESS`：候选在 `phase/1`，未进主线；候选专项 105 passed 不等于已整合或已验收。 |
 
-以上两项是当前主线源码对账确认的实现缺口。分支中的实现属于待复核候选，不能据此标记主线已完成；本计划不授权合并或推送。
+以上是截至 `main@b5f80fe` 确认的四项主线实现缺口。PR #18 已覆盖 ADR-0100 定义的底层能力批次和 E1 bounded scan 基础实现，但不包含上述 archive reuse、Raw window reuse、DQ-10 replay 修正或 P7 横截面 compiler 接线；PR #19 的 P11/P12 只读审计视图也不再列为代码任务。不得将 branch-only 候选表述为主线已完成；本计划不授权合并或推送。
 
-## 已在主线实现、仍待验证的代码
+## 主线已有实现、仍待验证
 
-截至 `main@b5f80fe` 的静态对账，原 E1 bounded 代码项涉及的仓库自有生产路径已实现，不重复排进实现队列：
-
-- ADR-0075：`infrastructure/catalog/iceberg_adapter.py` 提供固定 snapshot 的逐 manifest / data-file 批次扫描。
-- ADR-0076：`infrastructure/canonical/normalizer.py` 默认返回固定摘要；完整 ID 由 `iter_revision_ids()` 显式有序流式读取。
-- D1：`infrastructure/parser/binance_archive.py` 提供 `parse_archive_spooled()`；生产 ingest 使用 spool microbatches。完整 `ParsedArchive` 物化入口仍是显式兼容 API。
-- ADR-0077 / 0093 / 0094：Quality 与 Dataset 的固定大小 manifest、内容寻址 evidence stream、v3 chunk writer / verifier / pipeline 已在基线；旧版本按只读兼容路径处理。
-
-以上只说明源码路径存在，不证明测试、静态检查、容量或 Phase 验收通过。E1-CAP-1（完整进程 ≤32 MiB）和 ADR-0077 DQ-9 参数仍开放；PyIceberg metadata、Avro manifest、Arrow row group / ORC stripe 与总 scratch / cgroup 工作集须按后续验证计划测量。改变 Iceberg history / retention、数据权威或公开完整物化接口须另行决策。
-
-2026-10-01 主线探针按 32 MiB 正式协议启动，但在完成 100,000 行 `verify_archive` stage 后中断。`status=interrupted`、`capacity_verdict=ERROR`、`e1_cap1_evidence=false`；这是未完成的证据采集，不是整体容量 FAIL。单阶段 RSS 超限与重复严格解析耗时均记录在[探针记录](../reviews/2026-10-01-e1-cap1-main-partial.md)，不得外推为整个矩阵的判定。
-
-P0.5 Knowledge Store / Provider 及 consumers 的既有定向结果为 126 passed，Ruff / mypy 通过；这些本地更改未合入主线。Knowledge seeds 的 tags/assets 仍待具名人工审阅，不能自动填充。
+- ADR-0075：`infrastructure/catalog/iceberg_adapter.py` 有固定 snapshot 的逐 manifest / data-file 批次扫描。
+- ADR-0076：`infrastructure/canonical/normalizer.py` 默认返回固定摘要，完整 ID 通过有序 `iter_revision_ids()` 流式读取。
+- ADR-0077/0093/0094：Quality / Dataset 有界 manifest、内容寻址 evidence stream、v3 chunk pipeline 与兼容读取路径已在主线。
+- ADR-0098/0100 与 PR #19：P11 authority/read-only audit 和 P12 proposal audit view 已在主线；P11 真实运行仍需要部署与合格运行输入。
+- PR #18 的 ADR-0100 实现批次已在主线。除本清单明确列出的执行接线与复用缺口外，不将 ADR-0098/0099/0100 的既有交付重复登记为未开始任务。
+- 上述仅描述源码交付；不能代表测试、静态检查、容量或 Phase 验收通过。E1-CAP-1 的 32 MiB 完整进程门仍开放，DQ-9 仍待有效容量证据。
 
 ## 未合入主线的进行中工作
 
-以下为 2026-10-01 worktree 快照。分支提交和工作区改动都不能作为主线完成证据；分支中 ADR-0101–0107 的版本尚未进入 `main`，不能替代主线 Accepted ADR。
+以本轮 worktree 快照为准；分支提交、未提交文件及其定向测试均不作为主线完成证据。ADR-0101–0107 仅存在分支，尚非 main 上的授权依据。
 
-| 模块 | 分支 / worktree | 可见内容 | 状态与限制 |
-|---|---|---|---|
-| P1 Dataset / Quality | `feature/p1-entry` | 12 个未提交路径：Dataset CLI / factory / pinning / profile、Quality identity registry，以及 `report_v3.py` 修改和相应用例 | `IN_PROGRESS`；逐项核对 ADR-0101 与主线，未提交内容不得视作可合并批次。 |
-| P1 Catalog / E1 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` | Catalog bounded head/history 与 batch scan、Arrow row stream 等候选；后两支还带入 State / P11 等共享提交 | `IN_PROGRESS`；候选之间存在重叠提交，按文件 / commit 净差异去重；不得据此声称 E1-CAP-1 通过。 |
-| P1 Dataset DQ-10 / P7-CS-EXEC | `phase/1`（当前本地候选） | DQ-10 v2 历史 manifest replay 修正；P7 横截面编译与 Provider 接线；Knowledge 测试断言更新 | `IN_PROGRESS`；Phase 1 infrastructure 选择集 `2298 passed, 88 skipped`；DQ-10 public replay / v2 golden 专项 `35 passed`；P7 横截面编译 / binding / lowering / provider 专项 `105 passed`。实现与专项验证在候选分支已完成，主线仍待独立审阅 / 整合，不代表全仓门禁。 |
-| P2 State | `feature/p2-state` | State compute / report CLI、导出与相关测试 | `IN_PROGRESS`；核对 ADR-0102 是否为主线已接受决定及其边界后再定执行顺序。 |
-| P7 Discovery binding | `feature/p7-bind` | `p7_binding` / `p7_evidence`、DSL / audit 修改与测试；当前有 9 个未提交路径 | `IN_PROGRESS`；与 P7-CS-EXEC 分开审查，不得假定互相覆盖。核对 ADR-0103 与主线后再决定整合。 |
-| P10 Router | `feature/p10-deviation` | Deviation API / DTO / research 与 Web 页面；当前有 6 个 Web 文件未提交，分支净差异另含测试 fixture 与契约适配 | `IN_PROGRESS`；核对 ADR-0104 与当前 DTO / 报告绑定。 |
-| P11 Operations | `feature/p11-ops`、`feature/p11-tests`、`claude/module-completion` | Lifecycle CLI、baseline export、degradation batch、P2 State CLI；候选分支有共享 / 重叠提交 | `IN_PROGRESS`；按 ADR-0105 与主线拆分 P11 / P2，先去重和审查，再确定文件边界。 |
-| P14 Migration | `feature/p14-migration` | Backtest migration target / reference backtester 候选；当前有 3 个修改与 6 个未跟踪路径 | `IN_PROGRESS`；核对 ADR-0106；无具体目标系统与 golden data 时仍属阻塞候选。 |
+| 模块 | 分支 / worktree | 工作状态 |
+|---|---|---|
+| P0.5 Knowledge | `phase/1` | 有定向实现与检查结果；种子 tags/assets 仍需具名人工审阅。 |
+| P1 Dataset / Quality | `phase/1`、`feature/p1-entry` | DQ-10 replay 候选；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity-registry 改动，须按文件审阅。 |
+| P1 Catalog / E1 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing`、`phase/1` | Catalog scan 与 E1 archive-spool 候选重叠；逐 commit / 文件去重，不整支合并，不以候选 probe 声称 CAP-1 通过。 |
+| P2 State | `feature/p2-state`、共享 P11 worktree | State compute / report CLI 候选；与 P11 重叠处须先拆分。 |
+| P7 Discovery | `phase/1`、`feature/p7-bind` | CS execution 候选与 binding / evidence 候选分开审阅，不假设互相覆盖。 |
+| P10 Router | `feature/p10-deviation` | Deviation API / DTO / research / Web 候选；有未提交 Web 文件，按当前主线 DTO 与只读边界核对。 |
+| P11 Operations | `feature/p11-ops`、`feature/p11-tests`、`claude/module-completion` | lifecycle CLI / baseline export / degradation batch 候选；与 P2 共享提交先按净差异拆分。 |
+| P14 Migration | `feature/p14-migration` | migration target / reference backtester 候选；branch-only ADR 与未提交文件不能授权具体 target。 |
 
-### 候选分支回归信号（未分诊）
-
-`phase/1@47446f4` 的历史输出曾为 `11 failed, 2287 passed, 88 skipped`。本地复现并逐项分诊后，处理了分层导入、reader 生命周期预期、测试 DSN 占位值、PIT 语义 / reader 上界、listing policy 验证层和 Dataset v2/v3 fixture 绑定；完整 Phase 1 infrastructure 选择集随后为 `2298 passed, 88 skipped in 855.34s`。这些是当前候选分支的结果，不代表 `main` 通过全仓门禁；失败历史保留，不再作为待分诊项。
-
-同轮受影响策略回归为 `257 passed, 1 skipped, 1 failed in 500.03s`。唯一失败是 `tests/research/strategies/test_backtest_validation.py::test_the_default_model_reports_are_the_pre_b67_ones` 的旧 dataset-report hash；该精确用例在改动前 `47446f4` 上也以相同实际哈希失败（`7612179d…`），确认为既有失败。本轮不改写 golden，也不将其列成本次引入的代码缺口。
+候选历史测试记录（Phase 1 infrastructure `2298 passed, 88 skipped`、DQ-10 `35 passed`、P7-CS-EXEC `105 passed`、E1 parser/verifier/normalizer `216 passed`）保留作候选 evidence；它们不等价于 main 全仓门禁、正式 E1 容量结果或 Phase 验收。`phase/1` 受影响策略回归唯一 B67 hash 失败已在变更前提交精确复现；失败证据不删除、不重钉 golden。
 
 ## 阻塞、人工门与明确暂缓
 
 | 项 | 分类 | 当前处理 |
 |---|---|---|
-| E1-CAP-1：完整进程工作集 ≤32 MiB | 容量 / 验证门 | 在生产路径与 `main` 一致的提交上测量；保留原门槛，不声称通过。 |
-| ADR-0077 DQ-9 参数 | 需容量证据 | 有足够测量证据后再定；不得根据局部 smoke 猜值。 |
-| P0.5 种子 tags/assets | 人工决定 | 等具名审阅者；不在代码批次自动补标签。 |
-| P11 真实运行与缺失 baseline repro inputs | 外部部署 / 数据资格 | ADR-0100 修订 2 要求新运行记录输入；缺项旧运行继续拒绝。 |
-| P14 迁移目标与 golden data | 外部输入 / 决策 | 目标系统、代表性 golden data 未提供前不实现 adapter。 |
-| 实际 Catalog 建表 | 运行操作 | 作为独立运行任务；不与本轮文档整理混同。 |
-| Profile 数值、风险预算、真实市场结论 | 人工 / 研究决策 | 不猜数值、不以实现替代决策或校准。 |
-| TypedPlan / P7 与 P12 运行开关 | 明确关闭 | 默认关闭；代码存在不构成开启授权。 |
-| 全仓门禁、E1 容量测量、Phase 验收 | 验证 / 验收 | 均为独立后续门；本轮不执行。 |
+| E1-CAP-1：完整进程 ≤32 MiB | 容量 / 验证门 | main 的正式 probe 在 10k 全阶段及 100k verify_archive 后中断；候选 full-shape probe 的 500k verify_archive 在超过 15 分钟后中断。均无总容量 PASS/FAIL 结论；保留门槛。 |
+| ADR-0077 DQ-9 参数 | 容量证据依赖 | 获得有效容量证据后再确定，不由局部 smoke 外推。 |
+| P0.5 seed tags/assets | 人工决定 | 等具名审阅者，不自动填标签。 |
+| P11 真实运行 | 部署 / 合格输入 | 需要部署环境与符合 ADR-0100 的 repro inputs。 |
+| P14 具体迁移 | 外部输入 / 决策 | 目标系统与代表性 golden data 未提供前不做 adapter。 |
+| 真实 Catalog 建表 | 独立运行操作 | `event.*` / `state.*` 建表与本轮文档工作分开。 |
+| Profile 数值、风险预算、市场结论 | 人工 / 研究决策 | 不猜数值，不用代码代替决定或校准。 |
+| P7 / P12 执行开关 | 明确关闭 | 默认关闭；代码存在不构成启用授权。 |
+| 全仓门禁与 Phase 验收 | 验证 / 验收 | 独立后续门；本轮未运行。 |
 
 ## 执行顺序
 
-1. 已完成：分诊并复跑 `phase/1` 的 11 个历史失败；具体证据与结果见上文。不得将该候选分支结果归给 `main`。
-2. 对候选分支与主线 Accepted ADR 做只读净差异审查，去除重复提交 / 文件并确认 branch-only ADR 状态；不整支合并。
-3. 复核并收口 E1-V2-REPLAY 与 P7-CS-EXEC 两项主线缺口；实现、代码审查、测试验证和合并分别记录为不同状态。
-4. 其余模块只有在逐项审查证明主线缺口、且主线已接受 ADR / 已批准 roadmap 唯一约束实现时，才能从 `IN_PROGRESS` 改列为 `CODE_GAP`。
-5. E1-CAP-1、全仓门禁与 Phase 验收按 WBS 独立推进；不把局部回归等同容量或验收证据。
+1. 逐文件只读审阅未合入 worktree 与 main Accepted ADR，给重叠提交去重；不因共享提交或分支名直接合并 / 删除。
+2. 串行处理 P1：先复核 archive spool reuse，再按 bounded scratch 方案解决逐窗口 Raw 查询；保持 D1 与 lineage 语义不变。
+3. 单独完成 DQ-10 v2 replay 候选的审阅 / 收口；不得恢复 v2 写入。
+4. 单独完成 P7-CS-EXEC；不扩展到 Research Loop 或单序列隐式消费。
+5. 仅在逐项证明主线仍缺、且 main 已接受 ADR / roadmap 唯一限定语义时，才新增任务卡。
+6. E1-CAP-1、全仓门禁与 Phase 验收仍各自独立；不以局部回归或文档整理代替。

@@ -1,6 +1,6 @@
 # HLENS-AutoResearch 全栈代码完成计划
 
-> **历史记录说明（2026-10-01）**：本文件保留 2026-09-26 起的批次、审查与失败证据，不再作为当前任务清单；当前剩余底层代码计划见 [`docs/plans/2026-09-28-remaining-code-gaps.md`](2026-09-28-remaining-code-gaps.md)，模块状态见 [`docs/plans/2026-09-28-module-foundation-completion.md`](2026-09-28-module-foundation-completion.md)。
+> **历史记录说明（2026-10-01）**：本文件保留 2026-09-26 起的批次、审查与失败证据，不再作为当前任务清单；当前剩余底层代码计划见[剩余底层代码完成计划](2026-09-28-remaining-code-gaps.md)，模块状态见[模块底层代码完成计划](2026-09-28-module-foundation-completion.md)。
 > 本文件中的基线、分支数量和后续动作均为各历史记录当时快照；当前状态以 `PROJECT_STATUS.md` 与上方计划为准。
 
 日期：2026-09-26  
