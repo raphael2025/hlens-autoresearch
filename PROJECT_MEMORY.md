@@ -122,6 +122,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 7. Current Known Risks
 
+- Canonical 每微批一个 Iceberg snapshot 且不过期：metadata 与 manifest 数随数据量线性增长，提交 / 扫描成本无界（ADR-0108 Proposed，推荐按单元一次提交）
 - 两轮大规模补全代码均未测试；首次全仓门禁可能暴露大量失败
 - pypi.org 索引域名在本机被阻断（files.pythonhosted.org 可达）：离线安装用 uv.lock 精确版本
 - WSL 内存约 15 GiB；Docker 未安装；外部数据盘未挂载；warehouse 无异地副本；CI 未配置
