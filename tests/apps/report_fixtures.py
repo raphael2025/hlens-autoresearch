@@ -6,7 +6,8 @@ well-formed report of its kind named by its own identity. Tests under ``tests/ap
 not import ``research/``) read them to get valid payloads to serve or to tamper with.
 
 Each kind has one latest committed fixture (contract 2.5.0). Kinds whose report changed with a
-contract bump also keep **legacy readable** fixtures: the files committed before 2.1.0
+contract bump also keep **legacy readable** fixtures (paper deviation additionally keeps its
+pre-ADR-0104 scope-only reports, ``LEGACY_ADR_0104``): the files committed before 2.1.0
 (``LEGACY_2_0_0``, three kinds), before 2.2.0 (``LEGACY_2_1_0``, ADR-0055, six kinds), before
 2.4.0 (``LEGACY_2_2_0``, ADR-0088, six kinds), and before 2.5.0 (``LEGACY_2_4_0``, ADR-0094,
 six kinds), kept so the API and console prove they read earlier reports. A kind may also have named
@@ -66,7 +67,7 @@ LEGACY_2_1_0: Final[dict[ReportKind, str]] = {
     ),
     ReportKind.ROUTER_STOP: "64c340616747be0377f0b48e4d4baeecbf1f72d41547bc7961fe24b2478ed4d9",
     ReportKind.PAPER_DEVIATION: (
-        "45d3d4383bfd73fff69b46f2231029b008cd1a0805dc93521e8f96448ffc3c30"
+        "c6f91abb01b23db2fea35405771fd28f8faabfb55e3ec9f5255e708bd96a3b87"
     ),
 }
 
@@ -81,7 +82,7 @@ LEGACY_2_2_0: Final[dict[ReportKind, str]] = {
     ReportKind.ROUTER_PAPER_RUN: "6c1231639a4312f4a6c7cccba16d92b519f7ad4caa9d6b22e56c94ba74291c25",
     ReportKind.GATE_CALIBRATION: "8499223e39d1c260e76e2cb18b6af4c227914b140ffcf6089771accd3b16b535",
     ReportKind.ROUTER_STOP: "bff151b450dd125758410b9ed78e352030d36a27cc58a95f5d2ed8216b630382",
-    ReportKind.PAPER_DEVIATION: "b9c4246c6492f47b8da5c289765009973ba3bff15b2fcfb7ddf3ca630602c442",
+    ReportKind.PAPER_DEVIATION: "caf911b7f9db9c1ad1812244e1d373acda4ef84f08ef1150831d93592f9dda69",
 }
 
 #: The legacy readable 2.4.0 fixture ids retained when ADR-0094 advanced the current contract.
@@ -95,7 +96,7 @@ LEGACY_2_4_0: Final[dict[ReportKind, str]] = {
     ReportKind.ROUTER_PAPER_RUN: "3042183e2e74b2249ab7eebe751979bbd677a7bd6a687be4659e60c19d37f681",
     ReportKind.GATE_CALIBRATION: "67d00214a3a68d54ad9de14230b098da6e425fcbb384c34db54b475d2cb8b80d",
     ReportKind.ROUTER_STOP: "b50a6aeb40bc0414eb9082639a6d5945dbabada2c728cb4d356e0577383541fc",
-    ReportKind.PAPER_DEVIATION: "d5681d611e79d3a262c2ce91798f8885272d91bfdd3221550ac0a9a3ecfc43d9",
+    ReportKind.PAPER_DEVIATION: "9b9977939e96efbe019543812f3dfe44fc1dfd8307545888aa85a0bc3cb9f431",
 }
 
 # ADR-0081 requires both original descriptive 1.0.0 paper-deviation reports to remain readable.
@@ -107,6 +108,19 @@ LEGACY_ADR_0081: Final[dict[ReportKind, tuple[str, ...]]] = {
         "a168f4f764b698ec9c7f46035a2d62f4b857d8d543855b732dabb65ac9d456a1",
     ),
     ReportKind.RETRO_AUDIT: ("05545674ea02dcb48a07e70ed591999a38c02cf6785623d2aa784076d38249e2",),
+}
+
+# ADR-0104: the paper-deviation reports written before the run binding (payload 2.0.0, scope 1.0.0:
+# scope-only, not comparable evidence) stay committed and readable (H6). Each is the report the
+# pre-ADR-0104 writer produced for the contract generation named by its key; the current writer
+# emits 2.1.0, so these are pinned by id only (``LEGACY`` pins the 2.1.0 file of each generation).
+LEGACY_ADR_0104: Final[dict[ReportKind, dict[str, str]]] = {
+    ReportKind.PAPER_DEVIATION: {
+        "2.1.0": "45d3d4383bfd73fff69b46f2231029b008cd1a0805dc93521e8f96448ffc3c30",
+        "2.2.0": "b9c4246c6492f47b8da5c289765009973ba3bff15b2fcfb7ddf3ca630602c442",
+        "2.4.0": "d5681d611e79d3a262c2ce91798f8885272d91bfdd3221550ac0a9a3ecfc43d9",
+        "2.5.0": "afc9341df73164ee15acf75f3b2bdf69e81bbe1a4eaca9a3b21d476b71f4b0cf",
+    },
 }
 
 #: Every legacy generation, by the contract version whose code wrote it.
@@ -121,7 +135,8 @@ LEGACY: Final[dict[str, dict[ReportKind, str]]] = {
 def legacy_ids(kind: ReportKind) -> set[str]:
     """The ids of every legacy readable fixture of ``kind`` (any generation)."""
     generation_ids = {ids[kind] for ids in LEGACY.values() if kind in ids}
-    return generation_ids | set(LEGACY_ADR_0081.get(kind, ()))
+    scope_only = set(LEGACY_ADR_0104.get(kind, {}).values())
+    return generation_ids | set(LEGACY_ADR_0081.get(kind, ())) | scope_only
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +165,11 @@ def fixture(kind: ReportKind) -> Fixture:
 def legacy_fixture(kind: ReportKind, version: str = "2.0.0") -> Fixture:
     """The legacy readable fixture of ``kind`` written by the ``version`` code (``LEGACY``)."""
     return _load(FIXTURES_ROOT / kind.value / f"{LEGACY[version][kind]}.json")
+
+
+def scope_only_fixture(kind: ReportKind, version: str) -> Fixture:
+    """The pre-ADR-0104 (scope-only) fixture of ``kind`` for the contract generation ``version``."""
+    return _load(FIXTURES_ROOT / kind.value / f"{LEGACY_ADR_0104[kind][version]}.json")
 
 
 def variant_fixture(kind: ReportKind, name: str) -> Fixture:

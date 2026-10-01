@@ -21,11 +21,13 @@ from apps.api import create_app
 from apps.api.store import ReportKind, ReportStore
 from tests.apps.report_fixtures import (
     LEGACY,
+    LEGACY_ADR_0104,
     VARIANTS,
     fixture,
     fixtures,
     legacy_fixture,
     legacy_ids,
+    scope_only_fixture,
     variant_fixture,
 )
 
@@ -144,7 +146,7 @@ def test_a_legacy_fixture_is_still_served(version: str, kind: ReportKind) -> Non
     old = legacy_fixture(kind, version)
     if kind in _NO_ENVELOPE:
         own_schema_versions = {
-            ReportKind.PAPER_DEVIATION: "2.0.0",
+            ReportKind.PAPER_DEVIATION: "2.1.0",
             ReportKind.GATE_CALIBRATION: "1.0.0",
         }
         if kind in own_schema_versions:
@@ -209,7 +211,9 @@ def test_event_statistics_fixture_binds_its_runs() -> None:
 def test_paper_deviation_fixtures_compare_every_mark() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.PAPER_DEVIATION)
-    assert len(envelopes) == 6  # current, both original descriptive reports, and versioned history
+    # current, both original descriptive reports, versioned history (2.1.0 run-bound and the
+    # pre-ADR-0104 scope-only 2.0.0 file of each generation)
+    assert len(envelopes) == 10
     runs = {run.id: run for run in store.list(ReportKind.ROUTER_PAPER_RUN)}
     for envelope in envelopes:
         payload = envelope.payload
@@ -232,6 +236,35 @@ def test_paper_deviation_fixtures_compare_every_mark() -> None:
     assert current == fixture(ReportKind.ROUTER_PAPER_RUN).id
     legacy = legacy_fixture(ReportKind.PAPER_DEVIATION, "2.1.0").payload["run_hash"]
     assert legacy == legacy_fixture(ReportKind.ROUTER_PAPER_RUN, "2.1.0").id
+
+
+def test_the_current_paper_deviation_fixture_is_run_bound() -> None:
+    """ADR-0104: the current writer emits payload 2.1.0 / scope 1.1.0 with a run binding."""
+    payload = fixture(ReportKind.PAPER_DEVIATION).payload
+    assert payload["schema_version"] == "2.1.0"
+    scope = payload["declared_scope"]
+    assert scope["scope_schema_version"] == "1.1.0"
+    assert scope["run_binding"]["reference_request_hash"] == payload["reference_request_hash"]
+    for version in (v for v, ids in LEGACY.items() if ReportKind.PAPER_DEVIATION in ids):
+        # every generation's new file is run-bound as well
+        assert legacy_fixture(ReportKind.PAPER_DEVIATION, version).payload["schema_version"] == (
+            "2.1.0"
+        )
+
+
+@pytest.mark.parametrize("version", list(LEGACY_ADR_0104[ReportKind.PAPER_DEVIATION]))
+def test_a_pre_adr_0104_scope_only_paper_deviation_is_still_served_as_it_was(
+    version: str,
+) -> None:
+    """H6 / ADR-0104 §4: scope-only 2.0.0 reports stay readable, unmigrated, without a binding."""
+    old = scope_only_fixture(ReportKind.PAPER_DEVIATION, version)
+    assert old.payload["schema_version"] == "2.0.0"
+    assert old.payload["declared_scope"]["scope_schema_version"] == "1.0.0"
+    assert "run_binding" not in old.payload["declared_scope"]
+    response = TestClient(create_app(reports_root=FIXTURES_ROOT)).get(
+        f"/reports/paper_deviation/{old.id}"
+    )
+    assert response.status_code == 200 and response.json()["payload"] == old.payload
 
 
 def test_degradation_check_fixture_names_its_rules_and_sources() -> None:
