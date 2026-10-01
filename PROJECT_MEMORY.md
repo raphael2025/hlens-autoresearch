@@ -150,6 +150,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Phase 0 基线：tag `phase-0-complete`
-- `main` ← `phase/1` 经 PR #20 整合（2026-10-01）：四项代码缺口收口；全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过）。见 `docs/reviews/2026-10-01-w1-gate-repair.md`
+- `main` ← `phase/1` 经 PR #20 / #21 整合（2026-10-01）：四项代码缺口与 E1 Canonical 窗口复用收口；全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过）。见 `docs/reviews/2026-10-01-w1-gate-repair.md`
 - 历史契约固定值的核对方式：`tests/contract_version_support.py::at_contract_version` 在新解释器里按记录时的契约版本重建；只有证明差异仅来自契约信封或已接受 ADR 的有意变化时才可重钉
 - 下一步：在与 `main` 一致的提交上跑 E1-CAP-1 正式矩阵；未合入 worktree 候选仍按模块计划逐项审阅

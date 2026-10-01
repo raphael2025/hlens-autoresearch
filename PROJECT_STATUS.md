@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24），**未验收** |
 | 当前子阶段 | 剩余四项主线代码缺口（E1 archive / Raw window 复用、DQ-10 v2 重放、P7 横截面执行接线）已收口；全仓门禁首次全绿（2026-10-01）。下一关键路径：在主线代码上测 E1-CAP-1。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
-| 代码基线 | `phase/1` 经 PR #20 整合入 `main`（2026-10-01）；PR #17–#19 此前已合入 |
+| 代码基线 | `phase/1` 经 PR #20、#21 整合入 `main`（2026-10-01）；PR #17–#19 此前已合入 |
 | 契约 | 2.5.0；current Schema 148 份 |
 | 验证状态 | **全仓门禁通过**（2026-10-01，整合前 `phase/1` 工作树）：pytest 9313 passed / 144 skipped / 0 failed；PostgreSQL 启用的数据库用例另行实跑并修复；ruff、format、mypy 全部通过。详见 [W1 门禁修复记录](docs/reviews/2026-10-01-w1-gate-repair.md)。E1-CAP-1 容量与各 Phase 验收仍未完成。 |
 | 最后更新时间 | 2026-10-01 |
@@ -59,7 +59,8 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 - ✅ 四项主线代码缺口全部收口（2026-10-01）：E1 归档 spool 复用（加固资源释放）、E1 Raw 窗口复用（新实现）、DQ-10 v2 重放（加固防止写出新 v2 manifest）、P7 横截面执行接线（加固拒绝直接引用）。
 - ✅ W1 全仓门禁首次全绿：修复首测暴露的约 250 个陈旧测试 / 夹具与 1 个真实缺陷（研究循环哈希记录含 float）；未删除断言、未放宽容差、未改动任何固定哈希值，逐项依据见 [W1 门禁修复记录](docs/reviews/2026-10-01-w1-gate-repair.md)。
-- ⏭️ 下一步：在主线代码上运行 E1-CAP-1 正式容量矩阵（32 MiB 门槛不变）。
+- ✅ E1-CAP-1 正式探针（`main@5c3b516`）暴露 replay / resume 的证明调查逐窗口两次 Canonical 扫描、每次遍历全部 manifest，耗时随 N 二次增长；新增并收口 E1-CANONICAL-WINDOW-REUSE（40k replay 198 s → 48 s），RSS 增长不变或略降。
+- ⏭️ 在新主线上重跑 E1-CAP-1 正式矩阵（32 MiB 门槛不变）；逐提交 read-back 仍遍历全部 manifest，写入路径时间仍超线性，若要增量化须先立 ADR。
 
 ## 5. 下一步
 
@@ -123,11 +124,11 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-10-01 | E1 Canonical 窗口复用 | replay / resume 调查不再逐窗口扫 Canonical（每单元一次 block spool + 一次 revision 索引）；修复 E1-CAP-1 测量中暴露的二次耗时 |
 | 2026-10-01 | phase/1 → main 整合（PR #20） | 四项代码缺口收口与 W1 修复进入主线 |
 | 2026-10-01 | W1 全仓门禁全绿 | pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过；修复研究循环哈希记录含 float 的真实缺陷 |
 | 2026-10-01 | 候选加固（`63d09a4`） | 非 frozen pin 及时释放 archive spool；v2 重放漂移不再写出新 manifest；直接引用横截面特征被编译期拒绝 |
 | 2026-10-01 | E1 Raw 窗口复用（`fe842b3`） | 每单元 Raw 至多一次窄读 + 一次全量 spool，不再逐窗口重扫；容量另测 |
-| 2026-10-01 | main E1-CAP-1 正式探针中断 | 100k verify_archive 后中断，未判定；见探针记录 |
 
 ## 10. 下一阶段进入条件
 

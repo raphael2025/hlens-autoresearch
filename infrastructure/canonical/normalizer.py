@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import Any, Final, cast, overload
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.ipc as pa_ipc  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
@@ -134,6 +135,9 @@ _POSITION_INT: Final = struct.Struct(">q")
 #: Rows per Arrow IPC batch in a unit's Raw spool. Catalog scan batches (up to 65,536 rows) are
 #: re-sliced on write so that one window read decodes only the few small batches it touches.
 _RAW_SPOOL_BATCH_ROWS: Final = 1024
+#: Revision ids per ``IN`` lookup of the committed-revision index (below SQLite's variable limit).
+_HELD_LOOKUP: Final = 512
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 # Named E1-CAP-1 parser/index profile a caller may pass explicitly as ``metadata_limits`` to take
 # the bounded double-pin read pass. It is never applied implicitly: its caps cover a table's whole
 # snapshot array (there is no snapshot expiry), so a default would break normalization once a
@@ -424,10 +428,18 @@ class _RawWindowSpool:
     access does not pin every touched Arrow page in the process working set.
     """
 
-    def __init__(self, scratch_directory: Path, schema: pa.Schema, position_column: str) -> None:
+    def __init__(
+        self,
+        scratch_directory: Path,
+        schema: pa.Schema,
+        position_column: str,
+        *,
+        label: str = "Raw position",
+    ) -> None:
         self._temporary = tempfile.TemporaryDirectory(
             prefix="hlens-raw-windows-", dir=str(scratch_directory)
         )
+        self._label = label
         self._arrow_path = os.path.join(self._temporary.name, "raw.arrow")
         self._database_path = os.path.join(self._temporary.name, "rows.sqlite3")
         self._closed = False
@@ -462,13 +474,14 @@ class _RawWindowSpool:
             raise RuntimeError("raw window spool is finalized")
         if not record_batch.schema.equals(self._schema, check_metadata=False):
             raise CatalogIntegrityError(
-                f"a Raw batch does not have the registered schema: {record_batch.schema}"
+                f"a batch of {self._label} rows does not have the registered schema: "
+                f"{record_batch.schema}"
             )
         positions = record_batch.column(
             record_batch.schema.get_field_index(self._position_column)
         ).to_pylist()
         if any(position is None for position in positions):
-            raise CatalogIntegrityError("Raw position is null")
+            raise CatalogIntegrityError(f"{self._label} is null")
         for start in range(0, record_batch.num_rows, _RAW_SPOOL_BATCH_ROWS):
             self._writer.write_batch(record_batch.slice(start, _RAW_SPOOL_BATCH_ROWS))
             self._connection.executemany(
@@ -496,6 +509,23 @@ class _RawWindowSpool:
             self.close()
             raise
 
+    def select(self, low: int, high: int, *, limit: int) -> list[Mapping[str, Any]]:
+        """At most ``limit`` rows at positions ``low … high``, in spooled (scan) order."""
+        if self._closed or not self._finalized or self._connection is None:
+            raise RuntimeError("raw window spool is not readable")
+        refs = self._connection.execute(
+            "SELECT batch_index, row_index FROM raw_rows "
+            "WHERE position BETWEEN ? AND ? ORDER BY batch_index, row_index LIMIT ?",
+            (low, high, limit),
+        ).fetchall()
+        assert self._reader is not None
+        rows: list[Mapping[str, Any]] = []
+        for batch_index, grouped in groupby(refs, key=lambda item: item[0]):
+            row_indexes = [row_index for _, row_index in grouped]
+            selected = self._reader.get_batch(batch_index).take(pa.array(row_indexes))
+            rows.extend(selected.to_pylist())
+        return rows
+
     def window(
         self,
         low: int,
@@ -506,29 +536,17 @@ class _RawWindowSpool:
         display_low: int,
         display_high: int,
     ) -> list[Mapping[str, Any]]:
-        if self._closed or not self._finalized or self._connection is None:
-            raise RuntimeError("raw window spool is not readable")
-        refs = self._connection.execute(
-            "SELECT batch_index, row_index FROM raw_rows "
-            "WHERE position BETWEEN ? AND ? ORDER BY batch_index, row_index LIMIT ?",
-            (low, high, expected_rows + 1),
-        ).fetchall()
-        if len(refs) > expected_rows:
+        rows = self.select(low, high, limit=expected_rows + 1)
+        if len(rows) > expected_rows:
             raise CatalogIntegrityError(
                 f"{channel.element.table}: Raw window {display_low}..{display_high} contains "
                 "extra rows"
             )
-        if len(refs) != expected_rows:
+        if len(rows) != expected_rows:
             raise CatalogIntegrityError(
                 f"{channel.element.table}: Raw window {display_low}..{display_high} has "
-                f"{len(refs)} rows; expected {expected_rows}"
+                f"{len(rows)} rows; expected {expected_rows}"
             )
-        assert self._reader is not None
-        rows: list[Mapping[str, Any]] = []
-        for batch_index, grouped in groupby(refs, key=lambda item: item[0]):
-            row_indexes = [row_index for _, row_index in grouped]
-            selected = self._reader.get_batch(batch_index).take(pa.array(row_indexes))
-            rows.extend(selected.to_pylist())
         return sorted(rows, key=lambda row: (rules.position_of(channel, row), row["revision_id"]))
 
     def close(self) -> None:
@@ -682,6 +700,274 @@ class _RawWindows:
         spool, self._spool = self._spool, None
         if spool is not None:
             spool.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _micros(value: datetime) -> int:
+    """A UTC timestamp as integer microseconds since the epoch (exact for Canonical times)."""
+    return (value - _EPOCH) // timedelta(microseconds=1)
+
+
+class _HeldRevisions:
+    """``(revision_id, time)`` of one symbol's Canonical rows over a time span, on SQLite scratch.
+
+    Answers ``_check_unique``'s question — how many rows of the symbol within a window's time range
+    hold each planned revision id — for every window from one bounded scan.
+    """
+
+    def __init__(self, scratch_directory: Path) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="hlens-held-revisions-", dir=str(scratch_directory)
+        )
+        self._closed = False
+        self._connection: sqlite3.Connection | None = None
+        try:
+            self._connection = sqlite3.connect(
+                os.path.join(self._temporary.name, "revisions.sqlite3")
+            )
+            self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
+            self._connection.execute("PRAGMA temp_store = FILE")
+            self._connection.execute("PRAGMA journal_mode = OFF")
+            self._connection.execute("PRAGMA synchronous = OFF")
+            self._connection.execute(
+                "CREATE TABLE held (revision_id TEXT NOT NULL, t INTEGER NOT NULL)"
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def add(self, pairs: Iterable[tuple[str, int]]) -> None:
+        if self._closed or self._connection is None:
+            raise RuntimeError("held revisions are closed")
+        self._connection.executemany("INSERT INTO held(revision_id, t) VALUES (?, ?)", pairs)
+
+    def finalize(self) -> None:
+        if self._closed or self._connection is None:
+            raise RuntimeError("held revisions are closed")
+        self._connection.execute("CREATE INDEX held_revision ON held(revision_id, t)")
+        self._connection.commit()
+
+    def counts(self, revision_ids: Sequence[str], low: int, high: int) -> dict[str, int]:
+        if self._closed or self._connection is None:
+            raise RuntimeError("held revisions are closed")
+        found: dict[str, int] = {}
+        for start in range(0, len(revision_ids), _HELD_LOOKUP):
+            chunk = revision_ids[start : start + _HELD_LOOKUP]
+            marks = ",".join("?" * len(chunk))
+            for revision_id, count in self._connection.execute(
+                f"SELECT revision_id, COUNT(*) FROM held WHERE revision_id IN ({marks}) "
+                "AND t BETWEEN ? AND ? GROUP BY revision_id",
+                (*chunk, low, high),
+            ):
+                found[revision_id] = found.get(revision_id, 0) + count
+        return found
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        connection, self._connection = self._connection, None
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        self._temporary.cleanup()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _CommittedWindows:
+    """A survey's Canonical reads, window by window (E1-CANONICAL-WINDOW-REUSE).
+
+    The first window keeps the two filtered reads of ``_check_committed_window`` and
+    ``_check_unique``, so a one-window unit reads only that window. From the second window on, the
+    unit's committed block slice is spooled once (one pinned ``arrival_seq`` range scan into a
+    ``_RawWindowSpool``) and the symbol's ``(revision_id, time)`` over the block's time span is
+    indexed once (``_HeldRevisions``); every window is then checked from those, instead of two
+    catalog scans per window. Rows come back in scan order and every check and error is the one
+    the per-window reads make: ``_check_unique`` runs only after the window's committed rows were
+    proven equal to its planned rows, so each window's time range lies inside the block's span.
+    """
+
+    def __init__(
+        self,
+        normalizer: CanonicalNormalizer,
+        scratch_directory: Path,
+        channel: rules.RawChannel,
+        base: int,
+        first: int,
+        last: int,
+    ) -> None:
+        self._normalizer = normalizer
+        self._scratch_directory = scratch_directory
+        self._channel = channel
+        self._base = base
+        self._first = first
+        self._last = last
+        self._window_scanned = False
+        self._unique_scanned = False
+        self._block: _RawWindowSpool | None = None
+        self._bounds: tuple[datetime, datetime] | None = None
+        self._held: _HeldRevisions | None = None
+        self._held_symbol: str | None = None
+        self._closed = False
+
+    @property
+    def spooled(self) -> bool:
+        return self._block is not None
+
+    def check_window(
+        self, pin: _Pin, low: int, high: int, planned: Sequence[Mapping[str, Any]]
+    ) -> None:
+        if self._closed:
+            raise RuntimeError("committed windows are closed")
+        if self._block is None and not self._window_scanned:
+            self._window_scanned = True
+            self._normalizer._check_committed_window(
+                pin, self._channel, self._base, low, high, planned
+            )
+            return
+        block = self._spool_block(pin)
+        first, last = self._base + low, self._base + high
+        rows = block.select(first, last, limit=len(planned) + 1)
+        if len(rows) > len(planned):
+            raise CatalogIntegrityError(
+                f"{self._channel.canonical.table}: arrival_seq window {first}..{last} has extra "
+                "rows"
+            )
+        _exact(self._channel, rows, planned, committed=True)
+
+    def check_unique(self, pin: _Pin, planned: Sequence[Mapping[str, Any]]) -> None:
+        if self._closed:
+            raise RuntimeError("committed windows are closed")
+        if self._held is None and not self._unique_scanned:
+            self._unique_scanned = True
+            self._normalizer._check_unique(pin.catalog, self._channel, planned, None)
+            return
+        symbol = planned[0]["symbol"]
+        held = self._held_index(pin, symbol)
+        if held is None or self._held_symbol != symbol:
+            self._normalizer._check_unique(pin.catalog, self._channel, planned, None)
+            return
+        column = _time_column(self._channel)
+        times = [_micros(row[column]) for row in planned]
+        counts = held.counts([row["revision_id"] for row in planned], min(times), max(times))
+        for row in planned:
+            if counts.get(row["revision_id"], 0) != 1:
+                raise CatalogIntegrityError(
+                    f"{self._channel.canonical.table}: revision_id {row['revision_id']} is not "
+                    "held by exactly one row"
+                )
+
+    def _spool_block(self, pin: _Pin) -> _RawWindowSpool:
+        if self._block is not None:
+            return self._block
+        definition = self._channel.canonical
+        column = _time_column(self._channel)
+        spool = _RawWindowSpool(
+            self._scratch_directory,
+            definition.arrow_schema,
+            "arrival_seq",
+            label="Canonical arrival_seq",
+        )
+        bounds: tuple[datetime, datetime] | None = None
+        try:
+            reader = pin.catalog.scan_column_batches(
+                definition.table,
+                columns=tuple(field.name for field in definition.arrow_schema),
+                row_filter=_between(
+                    "arrival_seq", self._base + self._first, self._base + self._last
+                ),
+            )
+            try:
+                for record_batch in reader:
+                    extremes = pc.min_max(
+                        record_batch.column(record_batch.schema.get_field_index(column))
+                    ).as_py()
+                    if extremes["min"] is not None:
+                        low, high = extremes["min"], extremes["max"]
+                        bounds = (
+                            (low, high)
+                            if bounds is None
+                            else (min(bounds[0], low), max(bounds[1], high))
+                        )
+                    spool.add_batch(record_batch)
+            except BaseException:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                raise
+            else:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    close()
+            spool.finalize()
+        except BaseException:
+            spool.close()
+            raise
+        self._block, self._bounds = spool, bounds
+        return spool
+
+    def _held_index(self, pin: _Pin, symbol: str) -> _HeldRevisions | None:
+        if self._held is not None:
+            return self._held
+        self._spool_block(pin)
+        if self._bounds is None:
+            return None
+        definition = self._channel.canonical
+        column = _time_column(self._channel)
+        held = _HeldRevisions(self._scratch_directory)
+        try:
+            with _scan_rows(
+                pin.catalog,
+                definition.table,
+                columns=("revision_id", column),
+                row_filter=And(
+                    _equals("symbol", symbol),
+                    _between(column, self._bounds[0], self._bounds[1]),
+                ),
+            ) as found:
+                pending: list[tuple[str, int]] = []
+                for item in found:
+                    if item[column] is None:
+                        continue
+                    pending.append((item["revision_id"], _micros(item[column])))
+                    if len(pending) >= _POSITION_INSERT_ROWS:
+                        held.add(pending)
+                        pending = []
+                held.add(pending)
+            held.finalize()
+        except BaseException:
+            held.close()
+            raise
+        self._held, self._held_symbol = held, symbol
+        return held
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        block, self._block = self._block, None
+        held, self._held = self._held, None
+        try:
+            if block is not None:
+                block.close()
+        finally:
+            if held is not None:
+                held.close()
 
     def __del__(self) -> None:
         try:
@@ -1743,30 +2029,43 @@ class CanonicalNormalizer:
         kept: list[list[Mapping[str, Any]]] = []
         digest = hashlib.sha256()
         covered = min(plan.count * plan.chunk, unit_rows)
-        for index, snapshot in self._plan_snapshots(pin, channel, source_revision_id, plan, None):
-            low, high, end = _batch_window(positions, plan.chunk, index)
-            raw = self._raw_window(
-                pin,
-                channel,
-                low,
-                high,
-                expected_rows=end - index * plan.chunk,
-                raw_rows=raw_rows,
-            )
-            planned = self._planned(channel, raw, base, ready, version)
-            check_batch_snapshot(
-                channel.canonical,
-                unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
-                snapshot,
-                planned,
-            )
-            self._check_committed_window(pin, channel, base, low, high, planned)
-            if not keep_rows:
-                # A replay re-checks what its first run read back (E2 of review E).
-                self._check_unique(pin.catalog, channel, planned, None)
-            digest.update(_fold(index, snapshot))
-            if keep_rows:
-                kept.append(planned)
+        windows = _CommittedWindows(
+            self,
+            self._scratch_directory,
+            channel,
+            base,
+            positions[0],
+            positions[covered - 1],  # the committed batches' slice, not the whole unit
+        )
+        try:
+            for index, snapshot in self._plan_snapshots(
+                pin, channel, source_revision_id, plan, None
+            ):
+                low, high, end = _batch_window(positions, plan.chunk, index)
+                raw = self._raw_window(
+                    pin,
+                    channel,
+                    low,
+                    high,
+                    expected_rows=end - index * plan.chunk,
+                    raw_rows=raw_rows,
+                )
+                planned = self._planned(channel, raw, base, ready, version)
+                check_batch_snapshot(
+                    channel.canonical,
+                    unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
+                    snapshot,
+                    planned,
+                )
+                windows.check_window(pin, low, high, planned)
+                if not keep_rows:
+                    # A replay re-checks what its first run read back (E2 of review E).
+                    windows.check_unique(pin, planned)
+                digest.update(_fold(index, snapshot))
+                if keep_rows:
+                    kept.append(planned)
+        finally:
+            windows.close()
         if not _same_index_numbers(
             committed.seqs,
             committed.seq_count,
