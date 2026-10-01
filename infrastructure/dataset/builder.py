@@ -383,7 +383,7 @@ class DatasetBuilder:
         # ADR-0077 DQ-10: the materializing v2 path is retained only to replay a v2
         # manifest that already exists. In particular, do not commit a v2 selection batch
         # and then discover that its manifest would be a new v2 write.
-        self._require_existing_v2_manifest(selection.selection_id)
+        persisted_hash = self._require_existing_v2_manifest(selection.selection_id)
         if not selection.rows:
             raise DatasetEmpty(
                 f"{data_type} [{start.isoformat()}, {end.isoformat()}) selects nothing for the "
@@ -422,17 +422,29 @@ class DatasetBuilder:
                 manifest = _manifest_of(selection, dataset())
         # ``select`` derived the selection in this very call and ``_materialize`` read its rows
         # back at the snapshot: the manifest is checked against it rather than re-selected.
+        if manifest.content_hash() != persisted_hash:
+            # DQ-10: a replay must reproduce the persisted v2 manifest; a re-derivation that
+            # differs would otherwise be committed as a new v2 manifest row.
+            raise DatasetSpecError(
+                f"v2 selection {selection.selection_id} re-derives a manifest other than its "
+                f"persisted {persisted_hash}; ADR-0077 DQ-10 forbids writing a new v2 manifest"
+            )
         verifier = _JustSelected(self._adapter, self._table, selection)
         persisted = ManifestStore(self._adapter, verifier).persist(manifest)
         return DatasetBuilt(selection, manifest, commit, persisted)
 
-    def _require_existing_v2_manifest(self, selection_id: str) -> None:
+    def _require_existing_v2_manifest(self, selection_id: str) -> str:
+        """The content hash of the one persisted v2 manifest of ``selection_id`` (DQ-10)."""
         snapshots = snapshots_of_batches(self._adapter, self._table.table, (selection_id,))
         selection_snapshots = {item.snapshot_id for item in snapshots[selection_id]}
         if not selection_snapshots:
             raise DatasetSpecError(
                 "creating a new v2 Research Dataset is disabled by ADR-0077 DQ-10; "
                 "use DatasetBuildPipeline to create a v3 dataset"
+            )
+        if len(selection_snapshots) != 1:
+            raise CatalogIntegrityError(
+                f"v2 selection {selection_id} is committed in {len(selection_snapshots)} snapshots"
             )
         rows: list[dict[str, Any]] = []
         for snapshot_id in selection_snapshots:
@@ -441,7 +453,8 @@ class DatasetBuilder:
                     DATASET_MANIFESTS.table,
                     columns=("manifest_content_hash", "dataset_snapshot_id"),
                     row_filter=EqualTo(  # type: ignore[call-arg]
-                        "dataset_snapshot_id", snapshot_id  # type: ignore[arg-type]
+                        "dataset_snapshot_id",  # type: ignore[arg-type]
+                        snapshot_id,  # type: ignore[arg-type]
                     ),
                 ).to_pylist()
             )
@@ -463,6 +476,8 @@ class DatasetBuilder:
             raise CatalogIntegrityError(
                 f"v2 manifest row for selection {selection_id} is missing or mismatched"
             )
+        persisted_hash: str = rows[0]["manifest_content_hash"]
+        return persisted_hash
 
     def manifests(self) -> ManifestStore:
         """The ``ManifestStore`` whose manifests this builder verifies (persist and load)."""

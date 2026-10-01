@@ -625,7 +625,20 @@ def compile_lowered_plan(
                 input_specs.append(lowered[item.node_id])
                 input_nodes.append(item.node_id)
             else:
-                input_specs.append(direct[(node.node_id, index)])
+                reference = direct[(node.node_id, index)]
+                if _declared_identity(reference)[0] in {
+                    RANK_CS_DEFINITION,
+                    QUANTILE_CS_DEFINITION,
+                }:
+                    # A directly referenced cross-sectional feature is the same batch output as
+                    # a cross-sectional plan node: no single-series consumer may read it.
+                    raise PlanCompileRefused(
+                        "cross_sectional_output_consumption_unsupported",
+                        node.node_id,
+                        f"input {index} references a cross-sectional feature, which cannot be "
+                        "wired as a single-series plan input",
+                    )
+                input_specs.append(reference)
                 input_nodes.append(None)
         nodes.append(
             CompiledNode(

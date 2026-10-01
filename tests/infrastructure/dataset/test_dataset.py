@@ -8,6 +8,7 @@ quality reporters, on one SQLite catalog (PostgreSQL variant in ``test_dataset_p
 from __future__ import annotations
 
 import json
+import sys
 from datetime import timedelta
 from typing import Any, Final
 
@@ -61,9 +62,7 @@ def _ready(w: World, *, statuses: Any = ds.TRADING, data: str = "trades") -> Non
 
 def _build(w: World, spec: Any = None, data_type: str = "agg_trades", **kwargs: Any) -> Any:
     window = kwargs.pop("window", (START, END))
-    return w.historical_v2_build(
-        FIRST_SLICE_UNIVERSE, spec or w.spec(**kwargs), data_type, window
-    )
+    return w.historical_v2_build(FIRST_SLICE_UNIVERSE, spec or w.spec(**kwargs), data_type, window)
 
 
 # =========================================================================================
@@ -161,6 +160,58 @@ def test_a_rebuild_is_bit_identical_and_replays(w: World) -> None:
     # The same inputs select the same rows without writing anything.
     again = w.builder().select(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
     assert again.rows == first.selection.rows
+
+
+def test_a_v2_replay_that_re_derives_another_manifest_writes_nothing(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready(w)
+    spec = w.spec()
+    first = _build(w, spec)
+    derive = b._manifest_of
+
+    def drifted(*args: Any, **kwargs: Any) -> Any:
+        manifest = derive(*args, **kwargs)
+        # Only build()'s own re-derivation drifts; loading the persisted manifest still verifies.
+        if sys._getframe(1).f_code.co_name != "build":
+            return manifest
+        return manifest.model_copy(
+            update={
+                "dataset": manifest.dataset.model_copy(
+                    update={"time_range_end": END + timedelta(days=1)}
+                )
+            }
+        )
+
+    monkeypatch.setattr(b, "_manifest_of", drifted)
+    with pytest.raises(DatasetSpecError, match="forbids writing a new v2 manifest"):
+        w.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
+    assert [row["manifest_content_hash"] for row in w.h.rows(MANIFESTS)] == [
+        first.manifest.content_hash()
+    ]
+
+
+def test_a_v2_selection_committed_in_two_snapshots_is_refused(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready(w)
+    spec = w.spec()
+    first = _build(w, spec)
+    found = b.snapshots_of_batches
+
+    def twice(adapter: Any, table: str, ids: Any) -> Any:
+        snapshots = found(adapter, table, ids)
+        # The same batch id seen in a second (forged) snapshot of the dataset table.
+        return {
+            key: [*items, *(item.model_copy(update={"snapshot_id": "1"}) for item in items)]
+            for key, items in snapshots.items()
+        }
+
+    monkeypatch.setattr(b, "snapshots_of_batches", twice)
+    with pytest.raises(CatalogIntegrityError, match="is committed in 2 snapshots"):
+        w.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
+    assert len(w.h.rows(MANIFESTS)) == 1
+    assert first.manifest.content_hash() == w.h.rows(MANIFESTS)[0]["manifest_content_hash"]
 
 
 def test_later_data_never_changes_an_earlier_manifest(w: World) -> None:
@@ -332,9 +383,7 @@ def test_empty_selection_is_refused(w: World) -> None:
     w.trades()
     w.report()
     empty_window = (utc(2023, 11, 14, 1), utc(2023, 11, 14, 2))
-    selection = w.builder().select(
-        FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", *empty_window
-    )
+    selection = w.builder().select(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", *empty_window)
     assert selection.rows == ()
     with pytest.raises(DatasetSpecError, match="disabled by ADR-0077 DQ-10"):
         w.builder().build(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", *empty_window)

@@ -941,7 +941,11 @@ class CanonicalNormalizer:
         last_error: Exception | None = None
         for _ in range(_ATTEMPTS):
             pin = self._pin(channel, source_revision_id)
-            survey = self._survey(pin, channel, source_revision_id, keep_rows=False)
+            try:
+                survey = self._survey(pin, channel, source_revision_id, keep_rows=False)
+            except BaseException:
+                self._release_pin(pin)
+                raise
             try:
                 if survey.unit_rows == 0:
                     return CanonicalUnitNormalized(
@@ -1000,6 +1004,7 @@ class CanonicalNormalizer:
                     survey.positions.close()
                 if survey.raw_rows is not None:
                     survey.raw_rows.close()
+                self._release_pin(pin)
         raise CanonicalNormalizeConflict(
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
         ) from last_error
@@ -1038,7 +1043,11 @@ class CanonicalNormalizer:
                 raise CanonicalNormalizeError("empty result has inconsistent summary fields")
 
         pin = self._pin(channel, result.source_revision_id)
-        survey = self._survey(pin, channel, result.source_revision_id, keep_rows=False)
+        try:
+            survey = self._survey(pin, channel, result.source_revision_id, keep_rows=False)
+        except BaseException:
+            self._release_pin(pin)
+            raise
         try:
             if result.revision_count > 0 and survey.plan is not None:
                 _require_complete(channel, result.source_revision_id, survey.plan, survey.unit_rows)
@@ -1092,6 +1101,7 @@ class CanonicalNormalizer:
                 survey.positions.close()
             if survey.raw_rows is not None:
                 survey.raw_rows.close()
+            self._release_pin(pin)
 
     def verify_unit(
         self,
@@ -1121,7 +1131,11 @@ class CanonicalNormalizer:
         channel = self._channel(raw_table, source_revision_id)
         pin = self._pin(channel, source_revision_id)
         if arrival_seqs is None:
-            survey = self._survey(pin, channel, source_revision_id, keep_rows=True)
+            try:
+                survey = self._survey(pin, channel, source_revision_id, keep_rows=True)
+            except BaseException:
+                self._release_pin(pin)
+                raise
             try:
                 _require_complete(channel, source_revision_id, survey.plan, survey.unit_rows)
                 return survey.committed_rows
@@ -1130,6 +1144,7 @@ class CanonicalNormalizer:
                     survey.positions.close()
                 if survey.raw_rows is not None:
                     survey.raw_rows.close()
+                self._release_pin(pin)
         # A caller may transfer a built-in set's ownership for this read-only proof path. Do not
         # copy it: selector consumes its per-unit set before calling us, and verification only
         # iterates these values. General iterables retain the historical frozen snapshot.
@@ -1207,7 +1222,11 @@ class CanonicalNormalizer:
         run_limits: RunLimits | None = None,
     ) -> None:
         """Private sink form shared by the tuple API and bounded selector staging."""
-        facts = self._unit_facts(pin, channel, source_revision_id)
+        try:
+            facts = self._unit_facts(pin, channel, source_revision_id)
+        except BaseException:
+            self._release_pin(pin)
+            raise
         try:
             if facts.plan is None or facts.base is None or facts.ready is None:
                 return
@@ -1331,6 +1350,7 @@ class CanonicalNormalizer:
             if not self._frozen:
                 facts.positions.close()
                 facts.raw_rows.close()
+                self._release_pin(pin)
 
     def _plan_snapshots_for_run(
         self,
@@ -1496,6 +1516,14 @@ class CanonicalNormalizer:
         if not isinstance(source_revision_id, str) or not source_revision_id:
             raise CanonicalNormalizeError("source_revision_id must be a non-empty string")
         return channel
+
+    def _release_pin(self, pin: _Pin) -> None:
+        """Close a per-call pin's verifier (and its retained archive spool) when it is not cached.
+
+        An immutable-view normalizer keeps its pins for reuse and closes them in ``close``.
+        """
+        if not self._frozen:
+            pin.verifier.close()
 
     def _pin(self, channel: rules.RawChannel, source_revision_id: str) -> _Pin:
         """Heads read twice and equal: at one instant between, all three held them.

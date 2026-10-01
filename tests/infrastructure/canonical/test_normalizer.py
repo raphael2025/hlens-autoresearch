@@ -1363,6 +1363,45 @@ def test_raw_windows_release_the_spool_when_the_unit_scan_fails(
         windows.close()
 
 
+def test_per_call_pins_close_their_verifiers_on_success_and_failure(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items = ss.agg_items(5, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    opened: list[Any] = []
+    closed: list[Any] = []
+
+    class Tracked(nz.PersistedRowVerifier):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            opened.append(self)
+
+        def close(self) -> None:
+            closed.append(self)
+            super().close()
+
+    monkeypatch.setattr(nz, "PersistedRowVerifier", Tracked)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    out = n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    list(n.iter_revision_ids(out))
+    n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={1})
+    assert opened and {id(v) for v in opened} == {id(v) for v in closed}
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("survey failed")
+
+    monkeypatch.setattr(nz.CanonicalNormalizer, "_survey", fail)
+    monkeypatch.setattr(nz.CanonicalNormalizer, "_unit_facts", fail)
+    with pytest.raises(OSError, match="survey failed"):
+        n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    with pytest.raises(OSError, match="survey failed"):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    with pytest.raises(OSError, match="survey failed"):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={1})
+    assert len(opened) > 4 and {id(v) for v in opened} == {id(v) for v in closed}
+
+
 def test_raw_window_spool_rejects_null_positions_and_releases_scratch(tmp_path: Path) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
