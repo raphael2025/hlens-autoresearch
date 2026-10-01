@@ -211,3 +211,14 @@ def test_only_a_degradation_check_and_its_monitor_are_written(tmp_path: Path) ->
             recent=RECENT,
             window=WINDOW,
         )
+
+
+def test_the_api_dto_registers_the_current_authority_provenance_format() -> None:
+    """``apps/api/report_dto.py`` restates the ADR-0098 provenance format and anchor values (apps/
+    never imports research/); this keeps the restatement in step with the writer's constants."""
+    from apps.api import report_dto
+    from research.operations.authority import ANCHOR_ABSENT, ANCHOR_PRESENT, AUTHORITY_FORMAT
+
+    assert AUTHORITY_FORMAT in report_dto.DEGRADATION_AUTHORITY_FORMATS
+    assert AUTHORITY_FORMAT.startswith(report_dto.DEGRADATION_AUTHORITY_FORMAT_PREFIX)
+    assert {ANCHOR_PRESENT, ANCHOR_ABSENT} == report_dto._AUTHORITY_ANCHORS
