@@ -1584,6 +1584,65 @@ def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> 
     assert clock.calls == 0 and h.rows(c.TRADES) == []
 
 
+def test_a_replay_reads_the_committed_block_once_after_its_first_window(h: RestHarness) -> None:
+    """E1-CANONICAL-WINDOW-REUSE: the first (newest) window keeps its two filtered Canonical reads;
+    the block slice and the symbol's (revision_id, time) span are then read once for the rest."""
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    columns: list[tuple[str, ...]] = []
+    log = _ScanLog(
+        h.adapter,
+        hook=lambda table, kwargs: (
+            columns.append(tuple(kwargs["columns"])) if table == c.TRADES.table else None
+        ),
+    )
+    scratch = h.canonical_scratch_directory
+    before = set(scratch.iterdir())
+    replay = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=2)
+    out = replay.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert out.replayed_batch_count == out.batch_count == 4
+    wide = len(c.TRADES.arrow_schema)
+    trades = [rows for table, _, rows in log.scans if table == c.TRADES.table]
+    full = [rows for cols, rows in zip(columns, trades, strict=True) if len(cols) == wide]
+    # one 1-row window read (batch 3), then one 7-row block read for batches 2, 1, 0
+    assert full == [1, 7]
+    assert columns.count(("revision_id",)) == 1  # batch 3's own uniqueness read
+    assert columns.count(("revision_id", "event_time")) == 1  # the indexed span, once
+    replay.close()
+    assert set(scratch.iterdir()) == before
+
+
+@pytest.mark.parametrize("index", [6, 1], ids=["first-checked-window", "spooled-window"])
+def test_a_replay_refuses_a_copy_in_any_window(h: RestHarness, index: int) -> None:
+    """A copy of a committed row is refused whether its window is read directly or from the
+    spooled block / indexed span (batches are checked newest first)."""
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    row = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])[index]
+    copy = dict(row, arrival_seq=row["arrival_seq"] + 9 * c.STRIDE, lineage_source_revision_id="x")
+    h.forge_rows(c.TRADES, [copy], "copy")
+    with pytest.raises(CatalogIntegrityError, match="not held by exactly one row"):
+        n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+
+
+@pytest.mark.parametrize("index", [6, 1], ids=["first-checked-window", "spooled-window"])
+def test_a_replay_refuses_a_changed_row_in_any_window(h: RestHarness, index: int) -> None:
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    row = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])[index]
+    h.delete_rows(c.TRADES, EqualTo("revision_id", row["revision_id"]))  # type: ignore[call-arg, arg-type]
+    h.forge_rows(c.TRADES, [dict(row, price=row["price"] + 1)], "changed")
+    with pytest.raises(CatalogIntegrityError, match="disagrees with its re-normalized row"):
+        n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+
+
 def test_a_replay_rechecks_revision_id_uniqueness(h: RestHarness) -> None:
     """Review E-2: an exact copy of a committed row (another block, same time) is refused on
     replay, as on the first run's read-back."""
