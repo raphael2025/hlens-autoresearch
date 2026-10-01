@@ -142,6 +142,29 @@ def test_apps_do_not_import_research_plane() -> None:
         assert not leaked, f"{path.relative_to(REPO)} 违反 Research/Application 平面边界"
 
 
+def test_lifecycle_writer_cli_is_not_imported_by_loop_operator_or_apps() -> None:
+    """ADR-0105 §2 / ADR-0098 §1：Lifecycle Registry 的写入端 `lifecycle_cli` 只由显式调用方使用；
+    research loop、operator（`research/loop/`）与 apps（含 API）的源码都不得 import 它。
+    静态检查源码（含相对导入、`from infrastructure.registry import lifecycle_cli`）。"""
+    writer = "infrastructure.registry.lifecycle_cli"
+    files = _python_files("research/loop", "apps")
+    assert files, "research/loop 或 apps 不存在"
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        leaked = {
+            module
+            for module in _imported_modules(path)
+            if module == writer or module.startswith(f"{writer}.")
+        }
+        for node in ast.walk(tree):  # `from infrastructure.registry import lifecycle_cli`
+            if isinstance(node, ast.ImportFrom) and node.level == 0:
+                if node.module == "infrastructure.registry" and any(
+                    alias.name == "lifecycle_cli" for alias in node.names
+                ):
+                    leaked.add(f"{node.module}.lifecycle_cli")
+        assert not leaked, f"{path.relative_to(REPO)} 导入了 Lifecycle 写入端：{sorted(leaked)}"
+
+
 #: 网络、交易所与凭据相关的库：执行服务在本构建中只有进程内模拟场所（ADR-0046 红线）。
 FORBIDDEN_IN_EXECUTION = {
     "research",
