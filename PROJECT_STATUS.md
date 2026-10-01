@@ -13,7 +13,7 @@
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
 | 代码基线 | `main` = `b5f80fe`（PR #19，2026-10-01 合并）；PR #17–#19 已进入主线。工作分支上的改动不计为主线完成 |
 | 契约 | 2.5.0；current Schema 148 份 |
-| 验证状态 | 最新主线未运行全仓门禁。`phase/1` 当前 Phase 1 infrastructure 选择集为 2298 passed / 88 skipped（855.34s）；受影响策略回归为 257 passed / 1 skipped / 1 failed。唯一失败的旧 B67 golden hash 在原始提交 `47446f4` 上精确复现，确认预先存在。P7 横截面编译 / feature provider 专项为 41 passed。Ruff check / format 通过，3 个受影响生产模块 mypy 通过。E1-CAP-1（32 MiB 容量门）未测量，Phase 未验收。 |
+| 验证状态 | 最新主线未运行全仓门禁。`phase/1` 当前 Phase 1 infrastructure 选择集为 2298 passed / 88 skipped（855.34s）；受影响策略回归为 257 passed / 1 skipped / 1 failed。唯一失败的旧 B67 golden hash 在原始提交 `47446f4` 上精确复现，确认预先存在。P7 横截面编译 / binding / lowering / provider 专项为 105 passed。Ruff check / format 通过，3 个受影响生产模块 mypy 通过。E1-CAP-1（32 MiB 容量门）未测量，Phase 未验收。 |
 | 最后更新时间 | 2026-10-01 |
 
 Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（ADR-0020），契约 2.0.0 随之发布，此后破坏性契约变化必须升 major 并走 ADR。

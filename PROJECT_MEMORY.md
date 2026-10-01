@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 恢复点：代码基线仍为 `main@b5f80fe`（PR #17–#19 已合入）；本地回归修复快照已提交为 `3975da3`，分支 `phase/1` 继续承载未合入的 P0.5、P1 Dataset DQ-10 与 P7-CS-EXEC 候选。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；策略回归为 257 passed / 1 skipped / 1 failed，唯一失败的旧 B67 golden hash 在改动前 `47446f4` 精确复现；P7 横截面专项为 41 passed。候选不计为主线完成，完整 W1、E1-CAP-1 / DQ-9 仍未完成，Phase 1 未验收。当前唯一代码缺口清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
+> 2026-10-01 恢复点：代码基线仍为 `main@b5f80fe`（PR #17–#19 已合入）；本地回归修复快照已提交为 `3975da3`，分支 `phase/1` 继续承载未合入的 P0.5、P1 Dataset DQ-10 与 P7-CS-EXEC 候选。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；策略回归为 257 passed / 1 skipped / 1 failed，唯一失败的旧 B67 golden hash 在改动前 `47446f4` 精确复现；P7 横截面专项为 105 passed。候选不计为主线完成，完整 W1、E1-CAP-1 / DQ-9 仍未完成，Phase 1 未验收。当前唯一代码缺口清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
