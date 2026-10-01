@@ -42,10 +42,12 @@ pinned universe at all is an input error (fail closed): it signals a mis-wired r
 
 Honest boundary: whether the supplied source values really are the source FeatureSpec's values for
 those members, and whether the manifest is the registered one, belongs to the executor / Registry
-(as for every FeatureProvider). These providers are not registered in any allowlist and do not
-change ``TypedPlan.runnable``; ``compile_plan`` lowers cross-sectional nodes (given ``universes=``)
-but refuses to compile them (``cross_sectional_execution_unsupported``), since its single-series
-wiring cannot drive this request / result shape.
+(as for every FeatureProvider). In ``phase/1@775245e``, the P7 typed-plan compiler explicitly
+allowlists these providers and builds them from the same pinned universe manifests used during
+lowering. They can execute only as plan roots; plans that feed their output into a single-series
+provider fail closed because no cross-sectional-to-single-series adapter is defined. This wiring
+does not change ``TypedPlan.runnable`` or enable execution by default. ``main@b5f80fe`` still
+rejects these plans until the branch change is integrated.
 """
 
 from __future__ import annotations
