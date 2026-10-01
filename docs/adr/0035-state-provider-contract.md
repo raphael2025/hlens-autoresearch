@@ -116,5 +116,5 @@ Phase 2 → Phase 3 的接缝已接上（不改本 ADR 的裁决，见 ADR-0036 
 ## Implementation note（运行 / 读回 / 诊断入口，2026-10-01）
 
 State 的物理表、`StateTable` 与 `StateResultStore` 由 ADR-0089 实现；显式的运行、读回与诊断命令行入口
-（`python -m infrastructure.state.run_cli` 的 `compute` / `show` / `list`，`python -m research.states.report_cli`）由 ADR-0102
+（`python -m research.states.run_cli compute`、`python -m infrastructure.state.run_cli` 的 `show` / `list`、`python -m research.states.report_cli`）由 ADR-0102
 实现。本 ADR 的裁决、契约与 `run_state` 的逐时刻结构性截断均不变；训练型规格无 seed 仍在入口处被拒绝。

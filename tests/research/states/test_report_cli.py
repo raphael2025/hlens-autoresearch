@@ -10,10 +10,9 @@ import pytest
 
 from core.contracts.state import StateResult
 from core.domain.specs import StateSpec
-from infrastructure.state import run_cli
 from infrastructure.state.store import StateResultStore
 from research.reports.state_diagnostics import KIND
-from research.states import report_cli
+from research.states import report_cli, run_cli
 from research.states.diagnostics import StateDiagnostics, diagnose
 from tests.infrastructure.state.cli_support import Files, make_files, write_json
 

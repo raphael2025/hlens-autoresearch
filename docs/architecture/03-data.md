@@ -377,6 +377,6 @@ F2 / F3 实现要点（`infrastructure/universe/`、`infrastructure/dataset/`）
   清单，Phase 1 的 15 张表与其哈希不变；只通过显式的 `ensure_state_tables(adapter)`（命令
   `python -m infrastructure.state.create_state_tables`，默认只打印计划，`--apply` 才连 Catalog）建表，不接入 Phase 1 的建表脚本。
 - `state.states` **尚未在生产 catalog 创建**；本节描述的是已登记并实现的表结构，不表示生产建表已执行。
-- 写入与读回入口（ADR-0102）：`python -m infrastructure.state.run_cli` 的 `compute`（默认只打印摘要；`--store` 写
-  `StateResultStore` 制品，`--apply-table` 追加到**已存在**的 `state.states`，不隐式建表）、`show`、`list`；
+- 写入与读回入口（ADR-0102）：`python -m research.states.run_cli compute`（research 侧，因 Provider 来自 `plugins`；默认只打印摘要；`--store` 写
+  `StateResultStore` 制品，`--apply-table` 追加到**已存在**的 `state.states`，不隐式建表）；读回 `python -m infrastructure.state.run_cli` 的 `show`、`list`；
   存储的整次运行由 `StateResultStore` 制品保存（`<root>/<result_hash>.json`），不是 Iceberg 表。

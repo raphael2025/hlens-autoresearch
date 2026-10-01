@@ -13,9 +13,10 @@
   snapshot-pinned reads that rebuild and re-verify the ``StateResult``. ``ensure_state_tables`` is
   the only creation path; ``create_state_tables`` is its explicit command (plan-only unless
   ``--apply``; not wired into provisioning). Not exported here: importing them loads pyiceberg;
-- ``run_cli`` (ADR-0102): ``python -m infrastructure.state.run_cli`` — ``compute`` (summary by
-  default; ``--store`` / ``--apply-table`` opt in to writes), ``show`` and ``list``. Providers are
-  resolved from the built-in table by lazy import; this package never statically imports a plugin.
+- ``run_cli`` (ADR-0102): ``python -m infrastructure.state.run_cli`` — read-only ``show`` (by
+  ``result_hash``, verified) and ``list`` over a ``StateResultStore``. Running a state
+  (``compute``) is ``research.states.run_cli``: it resolves providers from ``plugins``, which this
+  package never imports.
 
 Providers are injected through the ``core.contracts.state.StateProvider`` Protocol; nothing here
 imports a plugin or research code.

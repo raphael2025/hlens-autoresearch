@@ -11,9 +11,11 @@ from datetime import datetime
 from pathlib import Path
 
 from core.contracts.feature import FeatureRequest, FeatureResult
+from core.contracts.state import StateResult
 from core.domain.base import Contract, canonical_json, content_hash
 from core.domain.specs import FeatureSpec, StateSpec
 from infrastructure.feature.runner import run_feature
+from infrastructure.state.runner import run_state, state_inputs, state_request
 from plugins.features import BarRealizedVolatilityProvider
 from plugins.states import VolatilityRegimeProvider
 from tests.fake_states import (
@@ -91,4 +93,13 @@ def make_files(root: Path, *, seed: int | None = TEST_SEED) -> Files:
         spec_path=write_json(root / "spec.json", spec),
         request_path=write_json(root / "request.json", request),
         result_path=write_json(root / "result.json", result),
+    )
+
+
+def expected_result(files: Files) -> StateResult:
+    """The run ``compute`` must reproduce, computed directly with ``run_state``."""
+    request, result = feature_run(BarRealizedVolatilityProvider.spec(5))
+    provider = VolatilityRegimeProvider((files.spec,))
+    return run_state(
+        provider, files.spec, state_request(files.spec, TIMES, state_inputs([(request, result)]))
     )
