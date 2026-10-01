@@ -211,6 +211,113 @@ def test_paper_deviation_1_0_0_legacy_is_supported_without_scope_fields() -> Non
     assert dto.schema_version == "1.0.0"
 
 
+# --- paper_deviation 2.1.0 run binding (ADR-0104) ---------------------------------------------
+
+
+def _run_binding(**overrides: Any) -> dict[str, Any]:
+    binding: dict[str, Any] = {
+        "router_spec_hash": "1" * 64,
+        "router_strategy_spec_hash": "2" * 64,
+        "experiment_hash": "3" * 64,
+        "bars_hash": "4" * 64,
+        "window_start": "2024-01-01T00:00:00+00:00",
+        "window_end": "2024-01-01T00:07:00+00:00",
+        "cost_model_hash": "5" * 64,
+        "reference_request_hash": "6" * 64,
+    }
+    binding.update(overrides)
+    return binding
+
+
+def _bound_scope(binding: Any = None) -> dict[str, Any]:
+    """A scope 1.1.0 whose ``scope_hash`` covers the run binding (as the writer's does)."""
+    return _scope(
+        scope_schema_version="1.1.0", run_binding=_run_binding() if binding is None else binding
+    )
+
+
+def _bound_payload(**overrides: Any) -> Payload:
+    return _deviation_payload(
+        schema_version="2.1.0",
+        declared_scope=_bound_scope(),
+        reference_request_hash="6" * 64,
+        **overrides,
+    )
+
+
+def test_paper_deviation_2_1_0_well_formed_run_binding_is_supported() -> None:
+    dto = decode_report_payload(ReportKind.PAPER_DEVIATION, _bound_payload())
+    assert dto.supported is True and dto.schema_version == "2.1.0"
+
+
+def test_paper_deviation_2_1_0_requires_the_scope_bound_fields() -> None:
+    payload = _bound_payload()
+    del payload["marks"]
+    with pytest.raises(ReportMalformed, match="2.1.0 payload lacks scope-bound DTO fields"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        None,  # run_binding missing: scope 1.1.0 must carry one
+        "not-a-mapping",
+        {k: v for k, v in _run_binding().items() if k != "bars_hash"},
+        {**_run_binding(), "surprise": "1"},
+        _run_binding(experiment_hash="not-hex"),
+        _run_binding(cost_model_hash="0" * 63),
+        _run_binding(router_spec_hash=1),
+        _run_binding(window_start="yesterday"),
+        _run_binding(window_start="2025-01-01T00:00:00+00:00"),  # after window_end
+        _run_binding(reference_request_hash="7" * 64),  # not the payload's reference_request_hash
+    ],
+)
+def test_paper_deviation_2_1_0_malformed_run_binding_is_rejected(binding: Any) -> None:
+    scope = _bound_scope(binding)
+    if binding is None:
+        del scope["run_binding"]
+        scope["scope_hash"] = content_hash({k: v for k, v in scope.items() if k != "scope_hash"})
+    payload = _bound_payload()
+    payload["declared_scope"] = scope
+    with pytest.raises(ReportMalformed, match="2.1.0 declared_scope is invalid"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_2_1_0_scope_version_must_be_1_1_0() -> None:
+    for version in ("1.0.0", "2.0.0", "1.2.0"):
+        scope = _bound_scope()
+        scope["scope_schema_version"] = version
+        scope["scope_hash"] = content_hash({k: v for k, v in scope.items() if k != "scope_hash"})
+        payload = _bound_payload()
+        payload["declared_scope"] = scope
+        with pytest.raises(ReportMalformed, match="declared_scope is invalid"):
+            decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_2_1_0_scope_hash_covers_the_run_binding() -> None:
+    scope = _bound_scope()
+    scope["run_binding"]["bars_hash"] = "9" * 64  # edited after the scope hash was computed
+    payload = _bound_payload()
+    payload["declared_scope"] = scope
+    with pytest.raises(ReportMalformed, match="2.1.0 scope_hash does not match declared_scope"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_2_0_0_scope_cannot_carry_a_run_binding() -> None:
+    scope = _scope(run_binding=_run_binding())
+    payload = _deviation_payload(declared_scope=scope)  # schema 2.0.0, scope 1.0.0
+    with pytest.raises(ReportMalformed, match="2.0.0 declared_scope is invalid"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_supported_versions_are_exactly_the_three_generations() -> None:
+    spec = REPORT_DTOS[ReportKind.PAPER_DEVIATION]
+    assert spec.supported_versions == {"1.0.0", "2.0.0", "2.1.0"} and spec.baseline == "2.1.0"
+    future = _deviation_payload(schema_version="2.2.0")
+    dto = decode_report_payload(ReportKind.PAPER_DEVIATION, future)
+    assert dto.supported is False and dto.schema_version == "2.2.0"
+
+
 # --- ADR-0094: the default Contract envelope bumped to 2.5.0 (validation_report only) ---------
 #
 # validation_report is the one ReportKind whose payload is a direct ``Contract.model_dump()``
