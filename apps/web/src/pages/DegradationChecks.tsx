@@ -1,13 +1,17 @@
 import type { ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
 import { ReportBrowser } from "../components/ReportBrowser";
-import type { DegradationCheckPayload } from "../lib/degradationCheck";
+import type { AuthorityView, DegradationCheckPayload, EvidenceStrength } from "../lib/degradationCheck";
 import {
   asDegradationCheckPayload,
+  authorityOf,
   checkStatus,
   checkSummary,
   degradationLabel,
   directionText,
+  evidenceStrength,
+  evidenceStrengthLabel,
+  evidenceStrengthText,
   metricRows,
   metricStatus,
   statusText,
@@ -150,9 +154,148 @@ function ObservationManifest({ value }: { value: unknown }) {
   );
 }
 
+const STRENGTH_STYLE: Record<EvidenceStrength, { background: string; border: string; color: string }> = {
+  authority_resolved: { background: "#ecfdf5", border: "#166534", color: "#166534" },
+  authority_unreadable: { background: "#fef3c7", border: "#92400e", color: "#92400e" },
+  caller_declared: { background: "#f3f4f6", border: "#4b5563", color: "#374151" },
+};
+
+function EvidenceStrengthBadge({ check }: { check: DegradationCheckPayload }) {
+  const strength = evidenceStrength(check);
+  const style = STRENGTH_STYLE[strength];
+  return (
+    <div
+      role="note"
+      data-evidence-strength={strength}
+      style={{ background: style.background, border: `1px solid ${style.border}`, padding: "6px 12px", margin: "8px 0" }}
+    >
+      <strong style={{ color: style.color }}>证据强度：{evidenceStrengthLabel(strength)}</strong>
+      <p style={{ margin: "4px 0 0", fontSize: 13 }}>{evidenceStrengthText(check)}</p>
+    </div>
+  );
+}
+
+function shortHash(value: string | null): string {
+  return value === null ? "—" : value.length > 16 ? `${value.slice(0, 16)}…` : value;
+}
+
+function AuthorityRow({ label, value, full }: { label: string; value: string | null; full?: string | null }) {
+  return (
+    <tr>
+      <th style={{ textAlign: "left", fontWeight: 500 }}>{label}</th>
+      <td style={{ overflowWrap: "anywhere" }} title={full ?? undefined}>
+        <code>{value ?? "—"}</code>
+      </td>
+    </tr>
+  );
+}
+
+function AuthorityPanel({ authority }: { authority: AuthorityView }) {
+  const head =
+    authority.headRecordCount === null
+      ? null
+      : `${authority.headRecordCount} records · ${shortHash(authority.headLastRecordHash)}`;
+  return (
+    <section aria-label="Authority provenance" data-authority-format={authority.format ?? ""}>
+      <h4>Authority provenance（权威来源记录，ADR-0098）</h4>
+      {authority.problems.length > 0 && (
+        <div
+          role="note"
+          data-authority-problems={authority.problems.length}
+          style={{ background: "#fef3c7", border: "1px solid #92400e", color: "#92400e", padding: "6px 12px" }}
+        >
+          <strong>无法作为权威证据读取：</strong>
+          <ul style={{ margin: "4px 0 0" }}>
+            {authority.problems.map((problem, index) => (
+              <li key={index}>{problem}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <table>
+        <tbody>
+          <AuthorityRow label="provenance format" value={authority.format} />
+          <AuthorityRow label="lifecycle head" value={head} full={authority.headLastRecordHash} />
+          <AuthorityRow
+            label="lifecycle anchor"
+            value={
+              authority.anchor === "present"
+                ? "present（已用外部 anchor 核验）"
+                : authority.anchor === "absent"
+                  ? "absent（未核验：无法检测尾部回滚）"
+                  : authority.anchor
+            }
+          />
+          <AuthorityRow label="lifecycle history_hash" value={shortHash(authority.historyHash)} full={authority.historyHash} />
+          <AuthorityRow
+            label="replayed records"
+            value={authority.recordHashCount === null ? null : String(authority.recordHashCount)}
+          />
+          <AuthorityRow label="source dataset_id" value={authority.datasetId} />
+          <AuthorityRow label="source manifest_hash" value={shortHash(authority.manifestHash)} full={authority.manifestHash} />
+          <AuthorityRow label="source data_type / snapshot" value={
+            authority.dataType === null && authority.snapshotId === null
+              ? null
+              : `${authority.dataType ?? "—"} / ${authority.snapshotId ?? "—"}`
+          } />
+          <AuthorityRow label="baseline run_id" value={authority.baselineRunId} />
+          <AuthorityRow
+            label="baseline manifest_hash"
+            value={shortHash(authority.baselineManifestHash)}
+            full={authority.baselineManifestHash}
+          />
+          <AuthorityRow label="baseline_set_hash" value={shortHash(authority.baselineSetHash)} full={authority.baselineSetHash} />
+          <AuthorityRow label="metric registry" value={authority.metricRegistry} />
+          <AuthorityRow label="as_of" value={authority.asOf} />
+          <AuthorityRow
+            label="window"
+            value={
+              authority.windowStart === null && authority.windowEnd === null
+                ? null
+                : `[${authority.windowStart ?? "—"}, ${authority.windowEnd ?? "—"})`
+            }
+          />
+          <AuthorityRow
+            label="recent_manifest_hash"
+            value={shortHash(authority.recentManifestHash)}
+            full={authority.recentManifestHash}
+          />
+        </tbody>
+      </table>
+      <h5>Metric definitions（闭集 metric 定义）</h5>
+      {authority.definitions.length === 0 ? (
+        <p>没有可读取的 metric 定义。</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>metric</th>
+              <th>definition（id@version）</th>
+              <th>gate</th>
+              <th>window_scope</th>
+            </tr>
+          </thead>
+          <tbody>
+            {authority.definitions.map((row, index) => (
+              <tr key={`${row.definition}-${row.gateId ?? ""}-${index}`}>
+                <td><code>{row.metric}</code></td>
+                <td><code>{row.definition}</code></td>
+                <td><code>{row.gateId ?? "—"}</code></td>
+                <td>{row.windowScope ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
 function DegradationProvenance({ check }: { check: DegradationCheckPayload | null }) {
   if (check === null || check.schema_version !== "1.1.0" || !isRecord(check.evidence)) return null;
   const evidence = check.evidence;
+  const authority = authorityOf(check);
+  const resolved = evidenceStrength(check) === "authority_resolved";
   return (
     <section
       aria-label="Hash-bound provenance"
@@ -163,8 +306,11 @@ function DegradationProvenance({ check }: { check: DegradationCheckPayload | nul
         role="note"
         style={{ background: "#eff6ff", border: "1px solid #1d4ed8", padding: "8px 12px" }}
       >
-        这些内容由调用方声明，并随报告内容参与哈希绑定；哈希绑定只证明内容一致性，不认证外部来源、source ID 或指标聚合的真实性。
+        {resolved
+          ? "生命周期与近期指标经 ADR-0098 authority 解析（见下方 Authority provenance），全部内容随报告参与哈希绑定；authority 解析说明输入的来源，不等于验证通过，也不改变生命周期。"
+          : "这些内容由调用方声明，并随报告内容参与哈希绑定；哈希绑定只证明内容一致性，不认证外部来源、source ID 或指标聚合的真实性。"}
       </div>
+      {authority !== null && <AuthorityPanel authority={authority} />}
       <h4>Profile freeze（Profile 冻结登记）</h4>
       <EvidenceField label="profile_ref" value={evidence.profile_ref} />
       <EvidenceField label="profile_hash" value={evidence.profile_hash} />
@@ -216,6 +362,7 @@ function CheckDetail({ envelope }: { envelope: ReportEnvelope }) {
         subject <strong>{check.subject}</strong> · window {check.window} · check_hash{" "}
         <code>{`${check.check_hash.slice(0, 12)}…`}</code>
       </p>
+      <EvidenceStrengthBadge check={check} />
       {status === "insufficient_evidence" ? (
         <div
           role="note"
@@ -287,7 +434,8 @@ export function DegradationChecks() {
       <h2>Degradation Checks（退化检查）</h2>
       <p style={{ color: "#555", fontSize: 14 }}>
         近期指标与验证基线的对比；阈值只来自所列来源（Validation Profile 或显式映射）。只作证据：不改变生命周期状态，
-        缺少近期值表示证据不足而不是健康（全部指标都缺少时整次检查显示为 INSUFFICIENT EVIDENCE）；没有任何下单、账户或转账能力（H10）。
+        缺少近期值表示证据不足而不是健康（全部指标都缺少时整次检查显示为 INSUFFICIENT EVIDENCE）；每份检查标出证据强度：带
+        ADR-0098 authority 记录的为权威解析，其余（含所有旧报告）为调用方声明；没有任何下单、账户或转账能力（H10）。
       </p>
       <ReportBrowser
         kind="degradation_check"
