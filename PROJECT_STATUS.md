@@ -13,7 +13,7 @@
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
 | 代码基线 | `main` = `b5f80fe`（PR #19，2026-10-01 合并）；PR #17–#19 已进入主线。工作分支上的改动不计为主线完成 |
 | 契约 | 2.5.0；current Schema 148 份 |
-| 验证状态 | 最新主线未运行全仓门禁。`phase/1` 当前 Phase 1 infrastructure 选择集为 2298 passed / 88 skipped（855.34s）；受影响策略回归为 257 passed / 1 skipped / 1 failed。唯一失败的旧 B67 golden hash 在原始提交 `47446f4` 上精确复现，确认预先存在。P7 横截面编译 / binding / lowering / provider 专项为 105 passed。Ruff check / format 通过，3 个受影响生产模块 mypy 通过。E1-CAP-1（32 MiB 容量门）未测量，Phase 未验收。 |
+| 验证状态 | 最新主线未运行全仓门禁。`phase/1` 当前 Phase 1 infrastructure 选择集为 2298 passed / 88 skipped（855.34s）；DQ-10 public replay / v2 golden 专项 35 passed；P7 横截面编译 / binding / lowering / provider 专项 105 passed。受影响策略回归为 257 passed / 1 skipped / 1 failed，唯一失败的旧 B67 golden hash 在原始提交 `47446f4` 上精确复现。Ruff check / format 通过，3 个受影响生产模块 mypy 通过。E1-CAP-1（32 MiB 容量门）未测量，Phase 未验收。 |
 | 最后更新时间 | 2026-10-01 |
 
 Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（ADR-0020），契约 2.0.0 随之发布，此后破坏性契约变化必须升 major 并走 ADR。
@@ -59,6 +59,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 - 🔎 按[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)区分主线缺口与未合入候选：P1 DQ-10 v2 历史 manifest 重放与 P7-CS-EXEC 在 `phase/1` 有候选修复，尚未合入 `main`。
 - ✅ `phase/1` 的 Phase 1 infrastructure 选择集复跑为 2298 passed / 88 skipped；此前 11 个失败已逐项分诊并通过该选择集复验。此结果只覆盖所列 infrastructure 测试，不代表 `main` 全仓门禁或 Phase 验收。
+- ✅ DQ-10 public replay 与 v2 golden compatibility 定向集 `35 passed`；候选修复仍未合入主线。
 - ⚠️ 受影响策略回归为 257 passed / 1 skipped / 1 failed；失败的旧 B67 dataset-report hash 在改动前提交 `47446f4` 上精确复现，按既有证据记录，不更新 golden、不归因于本轮变更。
 - E1-CAP-1 / DQ-9 仍未测 / 未定；具体任务、候选分支、依赖和代码完成条件见[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)及[模块计划](docs/plans/2026-09-28-module-foundation-completion.md)。
 

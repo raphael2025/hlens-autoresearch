@@ -7,6 +7,7 @@
 - 代码权威基线为 `main@b5f80fe`，且 `origin/main` 同步；PR #17–#19 已合入，项目状态盘点记录无开放 PR。主线最新 HEAD 未运行全仓门禁或 Phase 验收。
 - 本地分支 / worktree 数量来自 2026-10-01 盘点快照（13 / 12）；当时根 worktree 在 `phase/1@47446f4` 且干净。此后当前 worktree 已包含计划 / 状态文档及 infrastructure 回归修复；Claude 源 worktree 候选状态见下表，均为 `IN_PROGRESS`。
 - `phase/1@47446f4` 的旧选择性 Phase 1 infrastructure suite 曾有 `11 failed, 2287 passed, 88 skipped`；失败已逐项分诊，当前完整选择集复跑为 `2298 passed, 88 skipped in 855.34s`。这是候选分支结果，不代表 `main` 全仓门禁或 Phase 验收。
+- DQ-10 public replay / v2 golden compatibility 定向集 `35 passed`；候选分支代码条件已验证，仍待独立审阅 / 整合。
 - 受影响策略回归 `257 passed, 1 skipped, 1 failed`；唯一旧 B67 dataset-report hash 失败已在改动前的 `47446f4` 上精确复现，保留为已有失败证据，不变更 golden。
 - P7 横截面编译、binding、lowering 和 feature provider 专项 `105 passed`；该子集不构成完整 P7 候选审查或 Phase 验收。
 - E1-CAP-1（32 MiB）与 DQ-9 均未测 / 未定。任何局部测试结果都不等同容量证据、W1 全仓门禁或 Phase 验收。

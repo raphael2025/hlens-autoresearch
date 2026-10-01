@@ -43,7 +43,7 @@ P0.5 Knowledge Store / Provider 及 consumers 的既有定向结果为 126 passe
 |---|---|---|---|
 | P1 Dataset / Quality | `feature/p1-entry` | 12 个未提交路径：Dataset CLI / factory / pinning / profile、Quality identity registry，以及 `report_v3.py` 修改和相应用例 | `IN_PROGRESS`；逐项核对 ADR-0101 与主线，未提交内容不得视作可合并批次。 |
 | P1 Catalog / E1 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` | Catalog bounded head/history 与 batch scan、Arrow row stream 等候选；后两支还带入 State / P11 等共享提交 | `IN_PROGRESS`；候选之间存在重叠提交，按文件 / commit 净差异去重；不得据此声称 E1-CAP-1 通过。 |
-| P1 Dataset DQ-10 / P7-CS-EXEC | `phase/1`（当前本地候选） | DQ-10 v2 历史 manifest replay 修正；P7 横截面编译与 Provider 接线；Knowledge 测试断言更新 | `IN_PROGRESS`；Phase 1 infrastructure 选择集 `2298 passed, 88 skipped`，包含 DQ-10 v2 历史 fixture；P7 横截面编译 / binding / lowering / provider 四组专项 `105 passed`。结果不代表 `main` 全仓门禁，候选仍待独立复核。 |
+| P1 Dataset DQ-10 / P7-CS-EXEC | `phase/1`（当前本地候选） | DQ-10 v2 历史 manifest replay 修正；P7 横截面编译与 Provider 接线；Knowledge 测试断言更新 | `IN_PROGRESS`；Phase 1 infrastructure 选择集 `2298 passed, 88 skipped`；DQ-10 public replay / v2 golden 专项 `35 passed`；P7 横截面编译 / binding / lowering / provider 专项 `105 passed`。实现与专项验证在候选分支已完成，主线仍待独立审阅 / 整合，不代表全仓门禁。 |
 | P2 State | `feature/p2-state` | State compute / report CLI、导出与相关测试 | `IN_PROGRESS`；核对 ADR-0102 是否为主线已接受决定及其边界后再定执行顺序。 |
 | P7 Discovery binding | `feature/p7-bind` | `p7_binding` / `p7_evidence`、DSL / audit 修改与测试；当前有 9 个未提交路径 | `IN_PROGRESS`；与 P7-CS-EXEC 分开审查，不得假定互相覆盖。核对 ADR-0103 与主线后再决定整合。 |
 | P10 Router | `feature/p10-deviation` | Deviation API / DTO / research 与 Web 页面；当前有 6 个 Web 文件未提交，分支净差异另含测试 fixture 与契约适配 | `IN_PROGRESS`；核对 ADR-0104 与当前 DTO / 报告绑定。 |
