@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24），**未验收** |
-| 当前子阶段 | ADR-0100 底层代码批次已随 PR #18 合入；PR #19 的 P11/P12 只读审计视图已合入。正以最新主线整理剩余模块代码计划；本轮不测试、不验收 |
+| 当前子阶段 | ADR-0100 底层代码批次已随 PR #18 合入；PR #19 的 P11/P12 只读审计视图已合入。E1 bounded 生产路径已在主线；P7-CS-EXEC 已在 `phase/1@775245e` 完成代码与文档接线，未验证、未合入。本轮不运行测试 / 检查、不验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
 | 代码基线 | `main` = `b5f80fe`（PR #19，2026-10-01 合并）；PR #17–#19 已进入主线。工作分支上的改动不计为主线完成 |
 | 契约 | 2.5.0；current Schema 148 份 |
@@ -32,7 +32,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 | 4 | Outcome Engine + 最小验证门 | 🧱 已实现；Profile 数值未冻结；未验收 |
 | 5 | Strategy Library + 回测 | 🧱 已实现；晋升链今天拒绝所有策略，无策略晋升 |
 | 6 | State × Strategy | 🧱 已实现；未验收 |
-| 7 | Dynamic Discovery | 🧱 六类组合算子语义已接受；执行 Provider 与可选编译器已写（开关默认关闭，计划默认仍不可运行）；横截面排名 / 分位仍因执行请求类型未接通而明确拒绝；时间事件规则已细化（ADR-0100 修订 1）；未测试 |
+| 7 | Dynamic Discovery | 🧱 六类组合算子语义已接受；执行开关默认关闭。`main@b5f80fe` 的横截面 Provider 编译接线仍拒绝；`phase/1@775245e` 已加入专用根 Provider 构造与 fail-closed 路径，未测试、未合入；时间事件规则已细化（ADR-0100 修订 1） |
 | 8 | Validation & Robustness | 🧱 已实现；未验收 |
 | 9 | Synthetic Market Lab | 🧱 已实现；只出证据、不选数值；未验收 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 已实现（仅纸面）；未验收 |
@@ -57,8 +57,8 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 ## 4. 当前正在做
 
-- 🔨 对照最新主线更新剩余底层代码缺口清单和模块执行视图；区分主线未验证实现、未合入候选、可执行缺口与人工 / 架构阻塞
-- 🔨 主线代码候选缺口为 P1 E1 自有增长持有量收口和 P7 横截面 Provider 执行接线；细目见[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)
+- ✅ `phase/1@775245e` 完成 P7-CS-EXEC 本地代码提交：rank_cs / quantile_cs 编译到专用 CrossSectional Provider；仅允许横截面节点作为计划根。未运行回归用例，未合入 `main`
+- 🔎 E1 bounded 生产路径对账：ADR-0075/0076/0077 的 scanner、摘要/ID stream、spooled ingest 与 v3 Dataset pipeline 已在 `main`；本轮未发现可按当前 ADR 继续编码的缺口。E1-CAP-1 / DQ-9 仍未测，细目见[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)
 
 ## 5. 下一步
 
@@ -70,7 +70,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 ### Claude Code 需要做
 
-- 完成本轮剩余代码计划与项目状态文档同步
+- 完成本地 `phase/1` P7 编译接线与状态文档同步
 - 只实施已有批准且已列明文件边界的代码任务；不得运行测试、probe 或验收，直到 Raphael 开启调试阶段
 - 后续代码收敛后再由 Raphael 安排统一门禁、逐模块调试，并在主线生产路径上测量 E1-CAP-1
 
@@ -84,7 +84,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 |---|---|---|
 | E1-CAP-1 | Phase 1 完整进程 32 MiB 容量门 | 有界化两轮已写，未测量；阻断 Phase 1 验收 |
 | W1 | 全仓测试门禁 | 从未在当前代码上运行 |
-| P7-CS | 横截面排名 / 分位的执行接线（ADR-0100） | provider 已有，但 `compile_plan` 因执行请求类型未接入而明确拒绝；计划项见 P7-CS-EXEC |
+| P7-CS | 横截面排名 / 分位的执行接线（ADR-0100） | `main@b5f80fe` 仍拒绝；`phase/1@775245e` 已实现专用 Provider 构造，待后续验证与整合；不接单序列组合器或 Research Loop |
 | P11-RUN | P11 真实运行 | 需要部署设置 |
 | P0.5-REVIEW | 知识库种子标签 / 资产 | 需具名人工审阅 |
 | P14-TARGET | 技术迁移 | 无具体迁移目标 |
@@ -124,11 +124,11 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-10-01 | `phase/1@775245e` P7-CS-EXEC | 编译 allowlist 加入横截面 Provider；build_providers 要求 pinned universe，并 fail closed 拒绝被单序列节点消费；回归用例 / 文档已更新，未运行、未合入 |
 | 2026-09-30 | P11/P12 诚信加固与运行输入记录 | P12 可选提案改为只用已冻结 Profile 版本的密封窗口并计入全局开封预算（宪法 C-S2/C-S3）；P11 要求近期指标输入与基线逐项相等，新运行在 `repro.params` 记录这些输入（ADR-0100 修订 2），旧运行继续拒绝；未测试 |
 | 2026-10-01 | PR #19 合入 `main`（`b5f80fe`） | P11 evidence authority 展示与 P12 replacement trigger 只读审计；含测试用例，最新主线未统一验证 |
 | 2026-10-01 | PR #18 合入 `main`（`67979ea`） | ADR-0100 剩余基础代码批次与审查修复进入主线；未测试 |
 | 2026-10-01 | 临时分支归档清理 | 17 个 Codex 分支 tip 保存在远端 / 本地 archive refs 后，删除分支与干净 Codex worktree；保留 Claude 进行中 worktree |
-| 2026-09-30 | ADR-0100 批次深度审查与修复 | 修复 P7 窗口边界、哈希绑定、编译结果封存、组合参数校验等问题；未测试 |
 
 ## 10. 下一阶段进入条件
 

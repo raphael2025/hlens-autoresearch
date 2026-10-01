@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main`；当前模块代码计划与短期进度见 `PROJECT_STATUS.md` 及 `docs/plans/2026-09-28-remaining-code-gaps.md`。历史实现记录见 Git、ADR 与 `docs/reviews/`。
+> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main@b5f80fe`；E1 bounded 生产路径已在主线但 E1-CAP-1 / DQ-9 未测；P7-CS-EXEC 代码提交为 `phase/1@775245e`，未验证、未合入。当前代码清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -43,8 +43,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
 - Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；ADR-0100 已写两轮有界化，未测量。旧候选分支的容量数值不能外推为 `main` 的结果
 - 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写（多数为框架 + 补全），未测试、未验收
-- Next Milestone：按批准范围完成剩余底层代码收口 → Raphael 安排统一调试 / 门禁 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
-- 仍开放：P7 横截面执行接线；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
+- Next Milestone：Raphael 安排统一调试 / 门禁 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。P7-CS-EXEC 已有本地恢复提交。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
+- 仍开放：P7-CS-EXEC 尚未进入 `main` / 未验证；E1-CAP-1 与 DQ-9 未测；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
 
@@ -105,7 +105,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0091：登记处完整性审计严格只读；Failure Registry 不提供历史防篡改证明
 - ADR-0095：生产 Worker 由部署方显式受信 Runtime Factory 组合
 - ADR-0096：TrialLedger 完全相同的登记作只读幂等确认，不增加 trial
-- ADR-0100（2026-09-30，Raphael 直接指令）：补完剩余底层代码——P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` lower 与 Provider（尚未接入通用编译 / loop 执行，仍明确拒绝）、P11 指标闭集与默认 `AuthorityEnvironment`、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案（默认关、只用独立预登记密封窗口）；修订 1 细化 1.3.0 时间事件。剩余任务见当前模块计划。
+- ADR-0100（2026-09-30，Raphael 直接指令）：P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` Provider、P11 指标闭集与默认环境、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案；修订 1 细化 1.3.0 时间事件。`main@b5f80fe` 的横截面 Provider 尚未接 compiler；本地 `phase/1@775245e` 已增加专用根 Provider 构造，输出不能直接进入单序列组合器 / Research Loop。
 - D-P11-WINDOW（ADR-0049 遗留）开放；D-STATE-INC 暂缓（ADR-0035）
 
 ## 6. Active Constraints
@@ -151,5 +151,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
 - `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；Phase 1 E1-CAP-1 未测量
+- 当前工作分支：`phase/1@775245e`，从计划提交 `830e267` 后新增 P7-CS-EXEC；代码 / 回归用例未运行，未合入 `main`，不计为主线完成。
 - `origin/main` 与本地 `main` 已同步；PR #19 分支已合并，远端当前没有开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态。
-- 下一步：按 `docs/plans/2026-09-28-remaining-code-gaps.md` 收口代码；统一测试、调试和容量测量留待后续授权窗口，不因文档更新或代码合并视为验收
+- 下一步：由 Raphael 安排后续统一测试 / 调试与容量测量；当前 P7 实现仍未验证或合入 `main`，不得视作主线完成或 Phase 验收

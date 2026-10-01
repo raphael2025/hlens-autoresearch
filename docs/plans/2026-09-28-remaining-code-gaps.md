@@ -18,7 +18,7 @@
 
 | ID / 模块 | 目标与依据 | 文件边界 | 依赖与并行限制 | 代码完成条件 |
 |---|---|---|---|---|
-| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。当前 `phase/1` 改动将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、对应的 P7 测试及 `research/hypotheses/README.md`、能力矩阵 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | Provider 只服务 lowered 的精确 spec hash；缺失 / 错误 universe、source ref、bar 对齐、allowlist 或显式开关时 fail closed；请求 / 结果使用 ADR-0100 的专用类型；默认开关关闭，旧计划与哈希不变；相应回归用例已编写、`NOT_RUN`。 |
+| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。本地 `phase/1@775245e` 将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、对应的 P7 测试及 `research/hypotheses/README.md`、能力矩阵 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 已达到本分支代码 DoD；回归用例已编写但 `NOT_RUN`。直到验证及整合完成前，`main` 的 P7-CS-EXEC 仍是未解决差异。 |
 
 ## 已在基线实现但未验证的 E1 代码
 

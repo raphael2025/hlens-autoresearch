@@ -65,7 +65,7 @@ Dataset 与实验须绑定快照、政策、来源和规则版本。研究闭环
 
 ### 当前底层代码实现索引（不构成验收）
 
-W3 的历史容量与测试证据仍按记录日期保留。当前代码执行视图以[剩余代码计划](2026-09-28-remaining-code-gaps.md)为准：截至 `main@b5f80fe`，E1 bounded scan、normalizer ID stream、生产归档 spool 与 v3 Dataset streaming pipeline 已有仓库内实现；本地 `phase/1` 正补 `P7-CS-EXEC` 编译接线。两项均未因静态源码存在或本地分支改动而获得测试 / 容量 / Phase 验收状态；E1-CAP-1 与 DQ-9 仍开放。
+W3 的历史容量与测试证据仍按记录日期保留。当前代码执行视图以[剩余代码计划](2026-09-28-remaining-code-gaps.md)为准：截至 `main@b5f80fe`，E1 bounded scan、normalizer ID stream、生产归档 spool 与 v3 Dataset streaming pipeline 已有仓库内实现；本地 `phase/1@775245e` 已提交 `P7-CS-EXEC` 编译接线。两者均未因静态源码存在或本地分支提交而获得测试 / 容量 / Phase 验收状态；P7 尚未合入 `main`，E1-CAP-1 与 DQ-9 仍开放。
 
 ### W1 证据边界
 
