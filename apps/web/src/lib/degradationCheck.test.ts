@@ -9,7 +9,12 @@ import {
   metricRows,
   metricStatus,
   statusText,
+  authorityOf,
+  evidenceStrength,
+  evidenceStrengthLabel,
+  evidenceStrengthText,
 } from "./degradationCheck.ts";
+import { authorityBlock, callerDeclaredEvidence, withEvidence } from "./degradationAuthority.test-util.ts";
 import { clone, fixtureEnvelopes } from "./fixtures.test-util.ts";
 
 // Two real fixtures: the degraded check (one breached, one within, one missing) and the
@@ -199,4 +204,103 @@ test("a payload that is not a degradation check is not parsed as one", () => {
   assert.equal(asDegradationCheckPayload(noFlag), null);
   const [deviation] = fixtureEnvelopes("paper_deviation");
   assert.equal(asDegradationCheckPayload(deviation.payload), null);
+});
+
+// ---- evidence strength: caller-declared (ADR-0067 / legacy 1.0.0) vs authority (ADR-0098) -----
+
+function withAuthority(authority: unknown, evidence = callerDeclaredEvidence()) {
+  return payloadOf(withEvidence(fixture.payload, { ...evidence, authority }));
+}
+
+test("legacy 1.0.0 fixtures: caller-declared, no authority, no hash-bound evidence", () => {
+  for (const envelope of fixtures) {
+    const check = payloadOf(envelope.payload);
+    assert.equal(check.schema_version, "1.0.0");
+    assert.equal(authorityOf(check), null);
+    assert.equal(evidenceStrength(check), "caller_declared");
+    assert.match(evidenceStrengthText(check), /^schema 1\.0\.0：没有哈希绑定的证据记录/);
+  }
+  assert.equal(evidenceStrengthLabel("caller_declared"), "CALLER-DECLARED（调用方声明）");
+});
+
+test("1.1.0 without authority: caller-declared (ADR-0067), still parsed", () => {
+  const check = payloadOf(withEvidence(fixture.payload, callerDeclaredEvidence()));
+  assert.equal(authorityOf(check), null);
+  assert.equal(evidenceStrength(check), "caller_declared");
+  assert.match(evidenceStrengthText(check), /由调用方声明（ADR-0067）/);
+});
+
+test("1.1.0 with a bound, known-format authority: authority-resolved, every field read", () => {
+  const check = withAuthority(authorityBlock());
+  assert.equal(evidenceStrength(check), "authority_resolved");
+  const view = authorityOf(check);
+  assert.ok(view !== null);
+  assert.deepEqual(view.problems, []);
+  assert.equal(view.format, "hlens.p11.authority-provenance@1.2.0");
+  assert.equal(view.formatKnown, true);
+  assert.equal(view.headRecordCount, 3);
+  assert.equal(view.headLastRecordHash, "5".repeat(64));
+  assert.equal(view.anchor, "absent");
+  assert.equal(view.recordHashCount, 2);
+  assert.equal(view.datasetId, "ds-btcusdt-1h");
+  assert.equal(view.manifestHash, "8".repeat(64));
+  assert.equal(view.baselineSetHash, "b".repeat(64));
+  assert.equal(view.asOf, "2026-02-02T00:00:00Z");
+  assert.deepEqual(view.definitions, [
+    {
+      metric: "sharpe",
+      definition: "p11.window_validation.sharpe@1.0.0",
+      gateId: "G1.sharpe",
+      windowScope: "observation_window",
+      evidence: "window_validation",
+    },
+  ]);
+  const text = evidenceStrengthText(check);
+  assert.match(text, /anchor absent：未用外部 anchor 核验，无法检测整段尾部记录的回滚/);
+  assert.match(text, /仍然只是证据，不改变生命周期状态/);
+});
+
+test("an anchored head says so", () => {
+  const block = authorityBlock();
+  block.lifecycle = { ...(block.lifecycle as Record<string, unknown>), anchor: "present" };
+  const check = withAuthority(block);
+  assert.equal(evidenceStrength(check), "authority_resolved");
+  assert.match(evidenceStrengthText(check), /已用外部 anchor 核验/);
+});
+
+test("an unknown provenance format is unreadable, never authority-resolved", () => {
+  const check = withAuthority(authorityBlock({ format: "hlens.p11.authority-provenance@9.0.0" }));
+  assert.equal(evidenceStrength(check), "authority_unreadable");
+  assert.ok(authorityOf(check)?.problems.some((p) => p.includes("未识别的 provenance 格式")));
+  assert.match(evidenceStrengthText(check), /按调用方声明对待/);
+});
+
+test("an authority block that disagrees with its evidence is unreadable, each binding named", () => {
+  const cases: [Record<string, unknown>, string][] = [
+    [{ window_end: "2026-03-01T00:00:00Z" }, "window end"],
+    [{ window_start: "2025-12-01T00:00:00Z" }, "window start"],
+    [{ recent_manifest_hash: "e".repeat(64) }, "recent manifest"],
+  ];
+  for (const [overrides, what] of cases) {
+    const check = withAuthority(authorityBlock(overrides));
+    assert.equal(evidenceStrength(check), "authority_unreadable", what);
+    assert.ok(authorityOf(check)?.problems.includes(`authority 与 evidence 的 ${what} 不一致`), what);
+  }
+  const otherHistory = withAuthority(authorityBlock(), {
+    ...callerDeclaredEvidence(),
+    lifecycle_history_hash: "f".repeat(64),
+  });
+  assert.ok(authorityOf(otherHistory)?.problems.includes("authority 与 evidence 的 lifecycle history 不一致"));
+});
+
+test("as_of before the window end, a bad anchor or a non-object block is unreadable", () => {
+  // the evaluation time must not precede the window end (ADR-0098 修订 2 §1)
+  const early = withAuthority(authorityBlock({ as_of: "2026-01-15T00:00:00Z" }));
+  assert.equal(evidenceStrength(early), "authority_unreadable");
+  const block = authorityBlock();
+  block.lifecycle = { ...(block.lifecycle as Record<string, unknown>), anchor: "maybe" };
+  assert.equal(evidenceStrength(withAuthority(block)), "authority_unreadable");
+  const notObject = withAuthority("authority");
+  assert.equal(evidenceStrength(notObject), "authority_unreadable");
+  assert.ok(authorityOf(notObject)?.problems.includes("authority 不是对象"));
 });
