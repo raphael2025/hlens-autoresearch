@@ -8,6 +8,7 @@
 - 最近合入的大批代码未在最新 HEAD 运行全仓测试或阶段验收。模块表里的 `IN_MAIN_UNVERIFIED` 只表示代码在主线，不表示通过验证。
 - 本地保留的 feature worktree 作为 `IN_PROGRESS`，不是主线完成；当前有 4 个 worktree 含未提交改动。具体模块见下表。
 - `phase/1@48c7d01` 已完成 P7-CS-EXEC 定向调试，并修复 E1/Dataset DQ-10 历史 v2 manifest replay lookup；联合定向批次 101 passed / 3 skipped，Dataset v3 子进程 smoke 1 passed，Ruff / mypy 通过。E1-CAP-1 未测，全仓门禁与 Phase 验收未执行。
+- P0.5 Knowledge Store / Provider 与 hypothesis / loop / strategy consumers 定向回归 `126 passed`，Ruff / mypy 通过；种子 tags/assets 的人工审阅仍开放。
 
 ## 模块状态与计划映射
 

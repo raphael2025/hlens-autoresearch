@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main@b5f80fe`；E1 bounded 生产路径在主线，E1-CAP-1 / DQ-9 仍未测。`phase/1@48c7d01` 含 P7-CS-EXEC（定向 100 passed）及 E1/Dataset DQ-10 历史 v2 manifest 重放定位修复；联合定向批次 101 passed / 3 skipped，隔离 Dataset v3 子进程 smoke 1 passed，Ruff / mypy 通过。以上本地改动均未合入主线，不能视为容量门或 Phase 验收。当前代码清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
+> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main@b5f80fe`；E1 bounded 生产路径在主线，E1-CAP-1 / DQ-9 仍未测。`phase/1@850fcec` 的 P0.5 Knowledge 检索 / 消费者定向用例 126 passed；`phase/1@48c7d01` 含 P7-CS-EXEC（100 passed）及 E1/Dataset DQ-10 历史 v2 manifest 重放定位修复（101 passed / 3 skipped，另有子进程 smoke 1 passed）；Ruff / mypy 通过。以上本地改动均未合入主线，不能视为容量门或 Phase 验收。当前代码清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -151,6 +151,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
 - `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；Phase 1 E1-CAP-1 未测量
-- 当前工作分支：`phase/1@48c7d01`，包含 P7-CS-EXEC 与 E1/Dataset 定向调试修复；已按局部范围验证但未合入 `main`，不计为主线完成。
+- 当前工作分支：`phase/1@850fcec`，包含 P0.5 Knowledge 定向检查记录及 P7-CS-EXEC、E1/Dataset 定向调试修复；已按局部范围验证但未合入 `main`，不计为主线完成。
 - `origin/main` 与本地 `main` 已同步；PR #19 分支已合并，远端当前没有开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态。
 - 下一步：继续按模块计划推进其余代码调试；E1-CAP-1 仍须在生产路径与 `main` 一致的提交上测量。P7 / E1 本地结果不代表主线完成或 Phase 验收。

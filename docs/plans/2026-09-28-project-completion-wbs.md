@@ -65,7 +65,7 @@ Dataset 与实验须绑定快照、政策、来源和规则版本。研究闭环
 
 ### 当前底层代码实现索引（不构成验收）
 
-W3 的历史容量与测试证据仍按记录日期保留。当前代码执行视图以[剩余代码计划](2026-09-28-remaining-code-gaps.md)为准：截至 `main@b5f80fe`，E1 bounded scan、normalizer ID stream、生产归档 spool 与 v3 Dataset streaming pipeline 已有仓库内实现；本地 `phase/1@48c7d01` 修正 DQ-10 下 v2 manifest replay lookup，并完成 P7-CS-EXEC 接线。Dataset / Universe / Capacity 定向批次 `101 passed, 3 skipped`，另有 Dataset v3 子进程 smoke `1 passed`，Ruff / mypy 通过；这些均未合入 `main`。E1-CAP-1 与 DQ-9 仍开放，定向检查不代表容量或 Phase 验收。
+W3 的历史容量与测试证据仍按记录日期保留。当前代码执行视图以[剩余代码计划](2026-09-28-remaining-code-gaps.md)为准：截至 `main@b5f80fe`，E1 bounded scan、normalizer ID stream、生产归档 spool 与 v3 Dataset streaming pipeline 已有仓库内实现；本地 `phase/1@850fcec` 的 P0.5 Knowledge 定向回归 `126 passed`；`phase/1@48c7d01` 修正 DQ-10 下 v2 manifest replay lookup，并完成 P7-CS-EXEC 接线。Dataset / Universe / Capacity 定向批次 `101 passed, 3 skipped`，另有 Dataset v3 子进程 smoke `1 passed`，Ruff / mypy 通过；这些均未合入 `main`。E1-CAP-1 与 DQ-9 仍开放，定向检查不代表容量或 Phase 验收。
 
 ### W1 证据边界
 

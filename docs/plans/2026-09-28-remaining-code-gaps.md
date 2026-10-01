@@ -12,7 +12,7 @@
 - **`CODE_GAP`**：主线缺少、且已有 Accepted ADR / 已批准范围足以唯一约束的实现。
 - **`BLOCKED` / `DEFERRED`**：需要新架构决定、人工输入、外部设置，或项目已明确暂缓；不作为当前可执行代码任务。
 
-当前迭代授权逐模块定向调试；每项结果只对实际运行的范围有效。`phase/1@48c7d01` 的 P7-CS-EXEC 与 E1/Dataset 定向调试已通过所列局部检查，仍未合入主线；全仓门禁、E1-CAP-1 容量测量与 Phase 验收仍分别开放。
+当前迭代授权逐模块定向调试；每项结果只对实际运行的范围有效。`phase/1@850fcec` 的 P0.5 Knowledge 定向用例 126 passed；`phase/1@48c7d01` 的 P7-CS-EXEC 与 E1/Dataset 定向调试已通过所列局部检查，仍未合入主线；全仓门禁、E1-CAP-1 容量测量与 Phase 验收仍分别开放。
 
 ## 当前可执行的主线代码缺口
 
@@ -31,6 +31,8 @@
 - ADR-0077：v3 Dataset 的 evidence builder、chunk writer、streaming verifier、manifest store 和 `DatasetBuildPipeline` 均已存在；旧 v2 manifest 保持只读，不再通过 v2 builder 创建新数据集。
 
 上述只证明主线代码路径存在，不证明其测试、静态检查或 E1-CAP-1 通过。E1-CAP-1（完整进程 ≤ 32 MiB）与 ADR-0077 DQ-9 容量参数继续开放。PyIceberg metadata、单个 Avro manifest 文件、Arrow row group / ORC stripe 与 tmpfs / cgroup 工作集须按既有 ADR 测量；改变 Iceberg history / retention、读写权威或公开完整物化接口需另行架构决定。本轮不做这些验证或语义改变。
+
+P0.5 Knowledge Store / Provider 与 hypothesis / loop / strategy consumers 的定向回归现为 `126 passed`；旧测试对 current contract schema version 的硬编码已改为读取 `CONTRACT_SCHEMA_VERSION`。Knowledge seeds 的 tags/assets 仍属于具名人工审阅，不在代码任务中自动填充。
 
 除 E1-V2-REPLAY 与 P7-CS-EXEC 外，本轮静态盘点未确认其它可在当前 Accepted ADR 内直接编码的主线缺口。若后续审查发现其它缺口，先给出主线文件证据、适用 ADR / roadmap 条目与唯一文件边界，再加入本表；不能因功能“看起来有用”而扩展范围。
 
