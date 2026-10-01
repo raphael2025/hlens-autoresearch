@@ -39,8 +39,13 @@ from core.contracts.universe import (
     UniverseSelectionSpec,
     dataset_chunk_batch_id,
 )
-from core.domain.base import Contract, canonical_json
-from core.domain.specs import InstrumentType
+from core.domain.base import (
+    Contract,
+    canonical_json,
+    contract_schema_version_scope,
+)
+from core.domain.specs import DatasetRef, InstrumentType, Zone
+from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
 from infrastructure.canonical import rules
 from infrastructure.catalog.definitions import TableDefinitionRegistry
@@ -53,12 +58,14 @@ from infrastructure.catalog.phase1_tables import (
 from infrastructure.dataset.builder import (
     ChunkCommitted,
     DatasetBuilder,
+    DatasetBuilt,
     DatasetEvidenceRequest,
     DatasetEvidenceSources,
     MemberSpan,
     PitKeyEvaluation,
     PitKeyGroup,
     PitSelectedRevision,
+    _manifest_of,
 )
 from infrastructure.dataset.evidence import publish_evidence_object
 from infrastructure.pit.runs import RunLimits
@@ -270,6 +277,50 @@ class World:
             market_data_base_url=ORIGIN,
             dataset_table=DATASET_SELECTIONS,
         )
+
+    def historical_v2_build(
+        self,
+        universe: UniverseSelectionSpec,
+        pit: PointInTimeSpec,
+        data_type: str = "agg_trades",
+        window: tuple[datetime, datetime] = (START, END),
+    ) -> DatasetBuilt:
+        """Seed a historical v2 manifest for replay / compatibility tests only.
+
+        ADR-0077 DQ-10 disables new v2 builds through ``DatasetBuilder.build``. These tests need
+        old-form rows to keep exercising the supported v2 read and verification path, so this
+        fixture uses the lower-level writer to represent a build made before that cutoff.
+        """
+        builder = self.builder()
+        selection = builder.select(universe, pit, data_type, window[0], window[1])
+        commit = builder._materialize(selection)
+        recorded = builder._recorded_manifest_version(commit)
+        if recorded is None:
+            contract_version.new_group_version()
+            manifest = _manifest_of(
+                selection,
+                DatasetRef(
+                    zone=Zone.RESEARCH_DATASET,
+                    table=DATASET_SELECTIONS.table,
+                    snapshot_id=commit.snapshot_id,
+                    time_range_start=window[0],
+                    time_range_end=window[1],
+                ),
+            )
+        else:
+            with contract_schema_version_scope(recorded):
+                manifest = _manifest_of(
+                    selection,
+                    DatasetRef(
+                        zone=Zone.RESEARCH_DATASET,
+                        table=DATASET_SELECTIONS.table,
+                        snapshot_id=commit.snapshot_id,
+                        time_range_start=window[0],
+                        time_range_end=window[1],
+                    ),
+                )
+        persisted = builder.manifests().persist(manifest)
+        return DatasetBuilt(selection, manifest, commit, persisted)
 
     def universe(self) -> UniverseBuilder:
         return UniverseBuilder(self.h.adapter, self.h.storage, market_data_base_url=ORIGIN)

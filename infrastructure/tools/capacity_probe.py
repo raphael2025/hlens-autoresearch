@@ -94,6 +94,7 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.listings import ListingDeriver
 from infrastructure.canonical.normalizer import CanonicalNormalizer, CanonicalUnitNormalized
 from infrastructure.catalog import PHASE1_REGISTRY, PyIcebergCatalogAdapter, ensure_phase1_tables
+from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
@@ -110,7 +111,6 @@ from infrastructure.catalog.phase1_tables import (
     DATA_QUALITY_REPORTS,
     QUALITY_EVIDENCE_GAPS,
 )
-from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_ID, COLLECTOR_VERSION
 from infrastructure.collector.binance_exchange_info import (
     BinanceSpotExchangeInfoCollector,
@@ -137,10 +137,10 @@ from infrastructure.pit.selector import (
 )
 from infrastructure.quality.listing_report_v2 import ListingHistoryQualityReporterV2
 from infrastructure.quality.report_streams import QualityReportStreamLimits
-from infrastructure.quality.report_v3 import QualityReporterV3
 from infrastructure.quality.report_v3 import (
     _IDENTITY_RULE_HASHES as _CANONICAL_V3_IDENTITY_HASHES,
 )
+from infrastructure.quality.report_v3 import QualityReporterV3
 from infrastructure.quality.reporter import QualityReported, QualityReporter
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
@@ -561,12 +561,13 @@ def _quality_report(
     storage: LocalFileStorageAdapter,
     *,
     canonical_scratch_directory: Path,
+    knowledge_time: datetime = _KNOWLEDGE_REPORT,
 ) -> QualityReported:
     reporter = QualityReporter(
         adapter,
         storage,
         canonical_scratch_directory=canonical_scratch_directory,
-        clock=lambda: _KNOWLEDGE_REPORT,
+        clock=lambda: knowledge_time,
     )
     return reporter.report(DATA_TYPE, SYMBOL, DAY)
 
@@ -848,7 +849,9 @@ def _listing_quality_reporter(
         max_run_object_bytes=_QUALITY_MAX_RUN_OBJECT_BYTES,
         prefix_leaf_max_records=64,
         prefix_fanout=_PROBE_FANOUT,
-        prefix_max_node_bytes=1024 * 1024,
+        # One 16 KiB record bound times 64 entries plus the index's 512-byte header reserve
+        # exceeds 1 MiB by 512 bytes; keep the declared node bound internally consistent.
+        prefix_max_node_bytes=2 * 1024 * 1024,
         prefix_max_record_bytes=16 * 1024,
         row_chunk_capacity=_PROBE_RUN_RECORDS,
         max_hash_chunk_bytes=64 * 1024,
@@ -868,12 +871,22 @@ def _prepare_dataset_quality(
     canonical_scratch_directory: Path,
     scratch_root: Path,
 ) -> None:
-    """Commit the BTCUSDT / ETHUSDT v3 day reports and the v2 listing-history report.
+    """Commit the PIT-required legacy report and bounded v3 day/listing reports.
 
     Fixture setup, not a measured stage: the v3 Dataset (ADR-0077 / ADR-0094) only reads
     committed report manifests at its bound snapshot; it never writes one. Each reporter gets its
-    own scratch adapter under ``scratch_root``, outside the evidence warehouse.
+    own scratch adapter under ``scratch_root``, outside the evidence warehouse. The shared Dataset
+    manifest contract still requires a snapshot of ``quality.data_quality_reports``; the legacy
+    day report supplies that pinned input while v3 evidence reads continue through manifests.
     """
+    # Match the ordinary capacity-probe path, where this legacy report is produced in the
+    # preceding ``quality_report_day`` stage before Dataset's PIT spec is pinned.
+    _quality_report(
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        knowledge_time=_KNOWLEDGE_QUALITY_LISTING + timedelta(hours=1),
+    )
     with (
         _scratch_storage(scratch_root, "canonical-report") as canonical_scratch,
         _scratch_storage(scratch_root, "listing-report") as listing_scratch,

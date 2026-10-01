@@ -427,11 +427,24 @@ class DatasetBuilder:
         return DatasetBuilt(selection, manifest, commit, persisted)
 
     def _require_existing_v2_manifest(self, selection_id: str) -> None:
-        rows = self._adapter.scan_columns(
-            DATASET_MANIFESTS.table,
-            columns=("manifest_content_hash",),
-            row_filter=EqualTo("selection_id", selection_id),  # type: ignore[call-arg, arg-type]
-        ).to_pylist()
+        snapshots = snapshots_of_batches(self._adapter, self._table.table, (selection_id,))
+        selection_snapshots = {item.snapshot_id for item in snapshots[selection_id]}
+        if not selection_snapshots:
+            raise DatasetSpecError(
+                "creating a new v2 Research Dataset is disabled by ADR-0077 DQ-10; "
+                "use DatasetBuildPipeline to create a v3 dataset"
+            )
+        rows: list[dict[str, Any]] = []
+        for snapshot_id in selection_snapshots:
+            rows.extend(
+                self._adapter.scan_columns(
+                    DATASET_MANIFESTS.table,
+                    columns=("manifest_content_hash", "dataset_snapshot_id"),
+                    row_filter=EqualTo(  # type: ignore[call-arg]
+                        "dataset_snapshot_id", snapshot_id  # type: ignore[arg-type]
+                    ),
+                ).to_pylist()
+            )
         if not rows:
             raise DatasetSpecError(
                 "creating a new v2 Research Dataset is disabled by ADR-0077 DQ-10; "
@@ -442,7 +455,11 @@ class DatasetBuilder:
                 f"v2 selection {selection_id} has {len(rows)} persisted manifests"
             )
         manifest = self.manifests().load(rows[0]["manifest_content_hash"])
-        if manifest is None or manifest.selection_id != selection_id:
+        if (
+            manifest is None
+            or manifest.dataset.snapshot_id != rows[0]["dataset_snapshot_id"]
+            or manifest.dataset.snapshot_id not in selection_snapshots
+        ):
             raise CatalogIntegrityError(
                 f"v2 manifest row for selection {selection_id} is missing or mismatched"
             )
@@ -1667,6 +1684,8 @@ def _check_evidence_request(
                     "registered"
                 )
     bound = pit.snapshot_bindings
+    # Keep the legacy report table in the PIT identity because the shared dataset contract
+    # requires it; v3 quality evidence is read from the bounded manifest table below.
     for table in (canonical.table, _QUALITY):
         if table not in bound:
             raise DatasetSpecError(f"the PIT spec does not bind {table}")

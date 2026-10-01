@@ -388,12 +388,22 @@ def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
     unique_count = 128
     ids = [f"revision-{index:04d}" for index in range(unique_count)]
     event_sources_closed: list[bool] = []
-    stores: list[ub._FirstSeenStore] = []
+    stores: list[RunSetBuilder] = []
 
-    class TrackingStore(ub._FirstSeenStore):
-        def __init__(self) -> None:
-            super().__init__()
+    class TrackingBuilder(RunSetBuilder):
+        added = 0
+        max_buffer_records = 0
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.added = 0
+            self.max_buffer_records = 0
             stores.append(self)
+
+        def add(self, row: Any) -> None:
+            self.max_buffer_records = max(self.max_buffer_records, len(self._rows) + 1)
+            self.added += 1
+            super().add(row)
 
     def events() -> Iterator[ub._SpanEvent]:
         try:
@@ -410,26 +420,27 @@ def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
         finally:
             event_sources_closed.append(True)
 
-    monkeypatch.setattr(ub, "_FirstSeenStore", TrackingStore)
+    monkeypatch.setattr(ub, "RunSetBuilder", TrackingBuilder)
     monkeypatch.setattr(cursor, "_events", events)
 
     with cursor.listing_lineage() as lineage:
         assert [item.canonical_revision_id for item in lineage] == ids
     first_store = stores[-1]
-    assert first_store.count == unique_count
-    assert first_store.CACHE_KIB == 1024
-    assert first_store.closed and not first_store.path.exists()
+    assert first_store.added == unique_count * 2
+    assert first_store.max_buffer_records <= RUN_PARAMS.capacity
+    assert first_store._finished and not first_store._rows
 
     with cursor.evidence_gaps() as gaps:
         assert list(gaps) == [(revision_id, ds.GAP_TEXT) for revision_id in ids]
     second_store = stores[-1]
-    assert second_store.count == unique_count
-    assert second_store.closed and not second_store.path.exists()
+    assert second_store.added == unique_count * 2
+    assert second_store.max_buffer_records <= RUN_PARAMS.capacity
+    assert second_store._finished and not second_store._rows
 
     with cursor.listing_lineage() as lineage:
         assert next(lineage).canonical_revision_id == ids[0]
     early_store = stores[-1]
-    assert early_store.closed and not early_store.path.exists()
+    assert early_store._finished and not early_store._rows
 
     def failing_events() -> Iterator[ub._SpanEvent]:
         try:
@@ -450,7 +461,7 @@ def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
         with cursor.evidence_gaps() as gaps:
             list(gaps)
     failed_store = stores[-1]
-    assert failed_store.closed and not failed_store.path.exists()
+    assert failed_store._closed and not failed_store._rows
     assert len(event_sources_closed) == 4
 
 
@@ -873,5 +884,5 @@ def test_point_in_time_instants_remain_a_singleton_without_run_parameters(w: Wor
 
 def test_interval_cursor_requires_explicit_run_parameters(w: World) -> None:
     w.listed(ds.TRADING, L1)
-    with pytest.raises(UniverseSpecError, match="explicit UniverseRunParams"):
+    with pytest.raises(TypeError, match="run_params"):
         w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))

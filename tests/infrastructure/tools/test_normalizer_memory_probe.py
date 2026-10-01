@@ -346,27 +346,33 @@ def test_keep_workdirs_skips_cleanup_after_interruption(
 
 
 def test_v3_dataset_is_prepared_and_built_in_distinct_child_processes(tmp_path: Path) -> None:
-    config = {"microbatch": 64, "d2_batch": 128}
+    # Keep this child-process wiring check small; protocol-size capacity runs are separate.
+    rows = 16
+    config = {"microbatch": 8, "d2_batch": 16}
     workdir = tmp_path / "dataset-v3"
     workdir.mkdir()
 
     setup = probe._run_child(
-        probe._child_args("dataset_v3_setup", workdir, 200, config, None, staged_diagnostics=False),
+        probe._child_args(
+            "dataset_v3_setup", workdir, rows, config, None, staged_diagnostics=False
+        ),
         temp_dir=workdir,
         runtime="default",
         interval=0.01,
-        timeout=120,
+        # Building the local SQLite/Iceberg listing and quality fixtures on ext4 can exceed
+        # two minutes on slower CI / WSL disks; this is a fixture timeout, not a capacity gate.
+        timeout=300,
         rss_limit_kb=2 * 1024 * 1024,
     )
     assert setup.returncode == 0, setup.stderr_tail
     assert "dataset_setup" in setup.by_event
-    assert setup.by_event["dataset_setup"]["canonical_rows"] == 200
+    assert setup.by_event["dataset_setup"]["canonical_rows"] == rows
 
     build = probe._run_child(
         probe._child_args(
             "dataset_v3_build",
             workdir,
-            200,
+            rows,
             config,
             setup.by_event["dataset_setup"]["unit"],
             staged_diagnostics=False,
@@ -374,7 +380,7 @@ def test_v3_dataset_is_prepared_and_built_in_distinct_child_processes(tmp_path: 
         temp_dir=workdir,
         runtime="default",
         interval=0.01,
-        timeout=120,
+        timeout=300,
         rss_limit_kb=2 * 1024 * 1024,
     )
     assert build.returncode == 0, build.stderr_tail
@@ -382,8 +388,8 @@ def test_v3_dataset_is_prepared_and_built_in_distinct_child_processes(tmp_path: 
     assert end["stage"] == "dataset_v3_build"
     assert end["hold_seconds"] == probe._HOLD_SECONDS
     assert end["facts"]["row_count"] > 0
-    assert end["facts"]["row_count"] == 200
-    assert end["facts"]["expected_row_count"] == 200
+    assert end["facts"]["row_count"] == rows
+    assert end["facts"]["expected_row_count"] == rows
     assert end["facts"]["chunk_count"] > 0
     assert end["facts"]["diagnostic_only"] is True
     assert end["facts"]["dq9_parameters"] == probe._DATASET_V3_DIAGNOSTIC_RULE

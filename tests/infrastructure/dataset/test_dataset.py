@@ -27,7 +27,6 @@ from infrastructure.catalog.phase1_tables import (
 )
 from infrastructure.dataset import builder as b
 from infrastructure.dataset.builder import (
-    DatasetEmpty,
     DatasetSpecError,
     selection_id_for,
 )
@@ -62,8 +61,8 @@ def _ready(w: World, *, statuses: Any = ds.TRADING, data: str = "trades") -> Non
 
 def _build(w: World, spec: Any = None, data_type: str = "agg_trades", **kwargs: Any) -> Any:
     window = kwargs.pop("window", (START, END))
-    return w.builder().build(
-        FIRST_SLICE_UNIVERSE, spec or w.spec(**kwargs), data_type, window[0], window[1]
+    return w.historical_v2_build(
+        FIRST_SLICE_UNIVERSE, spec or w.spec(**kwargs), data_type, window
     )
 
 
@@ -75,7 +74,7 @@ def _build(w: World, spec: Any = None, data_type: str = "agg_trades", **kwargs: 
 def test_archive_to_manifest_end_to_end(w: World) -> None:
     _ready(w)
     spec = w.spec()
-    built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
+    built = _build(w, spec)
     manifest = built.manifest
 
     # Universe: both first-slice episodes observed TRADING before the simulation time.
@@ -126,6 +125,15 @@ def test_archive_to_manifest_end_to_end(w: World) -> None:
     assert not built.replayed
 
 
+def test_new_v2_build_is_refused_before_materializing_rows(w: World) -> None:
+    _ready(w)
+    spec = w.spec()
+    with pytest.raises(DatasetSpecError, match="disabled by ADR-0077 DQ-10"):
+        w.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
+    assert w.h.head(DATASET_SELECTIONS.table) is None
+    assert w.h.head(MANIFESTS.table) is None
+
+
 @pytest.mark.parametrize("data_type", ["klines_1m"])
 def test_bars_are_selected_a_day_at_a_time(w: World, data_type: str) -> None:
     _ready(w, data="bars")
@@ -143,7 +151,7 @@ def test_a_rebuild_is_bit_identical_and_replays(w: World) -> None:
     spec = w.spec()
     first = _build(w, spec)
     w.h.reopen()  # a fresh process
-    second = _build(w, spec)
+    second = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
     assert canonical_json(second.manifest.model_dump(mode="json")) == canonical_json(
         first.manifest.model_dump(mode="json")
     )
@@ -323,8 +331,13 @@ def test_empty_selection_is_refused(w: World) -> None:
     w.listed()
     w.trades()
     w.report()
-    with pytest.raises(DatasetEmpty):
-        _build(w, window=(utc(2023, 11, 14, 1), utc(2023, 11, 14, 2)))
+    empty_window = (utc(2023, 11, 14, 1), utc(2023, 11, 14, 2))
+    selection = w.builder().select(
+        FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", *empty_window
+    )
+    assert selection.rows == ()
+    with pytest.raises(DatasetSpecError, match="disabled by ADR-0077 DQ-10"):
+        w.builder().build(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", *empty_window)
 
 
 def test_filters_unregistered_specs_and_bindings_are_refused(w: World) -> None:

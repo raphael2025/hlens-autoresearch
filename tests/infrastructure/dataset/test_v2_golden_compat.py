@@ -90,7 +90,7 @@ def _ready(w: World) -> None:
 
 
 def _build(w: World, window: tuple[Any, Any] = (START, END)) -> Any:
-    return w.builder().build(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", *window)
+    return w.historical_v2_build(FIRST_SLICE_UNIVERSE, w.spec(), "agg_trades", window)
 
 
 def _heads(w: World) -> dict[str, str | None]:
