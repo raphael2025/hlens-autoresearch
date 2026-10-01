@@ -12,13 +12,13 @@
 - **`CODE_GAP`**：主线缺少、且已有 Accepted ADR / 已批准范围足以唯一约束的实现。
 - **`BLOCKED` / `DEFERRED`**：需要新架构决定、人工输入、外部设置，或项目已明确暂缓；不作为当前可执行代码任务。
 
-本轮只补全代码与必要测试用例；不运行 pytest、Ruff、format、mypy、build、容量 probe、数据生成或 Phase 验收。实现完成一律保留 `NOT_RUN / NOT_ACCEPTED` 状态。
+当前迭代授权逐模块定向调试；每项结果只对实际运行的范围有效。P7-CS-EXEC 已完成分支级定向测试与静态检查，仍未合入主线；全仓门禁、E1 容量 probe 与 Phase 验收仍分别开放。
 
 ## 当前可执行的主线代码缺口
 
 | ID / 模块 | 目标与依据 | 文件边界 | 依赖与并行限制 | 代码完成条件 |
 |---|---|---|---|---|
-| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。本地 `phase/1@775245e` 将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、对应的 P7 测试及 `research/hypotheses/README.md`、能力矩阵 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 已达到本分支代码 DoD；回归用例已编写但 `NOT_RUN`。直到验证及整合完成前，`main` 的 P7-CS-EXEC 仍是未解决差异。 |
+| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。本地 `phase/1` 将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试及 P7 文档 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 分支级实现完成；定向测试 `100 passed`，相关 Ruff / mypy 通过。主线仍有差异，尚未整合；执行默认关闭。 |
 
 ## 已在基线实现但未验证的 E1 代码
 
@@ -65,4 +65,4 @@
 1. 先完成分支内容 / ADR 对账，避免对主线重复实现或将未接受的分支版 ADR 当作已接受。
 2. E1 的仓库自有生产路径代码已在基线；保持 E1-CAP-1 / DQ-9 为未验证容量门。完成 P7-CS-EXEC 后如源码复核发现新的仓库自有增长持有项，只能作为有文件证据的新任务单独排入。
 3. 分支候选只有在代码与决策状态完成独立复核后，才可以被另行列为任务；此次清单本身不授权分支合并。
-4. 当前 P7 代码接线已补齐并加入必要回归用例，均注明 `NOT_RUN`；后续统一调试、容量测量和 Phase 验收分别登记，不把它们并入代码完成状态。
+4. P7 代码接线与定向调试已完成并提交；后续主线整合、统一门禁、E1 容量测量和 Phase 验收分别登记，不把它们混为同一状态。

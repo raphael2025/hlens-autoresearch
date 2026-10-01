@@ -244,21 +244,22 @@ class CrossSectionalRequest:
             type(item) is not CrossSectionalEvaluation for item in evaluations
         ):
             raise ValueError("evaluations must be a non-empty tuple of CrossSectionalEvaluation")
-        for earlier, later in pairwise(evaluations):
+        for earlier_evaluation, later_evaluation in pairwise(evaluations):
             if (
-                later.evaluation_time <= earlier.evaluation_time
-                or later.interval_end <= earlier.interval_end
+                later_evaluation.evaluation_time <= earlier_evaluation.evaluation_time
+                or later_evaluation.interval_end <= earlier_evaluation.interval_end
             ):
                 raise ValueError("evaluations must be strictly ascending in time and interval_end")
         observations = tuple(self.observations)
         if any(type(item) is not MemberBarValue for item in observations):
             raise ValueError("observations must be MemberBarValue instances")
         ordered = tuple(sorted(observations, key=MemberBarValue._order))
-        for earlier, later in pairwise(ordered):
-            if earlier._order() == later._order():
+        for earlier_value, later_value in pairwise(ordered):
+            if earlier_value._order() == later_value._order():
                 raise ValueError(
-                    f"duplicate value for member {later.member!r} at "
-                    f"{later.interval_end.isoformat()} available {later.available_time.isoformat()}"
+                    f"duplicate value for member {later_value.member!r} at "
+                    f"{later_value.interval_end.isoformat()} available "
+                    f"{later_value.available_time.isoformat()}"
                 )
         for item in ordered:
             if item.knowledge_time > self.knowledge_cutoff:
@@ -445,6 +446,11 @@ class _CrossSectionalProvider:
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
+    @classmethod
+    def plugin_key(cls) -> str:
+        """The stable key declared by the typed-plan Provider allowlist."""
+        return f"{cls.NAME}@{cls.VERSION}"
+
     # ------------------------------------------------------------------ binding
 
     def _bind(self, spec: FeatureSpec, manifests: Mapping[str, ResearchDatasetManifest]) -> _Served:
@@ -564,11 +570,15 @@ class _CrossSectionalProvider:
         used_at = max((item.available_time for item in valid.values()), default=None)
         result: list[CrossSectionalValue] = []
         for member in population:
-            item = valid.get(member)
+            member_value = valid.get(member)
             value: SourceValue | None = None
-            if item is not None and item.value is not None and n >= _MIN_POPULATION:
-                less = bisect_left(ordered, item.value)
-                equal = bisect_right(ordered, item.value) - less
+            if (
+                member_value is not None
+                and member_value.value is not None
+                and n >= _MIN_POPULATION
+            ):
+                less = bisect_left(ordered, member_value.value)
+                equal = bisect_right(ordered, member_value.value) - less
                 value = self._value(served, 2 * less + equal - 1, 2 * (n - 1))
             result.append(
                 CrossSectionalValue(

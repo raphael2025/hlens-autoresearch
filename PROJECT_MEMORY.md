@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main@b5f80fe`；E1 bounded 生产路径已在主线但 E1-CAP-1 / DQ-9 未测；P7-CS-EXEC 代码提交为 `phase/1@775245e`，未验证、未合入。当前代码清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
+> 2026-10-01 更新恢复点：PR #17–#19 已合并至 `main@b5f80fe`；E1 bounded 生产路径已在主线但 E1-CAP-1 / DQ-9 未测；P7-CS-EXEC 在 `phase/1` 已提交并完成定向调试（100 passed，相关 Ruff / mypy 通过），尚未合入。最新本地提交与恢复点见 Git；当前代码清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 

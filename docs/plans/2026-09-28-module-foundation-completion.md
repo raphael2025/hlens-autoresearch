@@ -7,7 +7,7 @@
 - 基线为最新已合入主线 `main@b5f80fe`（PR #17、#18、#19）；没有开放 PR。主线与远端同步。
 - 最近合入的大批代码未在最新 HEAD 运行全仓测试或阶段验收。模块表里的 `IN_MAIN_UNVERIFIED` 只表示代码在主线，不表示通过验证。
 - 本地保留的 feature worktree 作为 `IN_PROGRESS`，不是主线完成；当前有 4 个 worktree 含未提交改动。具体模块见下表。
-- 本轮只更新计划文档，不跑测试、lint、format、类型检查、build、probe 或验收。
+- P7-CS-EXEC 已在 `phase/1` 做定向调试；100 项通过，相关 Ruff / mypy 通过。未运行全仓门禁、容量 probe 或 Phase 验收。
 
 ## 模块状态与计划映射
 
@@ -19,7 +19,7 @@
 | P2 State | `IN_MAIN_UNVERIFIED`：State 计算与诊断路径存在 | 无已确认的主线代码缺口 | `feature/p2-state` / `claude/module-completion` 含 CLI 候选；待对账。 |
 | P3 Event / P4 Outcome | `IN_MAIN_UNVERIFIED`：Provider、存储和显式操作路径已有 | 无已确认的主线代码缺口 | 真实 Catalog 操作不属于本轮代码任务；留待获授权运行。 |
 | P5 Strategy / Validation / P6 Matrix | `IN_MAIN_UNVERIFIED`：策略、验证与矩阵逻辑存在 | 无已确认的主线代码缺口 | Profile 数值未冻结；不通过实现推断。 |
-| P7 Discovery | `main@b5f80fe` 对横截面计划仍拒绝编译；`phase/1@775245e` 加入专用 Provider 编译接线及拒绝路径，`CODE_COMPLETE / NOT_RUN` | 横截面节点仅作为计划根；不适配成单序列输入，也不直接进入只接受 Strategy 根的 Research Loop | `feature/p7-bind` 是另一份未合入候选，不计为本实现；当前更改仅在 `phase/1`。 |
+| P7 Discovery | `main@b5f80fe` 对横截面计划仍拒绝编译；`phase/1` 已接入专用 Provider，定向 100 项通过，相关 Ruff / mypy 通过 | 横截面节点仅作为计划根；不适配成单序列输入，也不直接进入只接受 Strategy 根的 Research Loop；执行默认关闭 | `feature/p7-bind` 是另一份未合入候选，不计为本实现；P7-CS-EXEC 改动尚未合入 `main`。 |
 | P8 Retro audit / P9 Calibration | `IN_MAIN_UNVERIFIED`：报告链与合成校准代码已在主线 | 无已确认的主线代码缺口 | fixture 更新、运行回归属于后续调试 / 验证。 |
 | P10 Router | `IN_MAIN_UNVERIFIED`：纸面路由和报告路径存在 | 无已确认的主线代码缺口 | `feature/p10-deviation` 有未提交 Paper deviation Web/API 修改；按 ADR 与当前 DTO 先对账。 |
 | P11 Research Loop | `IN_MAIN_UNVERIFIED`：权威解析、指标闭集、默认环境与报告已有；PR #19 增加只读证据 / 提案审计视图 | 无已确认的主线基础代码缺口 | `feature/p11-ops`, `feature/p11-tests`, `claude/module-completion` 有运维 CLI 候选；真实运行还需部署设置。 |
@@ -32,8 +32,8 @@
 
 1. 对所有 feature worktree 和 branch-only ADR 做只读对账；未合入的实现仍是 `IN_PROGRESS`，不把 ADR-0101–0107 的 branch-only 版本当作主线决策。
 2. E1 的仓库自有代码已按已接受 ADR 静态对账；E1-CAP-1 / DQ-9 留待授权的后续容量测量，不能标为通过。
-3. `P7-CS-EXEC` 已在 `phase/1@775245e` 接线并添加回归用例；尚未合入 `main`。仅在未来实际运行验证后才能更新 `NOT_RUN` 状态。
-4. 本轮不运行检查、不执行数据 / Catalog 操作、不作 Phase 验收。
+3. `P7-CS-EXEC` 已在 `phase/1` 接线并添加回归用例，定向调试通过；尚未合入 `main`。定向通过不代表全仓门禁或 Phase 验收。
+4. 本轮未运行全仓门禁、容量 probe、数据 / Catalog 操作或 Phase 验收；这些仍是独立后续门槛。
 
 ## 状态分类
 
