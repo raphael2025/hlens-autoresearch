@@ -17,6 +17,7 @@
 
 | ID / 模块 | 主线缺口与依据 | 文件边界 | 依赖与并行限制 | 代码完成条件 | 当前状态 |
 |---|---|---|---|---|---|
+| E1-ARCHIVE-REUSE / P1 Normalizer | `main@b5f80fe` 的 pinned verifier 每个 256 行窗口都会重新严格解析整个 archive。主线正式探针在 N=100,000 的 `verify_archive` 单阶段耗时 366.084 秒、RSS 增量 45.7 MiB（见[中断记录](../reviews/2026-10-01-e1-cap1-main-partial.md)）。Accepted ADR-0100 允许保留严格验证与有界 spool；PROJECT_MEMORY 已决定 parser scratch 使用 canonical scratch，不回退 TMPDIR。 | `infrastructure/parser/binance_archive.py`、`infrastructure/revision/row_integrity.py`、`infrastructure/canonical/normalizer.py`、memory probe 与 parser / verifier / normalizer 回归测试 | 依赖 ADR-0100、现行严格 D1 parser 与 canonical scratch 决定；P1 单任务，与其他 E1 / Dataset / `core/` 契约任务串行。最多保留一个 archive spool；多 archive 路径仍顺序处理并关闭。 | 相同 ObjectRef 只严格解析一次并跨窗口复用；最多一个 spool 且由 close / eviction 可靠关闭；archive 输入与 Arrow spool 显式落到 canonical scratch；拒绝、行内容验证与错误优先级不变。定向回归、静态检查、review 完成后，须在与整合 `main` 一致的代码上完成正式 E1 矩阵；32 MiB 门槛不变。 | `IN_PROGRESS`：候选在 `phase/1`，未进入 `main`；主线缺口仍开放。 |
 | E1-V2-REPLAY / P1 Dataset | `main@b5f80fe` 的 ADR-0077 DQ-10 只读兼容入口按不存在的 `selection_id` 列查询 v2 manifest 表，历史 v2 Dataset 重放会失败。候选分支 `phase/1@48c7d01` 改为从 selection batch snapshot 反查 `dataset_snapshot_id`，并校验加载 manifest 与该 snapshot 一致。 | `infrastructure/dataset/builder.py`、Dataset v2 / golden compatibility tests | 依赖主线已接受 ADR-0077；与其他 Dataset / `core/` 契约改动串行。不得恢复新 v2 写入。 | 公开重放入口能读取已持久化 v2 manifest；绑定、不匹配、缺失等负例拒绝；既有 golden replay 保持兼容；相关测试与检查结果在实现批次如实记录。 | `IN_PROGRESS`：候选实现与定向验证存在于 `phase/1`，未合入 `main`。 |
 | P7-CS-EXEC / P7 Discovery | `main@b5f80fe` 对 `rank_cs` / `quantile_cs` 执行接线仍拒绝。候选 `phase/1@48c7d01` 将其加入编译路径，并通过显式 pinned universe 构造专用 Provider；横截面结果只允许作为计划根，不转接为单序列输入。依据 ADR-0088 / 0099 / 0100。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、相应 tests / P7 文档 | 依赖主线 Accepted ADR-0100。单一 P7 任务；不得与 E1 / `core/` 同时修改。若需组合成单序列输入或接入仅接受 Strategy 根的 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 合法横截面根计划可用同一显式 pinned manifest 编译并构造 Provider；无 manifest、错误根节点及跨类型输入均 fail closed；执行开关仍默认关闭；增加相应正反例测试并记录检查结果。 | `IN_PROGRESS`：候选实现与定向验证存在于 `phase/1`，未合入 `main`。 |
 
@@ -32,6 +33,8 @@
 - ADR-0077 / 0093 / 0094：Quality 与 Dataset 的固定大小 manifest、内容寻址 evidence stream、v3 chunk writer / verifier / pipeline 已在基线；旧版本按只读兼容路径处理。
 
 以上只说明源码路径存在，不证明测试、静态检查、容量或 Phase 验收通过。E1-CAP-1（完整进程 ≤32 MiB）和 ADR-0077 DQ-9 参数仍开放；PyIceberg metadata、Avro manifest、Arrow row group / ORC stripe 与总 scratch / cgroup 工作集须按后续验证计划测量。改变 Iceberg history / retention、数据权威或公开完整物化接口须另行决策。
+
+2026-10-01 主线探针按 32 MiB 正式协议启动，但在完成 100,000 行 `verify_archive` stage 后中断。`status=interrupted`、`capacity_verdict=ERROR`、`e1_cap1_evidence=false`；这是未完成的证据采集，不是整体容量 FAIL。单阶段 RSS 超限与重复严格解析耗时均记录在[探针记录](../reviews/2026-10-01-e1-cap1-main-partial.md)，不得外推为整个矩阵的判定。
 
 P0.5 Knowledge Store / Provider 及 consumers 的既有定向结果为 126 passed，Ruff / mypy 通过；这些本地更改未合入主线。Knowledge seeds 的 tags/assets 仍待具名人工审阅，不能自动填充。
 

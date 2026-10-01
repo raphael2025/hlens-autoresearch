@@ -10,13 +10,12 @@ import zipfile
 from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from pathlib import Path
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from core.contracts.revision import PolicyRole
-from core.contracts.storage import StorageAdapter
 from core.domain.base import canonical_json
 from infrastructure.parser import (
     AGG_TRADES_ROW_SCHEMA,
@@ -637,6 +636,7 @@ class _MemoryArchiveStorage:
 
 
 def test_spooled_parser_matches_the_public_table_result_and_cursor_is_owned(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(parser_mod, "_CHUNK_ROWS", 2)
@@ -648,13 +648,16 @@ def test_spooled_parser_matches_the_public_table_result_and_cursor_is_owned(
     make_temp = parser_mod.tempfile.TemporaryFile
 
     def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
+        assert kwargs.get("dir") == str(tmp_path)
         handle = make_temp(*args, **kwargs)
         temp_files.append(handle)
         return handle
 
     monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
     spooled = parse_archive_spooled(
-        case.request, _MemoryArchiveStorage(case.request.object_ref, case.data)
+        case.request,
+        _MemoryArchiveStorage(case.request.object_ref, case.data),
+        scratch_directory=tmp_path,
     )
     assert isinstance(spooled, parser_mod.SpooledArchive)
     assert spooled.row_count == parsed.row_count == 3

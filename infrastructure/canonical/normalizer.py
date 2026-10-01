@@ -641,6 +641,8 @@ class CanonicalNormalizer:
             facts.positions.close()
         self._facts.clear()
         self._batches.clear()
+        for pin in self._pins.values():
+            pin.verifier.close()
         self._pins.clear()
 
     def __enter__(self) -> CanonicalNormalizer:
@@ -1248,7 +1250,12 @@ class CanonicalNormalizer:
                 pin = _Pin(
                     catalog=catalog,
                     canonical_head=heads[2],
-                    verifier=PersistedRowVerifier(catalog, self._storage, cache_archives=True),
+                    verifier=PersistedRowVerifier(
+                        catalog,
+                        self._storage,
+                        cache_archives=True,
+                        scratch_directory=self._scratch_directory,
+                    ),
                 )
                 if self._frozen:
                     self._pins[tables] = pin
@@ -1267,7 +1274,12 @@ class CanonicalNormalizer:
             pin = _Pin(
                 catalog=catalog,
                 canonical_head=heads[2],
-                verifier=PersistedRowVerifier(catalog, self._storage, cache_archives=True),
+                verifier=PersistedRowVerifier(
+                    catalog,
+                    self._storage,
+                    cache_archives=True,
+                    scratch_directory=self._scratch_directory,
+                ),
             )
             if self._frozen:
                 self._pins[tables] = pin

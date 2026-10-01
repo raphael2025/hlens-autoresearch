@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 恢复点：代码基线仍为 `main@b5f80fe`（PR #17–#19 已合入）；本地回归修复快照已提交为 `3975da3`，分支 `phase/1` 继续承载未合入的 P0.5、P1 Dataset DQ-10 与 P7-CS-EXEC 候选。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；DQ-10 public replay / v2 golden 专项为 35 passed；P7 横截面专项为 105 passed。策略回归为 257 passed / 1 skipped / 1 failed，唯一失败的旧 B67 golden hash 在改动前 `47446f4` 精确复现。候选不计为主线完成，完整 W1、E1-CAP-1 / DQ-9 仍未完成，Phase 1 未验收。当前唯一代码缺口清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
+> 2026-10-01 恢复点：代码基线仍为 `main@b5f80fe`（PR #17–#19 已合入）；`phase/1` 已有基础回归修复提交 `3975da3`，当前工作区继续承载未合入的 P0.5、P1 Dataset DQ-10、P7-CS-EXEC，以及 E1 archive spool reuse 候选。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；DQ-10 专项 35 passed；P7 专项 105 passed；E1 parser / verifier / normalizer 定向集 216 passed。策略回归唯一旧 B67 golden hash 在改动前 `47446f4` 精确复现。候选不计为主线完成。clean main 的 E1-CAP-1 正式探针在 10k 六 stage 与 100k `verify_archive` 后中断，未形成 PASS / FAIL 容量结论；详情与原始样本见 `docs/reviews/2026-10-01-e1-cap1-main-partial.md`。完整 W1、E1-CAP-1 / DQ-9 仍未完成，Phase 1 未验收。当前唯一代码缺口清单见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启、未验收，E1-CAP-1（完整进程 32 MiB 容量门）是验收阻断且尚未在当前代码上测量；全仓门禁从未在当前代码上运行
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启、未验收，E1-CAP-1（完整进程 32 MiB 容量门）仍阻断。main 正式矩阵曾启动但中断，不能作为 PASS / FAIL；全仓门禁从未在当前代码上运行
 - 决策权：CLAUDE.md §0 同时包含 2026-09-28 Claude Code PM 授权与 2026-09-30 早段 Codex PM 段落（`fc9f643`），互相冲突；Raphael 于 2026-09-30 在 Claude Code 主会话指令 Claude Code 接管、「你自己决定一切」，本轮据此执行；CLAUDE.md 自身修改被环境安全检查拦截，冲突留待 Raphael 本地删除 §0 Codex 段落（见 `PROJECT_STATUS.md` §6 D-AUTH-CONFLICT）。实盘操作始终需 Raphael 亲自批准；H3 / H4 / H6 不受任何授权改变
 
 ## 2. Current Architecture
@@ -41,10 +41,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
-- Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；ADR-0100 已写两轮有界化，未测量。旧候选分支的容量数值不能外推为 `main` 的结果
+- Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；main 正式矩阵已部分运行后中断。旧候选分支的容量数值不能外推为 `main` 的结果
 - 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写（多数为框架 + 补全），未测试、未验收
 - Next Milestone：按模块计划分诊候选回归、复核并收口已批准代码缺口 → 在生产路径与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。P7-CS-EXEC 与 P1 DQ-10 均有本地候选工作。当前代码计划见 `docs/plans/2026-09-28-remaining-code-gaps.md`
-- 仍开放：P7-CS-EXEC 尚未进入 `main` / 未验证；E1-CAP-1 与 DQ-9 未测；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
+- 仍开放：P7-CS-EXEC 尚未进入 `main` / 未验证；E1-CAP-1 完整容量结论未得、DQ-9 未定；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
 
@@ -150,7 +150,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Phase 0 基线：tag `phase-0-complete`（唯一经完整门禁的发布基线）
-- `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；Phase 1 E1-CAP-1 未测量
-- 当前工作分支：`phase/1`，包含 P0.5 Knowledge、P7-CS-EXEC、E1/Dataset 候选与 infrastructure 回归修复；未合入 `main`，不计为主线完成。Phase 1 infrastructure 选择集为 2298 passed / 88 skipped；候选需按模块计划继续复核。
+- `main` = `b5f80fe`（PR #17–#19 已合并；PR #19 增加 P11/P12 只读审计视图）——最新 HEAD 未跑统一门禁；E1-CAP-1 正式矩阵中断，未判定
+- 当前工作分支：`phase/1`，包含 P0.5 Knowledge、P7-CS-EXEC、E1/Dataset 与 infrastructure 回归修复候选；未合入 `main`，不计为主线完成。E1 archive spool reuse 候选已通过定向检查，仍需独立 review 与整合，并完成完整容量矩阵；逐项记录见模块计划。
 - `origin/main` 与本地 `main` 已同步；PR #19 分支已合并，远端当前没有开放 PR。Claude feature worktree 有未提交或未合入内容，均未计入完成状态。
-- 下一步：继续按模块计划推进其余代码调试；E1-CAP-1 仍须在生产路径与 `main` 一致的提交上测量。P7 / E1 本地结果不代表主线完成或 Phase 验收。
+- 下一步：review 并整合符合边界的 E1 archive spool reuse；之后只能在生产路径与 `main` 一致的提交上重跑完整 E1 矩阵。P7 / E1 本地结果不代表主线完成或 Phase 验收。

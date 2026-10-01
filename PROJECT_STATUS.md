@@ -13,7 +13,7 @@
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
 | 代码基线 | `main` = `b5f80fe`（PR #19，2026-10-01 合并）；PR #17–#19 已进入主线。工作分支上的改动不计为主线完成 |
 | 契约 | 2.5.0；current Schema 148 份 |
-| 验证状态 | 最新主线未运行全仓门禁。`phase/1` 当前 Phase 1 infrastructure 选择集为 2298 passed / 88 skipped（855.34s）；DQ-10 public replay / v2 golden 专项 35 passed；P7 横截面编译 / binding / lowering / provider 专项 105 passed。受影响策略回归为 257 passed / 1 skipped / 1 failed，唯一失败的旧 B67 golden hash 在原始提交 `47446f4` 上精确复现。Ruff check / format 通过，3 个受影响生产模块 mypy 通过。E1-CAP-1（32 MiB 容量门）未测量，Phase 未验收。 |
+| 验证状态 | 最新主线未运行全仓门禁。`phase/1` infrastructure 选择集为 2298 passed / 88 skipped；DQ-10 专项 35 passed；P7-CS-EXEC 专项 105 passed。新 E1 verifier / parser / normalizer 定向集 216 passed，4 个生产模块 mypy 通过，相关 Ruff check / format 通过；1k/2k/3k 候选六阶段诊断完成但 `e1_cap1_evidence=false`。策略回归唯一失败的旧 B67 golden hash 在原始提交 `47446f4` 上精确复现。main 的 E1-CAP-1 正式探针于 100k `verify_archive` stage 后中断（非 PASS / FAIL）；Phase 未验收。 |
 | 最后更新时间 | 2026-10-01 |
 
 Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（ADR-0020），契约 2.0.0 随之发布，此后破坏性契约变化必须升 major 并走 ADR。
@@ -26,7 +26,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入、标签 / 资产检索已实现；种子的标签 / 资产仍需具名人工审阅；未验收 |
-| 1 | Market Representation | 🔄 采集 → 原始 → 规范 → 时点选择 → 质量 → 数据集链路已实现，D3E 已验收、D4 已关闭；内存有界化已做两轮（未测）；上市政策 1.1.0 已写入 BTCUSDT / ETHUSDT 下界 2017-08-17（2026-09-30 联网核实）；**E1-CAP-1 未测量，阻断验收** |
+| 1 | Market Representation | 🔄 采集 → 原始 → 规范 → 时点选择 → 质量 → 数据集链路已实现，D3E 已验收、D4 已关闭；内存有界化已做两轮，正式容量矩阵中断、无结论；上市政策 1.1.0 已写入 BTCUSDT / ETHUSDT 下界 2017-08-17（2026-09-30 联网核实）；**E1-CAP-1 未判定，阻断验收** |
 | 2 | Market State Engine | 🧱 框架与持久化已实现；未验收 |
 | 3 | Event & Interaction Engine | 🧱 已实现；真实 Catalog 尚未建表；未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 已实现；Profile 数值未冻结；未验收 |
@@ -57,11 +57,11 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 ## 4. 当前正在做
 
-- 🔎 按[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)区分主线缺口与未合入候选：P1 DQ-10 v2 历史 manifest 重放与 P7-CS-EXEC 在 `phase/1` 有候选修复，尚未合入 `main`。
+- 🔎 按[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)推进主线缺口：`phase/1` 工作区正在实现 E1-ARCHIVE-REUSE（单 archive strict spool 跨窗口复用及 canonical scratch 路由），定向集 216 passed；P1 DQ-10 v2 重放与 P7-CS-EXEC 候选也仍未合入 `main`。这些均不算主线完成。
 - ✅ `phase/1` 的 Phase 1 infrastructure 选择集复跑为 2298 passed / 88 skipped；此前 11 个失败已逐项分诊并通过该选择集复验。此结果只覆盖所列 infrastructure 测试，不代表 `main` 全仓门禁或 Phase 验收。
 - ✅ DQ-10 public replay 与 v2 golden compatibility 定向集 `35 passed`；候选修复仍未合入主线。
 - ⚠️ 受影响策略回归为 257 passed / 1 skipped / 1 failed；失败的旧 B67 dataset-report hash 在改动前提交 `47446f4` 上精确复现，按既有证据记录，不更新 golden、不归因于本轮变更。
-- E1-CAP-1 / DQ-9 仍未测 / 未定；具体任务、候选分支、依赖和代码完成条件见[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)及[模块计划](docs/plans/2026-09-28-module-foundation-completion.md)。
+- E1-CAP-1 未得出结论：main 正式探针启动后完成 10k 六个 stage 与 100k `verify_archive`，随后因耗时中断；完整 N/repeat 矩阵未完成。DQ-9 未定。中断与原始样本见[探针记录](docs/reviews/2026-10-01-e1-cap1-main-partial.md)；代码任务与后续容量条件见[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)及[模块计划](docs/plans/2026-09-28-module-foundation-completion.md)。
 
 ## 5. 下一步
 
@@ -85,7 +85,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | ID | 事项 | 状态 |
 |---|---|---|
-| E1-CAP-1 | Phase 1 完整进程 32 MiB 容量门 | 有界化两轮已写，未测量；阻断 Phase 1 验收 |
+| E1-CAP-1 | Phase 1 完整进程 32 MiB 容量门 | main 正式矩阵已启动但中断，尚无容量判定；阻断 Phase 1 验收 |
 | W1 | 全仓测试门禁 | 从未在当前代码上运行 |
 | P1-DQ10 | v2 Dataset 历史 manifest 重放定位 | 候选修复及历史 v2 fixture 已通过 Phase 1 infrastructure 选择集；仍未合入 `main`，须独立复核 |
 | P7-CS | 横截面排名 / 分位的执行接线（ADR-0100） | `phase/1` 有候选实现，定向 100 passed 曾通过；仍未合入 `main`，不接单序列组合器或 Research Loop |
@@ -102,7 +102,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 - ⚠️ 两轮大规模代码补全均未测试：合并进 `main` 不等于验证通过，首次全仓门禁可能暴露大量失败
 - ⚠️ 授权文件内部冲突（§6 第一项）未消除前，后续代理可能读到相互矛盾的指挥关系
-- ⚠️ E1-CAP-1 未测量：成交数据整天规模的内存上界仍未证明
+- ⚠️ E1-CAP-1 正式矩阵已部分运行后中断：成交数据整天规模的内存上界仍未证明
 - ⚠️ 官方资料不能证明历史行情的公开时刻：不绑定假设政策时，早于本机采集的历史不可用于回测
 - ⚠️ 上市政策 1.1.0 只是研究假设，不能证明真实上市史或排除幸存者偏差
 - ⚠️ 契约层只校验结构与声明：注册存在性、哈希与真实内容一致、泄漏检测、Profile 已冻结等仍依赖运行时服务
@@ -128,11 +128,11 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-10-01 | 模块计划与分支基线整理 | 主线保持 `b5f80fe`；本地快照 13 branch / 12 worktree，4 个工作区有未提交改动。`phase/1@47446f4` 的选择性回归 11 failed / 2287 passed / 88 skipped，待分诊；不构成主线状态或验收结论 |
 | 2026-10-01 | `phase/1@850fcec` P0.5 Knowledge 定向检查 | 检索、标签/资产和 Knowledge consumers 定向 126 passed；将旧 `2.2.0` 测试断言改为读取当前契约常量。种子标签/资产仍需具名人工审阅 |
 | 2026-10-01 | `phase/1@48c7d01` E1/Dataset 调试 | 修复 DQ-10 下 v2 manifest 与 selection snapshot 的关联查找；修正质量 prefix 节点上界；补齐隔离 Dataset fixture 前置报告并缩小 smoke 数据规模。定向 101 passed / 3 skipped，子进程 smoke 1 passed，Ruff / mypy 通过；未合入，E1-CAP-1 未测 |
 | 2026-10-01 | P7-CS-EXEC 定向调试 | 初次收集发现 allowlist Provider 缺 `plugin_key()`；补齐声明并消除 mypy 变量名冲突。100 项定向测试、Ruff、mypy 通过；未合入、未开启执行 |
-| 2026-10-01 | PR #19 合入 `main`（`b5f80fe`） | P11 evidence authority 展示与 P12 replacement trigger 只读审计；含测试用例，最新主线未统一验证 |
+| 2026-10-01 | E1-ARCHIVE-REUSE 候选调试 | verifier 最多保留一个严格解析 archive spool 跨窗口复用；parser 临时文件指向 canonical scratch；定向集 216 passed，1k/2k/3k 六阶段诊断完成但不满足正式协议。候选留在 `phase/1`，未进入主线；容量未验证 |
+| 2026-10-01 | main E1-CAP-1 正式探针中断 | clean `main@b5f80fe` 完成 10k 全部 stage 与 100k verify_archive 后因耗时中断；状态 interrupted，不能判定整体 PASS 或 FAIL。细节与样本见 review artifact |
 
 ## 10. 下一阶段进入条件
 

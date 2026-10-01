@@ -10,14 +10,14 @@
 - DQ-10 public replay / v2 golden compatibility 定向集 `35 passed`；候选分支代码条件已验证，仍待独立审阅 / 整合。
 - 受影响策略回归 `257 passed, 1 skipped, 1 failed`；唯一旧 B67 dataset-report hash 失败已在改动前的 `47446f4` 上精确复现，保留为已有失败证据，不变更 golden。
 - P7 横截面编译、binding、lowering 和 feature provider 专项 `105 passed`；该子集不构成完整 P7 候选审查或 Phase 验收。
-- E1-CAP-1（32 MiB）与 DQ-9 均未测 / 未定。任何局部测试结果都不等同容量证据、W1 全仓门禁或 Phase 验收。
+- E1-CAP-1（32 MiB）与 DQ-9 均未完成 / 未定。2026-10-01 主线正式探针在 100k `verify_archive` stage 后中断，不能判定 PASS / FAIL；局部代码测试不等于容量证据、W1 全仓门禁或 Phase 验收。
 
 ## 模块状态总览
 
 | Phase / 模块 | `main@b5f80fe` 状态 | 未合入工作 / 缺口 | 依赖与边界 |
 |---|---|---|---|
 | P0.5 Knowledge | 实现已在主线，未验收 | 本地 `phase/1` 有 126 项定向回归结果，未合入；种子 tags/assets 等待具名人工审阅 | 不自动补人工标签；golden hash 属后续验证。 |
-| P1 Data / Catalog | ADR-0075 / 0076 路径已实现，容量未验证 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` 有重叠候选；`phase/1` 调过容量报告 prefix 节点上界 | 候选逐 commit 去重；与 Dataset / `core/` 契约任务串行。E1-CAP-1 / DQ-9 不在代码实现中猜定。 |
+| P1 Data / Catalog / Normalizer | ADR-0075 / 0076 路径已实现；main verifier 在每个窗口重复解析 archive，容量未验证 | `phase/1` 工作区候选缓存单 archive spool，并将输入 / Arrow spool 指向 canonical scratch；另有 `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` 重叠候选 | 单独复核 E1-ARCHIVE-REUSE；多 archive 仍顺序关闭；与 Dataset / `core/` 契约任务串行。不得把候选或中断 probe 记作主线完成 / 容量证据。 |
 | P1 Dataset / Quality | ADR-0077 / 0093 / 0094 的 v3 路径已在主线；DQ-10 v2 历史 replay 有缺陷 | `phase/1` 有 replay 修正；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity registry | DQ-10 修复范围按 `remaining-code-gaps`；不得恢复新 v2 写入；Dataset 与 `core/` 契约改动串行。 |
 | P2 State | 计算 / 持久化路径存在，未验收 | `feature/p2-state`、`feature/p11-tests`、`claude/module-completion` 有 State CLI / report 候选 | 先拆分 P2 与 P11 共享提交；依据主线 Accepted 决策确定范围；State 契约变更不得并行。 |
 | P3 Event / P4 Outcome | Provider / 存储 / 操作入口在主线，未验收 | 未发现当前已批准的普通代码缺口；Catalog 建表是独立运行操作 | 依赖 Phase 1 数据；不得以本计划代替真实 Catalog 操作或验收。 |
@@ -37,6 +37,7 @@
 
 | ID | 依赖 | 文件边界 | 并行限制 | 未来代码完成条件 |
 |---|---|---|---|---|
+| E1-ARCHIVE-REUSE（P1 Normalizer） | Accepted ADR-0100 §6 与 canonical scratch 决定；严格 D1 parser / object hash 语义不变 | `infrastructure/parser/binance_archive.py`、`infrastructure/revision/row_integrity.py`、`infrastructure/canonical/normalizer.py`、probe 与相应测试 | P1 单任务；不得与其他 E1、Dataset 或 `core/` 契约任务并行。保留一个 spool 上限，多归档情况逐个 parse / close | 同一归档跨 verifier 窗口只严格解析一次；spool 及输入临时文件使用 canonical scratch；所有拒绝 / lineage / row 验证行为不变；资源在 close / eviction 中释放；代码 review 与定向验证记录完成后，整合 main 上的完整 E1 正式矩阵达到原定门槛，才可报告容量结果。 |
 | E1-V2-REPLAY（P1 Dataset） | 主线 Accepted ADR-0077 DQ-10；以主线 v2 持久化 manifest 为输入 | `infrastructure/dataset/builder.py`、Dataset v2 / golden compatibility tests | 与 Dataset / `core/` 契约改动串行；不得新增 v2 writer | 历史 v2 manifest 通过公开重放入口正确关联 selection snapshot；snapshot 不匹配 / 缺失 fail closed；兼容 golden 用例通过；提交中记录实际验证范围。 |
 | P7-CS-EXEC（P7） | 主线 Accepted ADR-0088 / 0099 / 0100 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试 / P7 文档 | 独立 P7 工作；不得与 E1 / `core/` 契约并行；不得实现横截面到单序列的隐含转换 | 横截面根计划在显式 pinned universe 下编译和构造专用 Provider；非法根 / 跨类型输入被拒；运行开关默认关闭；测试覆盖成功与拒绝路径，真实检查结果有记录。 |
 
@@ -44,7 +45,7 @@
 
 1. 已完成候选 Phase 1 infrastructure 回归分诊；旧失败历史保留，当前选择集为 `2298 passed, 88 skipped`。该结果不归给 `main`。
 2. 分别审阅同一模块的分支候选与 branch-only ADR，按净差异去重；P2 / P11 重叠提交先由协调者拆边界，P1 / E1 写路径与 `core/` 契约修改串行。
-3. 复核 E1-V2-REPLAY 与 P7-CS-EXEC 的候选补丁，再决定后续整合；代码完成、review、合并、全仓验证和 Phase 验收分别记录。
+3. 复核 E1-ARCHIVE-REUSE、E1-V2-REPLAY 与 P7-CS-EXEC 候选；代码完成、review、整合、全仓验证和 Phase 验收分别记录。E1 主线探针中断记录见 [2026-10-01 E1-CAP-1 partial](../reviews/2026-10-01-e1-cap1-main-partial.md)。
 4. 只有在逐项源码审查确认主线缺口、且主线 Accepted ADR / roadmap 唯一约束实现后，才新增可执行任务卡。需新决策、人工输入或外部系统的任务不进入当前代码队列。
 
 ## 状态定义

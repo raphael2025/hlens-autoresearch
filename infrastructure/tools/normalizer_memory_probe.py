@@ -39,9 +39,9 @@ is excluded from the per-stage growth verdict. Then, in order, each in a new chi
 - ``verify_archive`` — strict archive verification only: ``PersistedRowVerifier`` over a
   ``PinnedCatalogView`` of the heads with ``cache_archives=True`` (exactly how main's normalizer
   builds it), ``archive_row_count`` then every Raw line proven in windows of ``M`` lines via
-  ``verify_archive_elements``. Main has no archive spool: its verifier caches the strict D1
-  re-parse of the archive in memory, and that is what this stage measures. It is the verifier's
-  path, not the normalizer's whole proving pass (that is inside ``replay``);
+  ``verify_archive_elements``. The verifier retains at most one strict D1 Arrow-batch spool,
+  placed under canonical scratch and reused across windows; this stage measures that path, not
+  the normalizer's whole proving pass (that is inside ``replay``);
 - ``write_crash`` — ``normalize_unit`` writing the unit through a catalog proxy that raises right
   after its ``crash_after``-th Canonical commit (half the plan): the write path, then an
   interrupted write;
@@ -82,11 +82,11 @@ result object (e.g. ``CanonicalUnitNormalized``) stays referenced for a
 ``0.2 s`` hold inside the measured window, so it is sampled (the full-process working set counts
 it: E1-HIST).
 
-No stage is omitted relative to the candidate probe: each maps onto a public main API. Main-API
-differences handled here: ``CanonicalNormalizer`` takes only ``clock`` and ``microbatch_rows``
-(no ``narrow_rows`` / ``spool_dir``); ``PersistedRowVerifier`` takes no spool and is not a
-context manager; ``CanonicalUnitNormalized`` exposes fixed-size row / batch counts and replay
-summaries directly.
+No stage is omitted relative to the candidate probe: each maps onto a public production API.
+The probe passes the same canonical scratch directory to ``CanonicalNormalizer`` and
+``PersistedRowVerifier`` as the production path; normalizer shutdown closes retained pins and
+their verifier spools. ``CanonicalUnitNormalized`` exposes fixed-size row / batch counts and
+replay summaries directly.
 
 Measurement
 ===========
@@ -138,15 +138,16 @@ limit but not evidence-grade; 4 = the probe failed (partial JSON, ``status = "er
 Safety
 ======
 
-- ``N`` above 50 000 needs ``--i-know-memory`` (main still keeps O(N) positions, time columns,
-  revision ids and the parsed archive; WSL has crashed from memory exhaustion before), and also a
+- ``N`` above 50 000 needs ``--i-know-memory`` (the probe deliberately exercises complete
+  normalizer / archive workloads; WSL has crashed from memory exhaustion before), and also a
   finite cgroup memory limit on this process (``systemd-run ... -p MemoryMax=...``) unless
   ``--allow-uncapped`` is given;
 - a child whose sampled ``VmRSS`` exceeds ``--child-rss-limit-mib`` (default 4096) or that runs
   longer than ``--child-timeout`` is killed and the run fails closed (never counted as a pass);
 - the work directory must be on disk: a ``tmpfs`` / ``ramfs`` ``--base`` (where the warehouse and
-  child temporary files would be memory) is refused. Every child uses its per-run work directory
-  as ``TMPDIR`` so parser spools and disk-backed indexes are covered by that refusal.
+  child scratch files would be memory) is refused. Archive spools and disk-backed indexes use the
+  configured canonical scratch directory; child processes also use their per-run directory as
+  ``TMPDIR`` for libraries that still rely on the default temporary path.
 
 ``--runtime controlled`` (default) sets ``ARROW_DEFAULT_MEMORY_POOL=system``, ``OMP_NUM_THREADS=1``
 and ``PYICEBERG_MAX_WORKERS=1`` in the children; compatibility of these settings with the exact
@@ -213,7 +214,6 @@ from infrastructure.tools.capacity_probe import (
     _KNOWLEDGE_INGEST,
     _KNOWLEDGE_NORMALIZE,
     DATA_TYPE,
-    REST_BASE,
     SYMBOL,
     _agg_trade_lines,
     _dataset_pipeline,
@@ -630,8 +630,10 @@ def _emit(event: str, **facts: Any) -> None:
 
 
 def _canonical_scratch_directory() -> Path:
-    """Keep probe position indexes under its per-child disk-backed TMPDIR."""
-    return Path(tempfile.gettempdir()) / "hlens-canonical-scratch"
+    """Use the per-child disk-backed TMPDIR as canonical parser and index scratch."""
+    directory = Path(tempfile.gettempdir()) / "hlens-canonical-scratch"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 # ============================================================================================
@@ -920,7 +922,12 @@ def _stage(
 
         def verify() -> tuple[dict[str, Any], object]:
             # Built as main's normalizer builds it (``_pin``): pinned view, archive cache on.
-            verifier = PersistedRowVerifier(view, storage, cache_archives=True)
+            verifier = PersistedRowVerifier(
+                view,
+                storage,
+                cache_archives=True,
+                scratch_directory=_canonical_scratch_directory(),
+            )
             lines = verifier.archive_row_count(DATA_TYPE, SYMBOL, unit)
             proven = 0
             for low in range(1, lines + 1, microbatch):
