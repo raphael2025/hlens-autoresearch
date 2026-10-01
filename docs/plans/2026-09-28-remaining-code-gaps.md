@@ -12,13 +12,14 @@
 - **`CODE_GAP`**：主线缺少、且已有 Accepted ADR / 已批准范围足以唯一约束的实现。
 - **`BLOCKED` / `DEFERRED`**：需要新架构决定、人工输入、外部设置，或项目已明确暂缓；不作为当前可执行代码任务。
 
-当前迭代授权逐模块定向调试；每项结果只对实际运行的范围有效。P7-CS-EXEC 已完成分支级定向测试与静态检查，仍未合入主线；全仓门禁、E1 容量 probe 与 Phase 验收仍分别开放。
+当前迭代授权逐模块定向调试；每项结果只对实际运行的范围有效。`phase/1@48c7d01` 的 P7-CS-EXEC 与 E1/Dataset 定向调试已通过所列局部检查，仍未合入主线；全仓门禁、E1-CAP-1 容量测量与 Phase 验收仍分别开放。
 
 ## 当前可执行的主线代码缺口
 
 | ID / 模块 | 目标与依据 | 文件边界 | 依赖与并行限制 | 代码完成条件 |
 |---|---|---|---|---|
-| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。本地 `phase/1` 将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试及 P7 文档 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 分支级实现完成；定向测试 `100 passed`，相关 Ruff / mypy 通过。主线仍有差异，尚未整合；执行默认关闭。 |
+| E1-V2-REPLAY / P1 Dataset | `main@b5f80fe` 的 DQ-10 兼容入口按不存在的 `selection_id` 列查询 v2 manifest 表，导致历史 v2 Dataset 无法重放。`phase/1@48c7d01` 改为从 selection batch snapshot 反查 manifest 的 `dataset_snapshot_id`，并验证加载的 manifest 指向该快照。 | `infrastructure/dataset/builder.py`、Dataset v2 / golden compat tests | 依赖 ADR-0077 DQ-10；与其他 `core/` / Dataset 契约改动串行。不得恢复新 v2 写入。 | 本地修复已由公开 `build()` 历史重放用例覆盖；101 项定向批次通过。尚未合入主线。 |
+| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。`phase/1@48c7d01` 将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、`plugins/features/p7_cross_sectional.py`、对应测试及 P7 文档 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 分支级实现完成；定向测试 `100 passed`，相关 Ruff / mypy 通过。主线仍有差异，尚未整合；执行默认关闭。 |
 
 ## 已在基线实现但未验证的 E1 代码
 
@@ -31,7 +32,7 @@
 
 上述只证明主线代码路径存在，不证明其测试、静态检查或 E1-CAP-1 通过。E1-CAP-1（完整进程 ≤ 32 MiB）与 ADR-0077 DQ-9 容量参数继续开放。PyIceberg metadata、单个 Avro manifest 文件、Arrow row group / ORC stripe 与 tmpfs / cgroup 工作集须按既有 ADR 测量；改变 Iceberg history / retention、读写权威或公开完整物化接口需另行架构决定。本轮不做这些验证或语义改变。
 
-除 P7-CS-EXEC 外，本轮静态盘点未确认其它可在当前 Accepted ADR 内直接编码的主线缺口。若后续审查发现其它缺口，先给出主线文件证据、适用 ADR / roadmap 条目与唯一文件边界，再加入本表；不能因功能“看起来有用”而扩展范围。
+除 E1-V2-REPLAY 与 P7-CS-EXEC 外，本轮静态盘点未确认其它可在当前 Accepted ADR 内直接编码的主线缺口。若后续审查发现其它缺口，先给出主线文件证据、适用 ADR / roadmap 条目与唯一文件边界，再加入本表；不能因功能“看起来有用”而扩展范围。
 
 ## 未合入的进行中工作
 
@@ -41,8 +42,10 @@
 |---|---|---|---|
 | P1 Dataset / Quality | `feature/p1-entry`（12 个未提交条目） | Dataset CLI、factory、pinning/profile、Quality identity registry 与配套用例 | `IN_PROGRESS`；分支仅有 ADR-0101–0107 文档批次的共同基线，未提交内容需逐项对照 `main`。 |
 | P1 Catalog / E1 | `feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` | 有界 catalog history / batch scan 与 ingest/listing 提交 | `IN_PROGRESS`；仅候选实现，不代表 E1 容量或验收结论。 |
+| P1 Dataset / E1 replay | `phase/1@48c7d01` | 修复 DQ-10 v2 历史 manifest replay lookup；同步 Dataset v2 legacy fixture、容量报告节点限值与隔离 Dataset smoke 前置条件 | `IN_PROGRESS`；定向 101 passed / 3 skipped，子进程 smoke 1 passed，Ruff / mypy 通过；尚未合入主线，E1-CAP-1 未测。 |
 | P2 State | `feature/p2-state` | State run/show/list CLI 及计算入口拆分 | `IN_PROGRESS`；先核对 ADR-0102 的状态及文件差异。 |
 | P7 Discovery | `feature/p7-bind`（9 个未提交条目） | typed-plan binding/evidence、算子和配套用例 | `IN_PROGRESS`；不视为 P7-CS-EXEC 已完成。 |
+| P7-CS-EXEC | `phase/1@48c7d01` | 横截面 Provider 编译与 Provider 构造接线 | `IN_PROGRESS`；定向 100 passed，未合入主线，默认关闭。 |
 | P10 Router | `feature/p10-deviation`（6 个未提交条目） | Paper deviation API / DTO / Web 页面与用例 | `IN_PROGRESS`；先复核 ADR-0104 与当前主线兼容边界。 |
 | P11 Operations | `feature/p11-ops`、`feature/p11-tests`、共享提交分支 `claude/module-completion` | lifecycle CLI、baseline export、degradation batch driver、State CLI 后续及类型边界修订 | `IN_PROGRESS`；ADR-0102/0105 的分支版决策和实现均须对照主线状态后再决定。 |
 | P14 Migration | `feature/p14-migration`（9 个未提交条目） | Migration target / reference backtester 与配套用例 | `IN_PROGRESS`；没有具体目标系统时不把 target adapter 视为已批准交付。 |

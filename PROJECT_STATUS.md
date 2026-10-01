@@ -9,11 +9,11 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24），**未验收** |
-| 当前子阶段 | ADR-0100 底层代码批次已随 PR #18 合入；PR #19 的 P11/P12 只读审计视图已合入。E1 bounded 生产路径已在主线。P7-CS-EXEC 在 `phase/1` 已完成实现；定向测试 100 passed，相关 Ruff / mypy 检查通过，尚未合入主线；执行开关保持关闭 |
+| 当前子阶段 | ADR-0100 底层代码批次已随 PR #18 合入；PR #19 的 P11/P12 只读审计视图已合入。`phase/1@48c7d01` 已完成 P7-CS-EXEC 定向调试，并修正 E1/Dataset v2 历史 manifest 重放定位与容量 fixture；尚未合入主线。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
 | 代码基线 | `main` = `b5f80fe`（PR #19，2026-10-01 合并）；PR #17–#19 已进入主线。工作分支上的改动不计为主线完成 |
 | 契约 | 2.5.0；current Schema 148 份 |
-| 验证状态 | 最新主线未运行全仓门禁；PR #17–#19 合入的改动未在最新 HEAD 完成统一验证；P7 分支仅完成定向验证；E1-CAP-1（32 MiB 容量门）未测量 |
+| 验证状态 | 最新主线未运行全仓门禁；`phase/1@48c7d01` 定向批次 101 passed / 3 skipped，Dataset v3 子进程 smoke 1 passed，Ruff / mypy 通过。P7 定向 100 passed。E1-CAP-1（32 MiB 容量门）未测量，Phase 未验收。 |
 | 最后更新时间 | 2026-10-01 |
 
 Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（ADR-0020），契约 2.0.0 随之发布，此后破坏性契约变化必须升 major 并走 ADR。
@@ -124,11 +124,11 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-10-01 | `phase/1@48c7d01` E1/Dataset 调试 | 修复 DQ-10 下 v2 manifest 与 selection snapshot 的关联查找；修正质量 prefix 节点上界；补齐隔离 Dataset fixture 前置报告并缩小 smoke 数据规模。定向 101 passed / 3 skipped，子进程 smoke 1 passed，Ruff / mypy 通过；未合入，E1-CAP-1 未测 |
 | 2026-10-01 | P7-CS-EXEC 定向调试 | 初次收集发现 allowlist Provider 缺 `plugin_key()`；补齐声明并消除 mypy 变量名冲突。100 项定向测试、Ruff、mypy 通过；未合入、未开启执行 |
 | 2026-10-01 | `phase/1@775245e` P7-CS-EXEC | 编译 allowlist 加入横截面 Provider；build_providers 要求 pinned universe，并 fail closed 拒绝被单序列节点消费；回归用例 / 文档已更新，未运行、未合入 |
 | 2026-09-30 | P11/P12 诚信加固与运行输入记录 | P12 可选提案改为只用已冻结 Profile 版本的密封窗口并计入全局开封预算（宪法 C-S2/C-S3）；P11 要求近期指标输入与基线逐项相等，新运行在 `repro.params` 记录这些输入（ADR-0100 修订 2），旧运行继续拒绝；未测试 |
 | 2026-10-01 | PR #19 合入 `main`（`b5f80fe`） | P11 evidence authority 展示与 P12 replacement trigger 只读审计；含测试用例，最新主线未统一验证 |
-| 2026-10-01 | PR #18 合入 `main`（`67979ea`） | ADR-0100 剩余基础代码批次与审查修复进入主线；未测试 |
 
 ## 10. 下一阶段进入条件
 
