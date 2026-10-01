@@ -4,6 +4,10 @@ import { clone, fixtureEnvelopes } from "./fixtures.test-util.ts";
 import {
   asNumber,
   formatUsage,
+  outcomeText,
+  PENDING_HUMAN_APPROVAL,
+  replacementTriggerOf,
+  replacementTriggers,
   roundRow,
   roundRows,
   USAGE_KEYS,
@@ -11,6 +15,7 @@ import {
   usageSeries,
   withUnit,
 } from "./researchLoop.ts";
+import { CANDIDATE, INCUMBENT, PROPOSAL_HASH, triggerSummary, withTrigger } from "./replacementTrigger.test-util.ts";
 
 const [fixture] = fixtureEnvelopes("research_loop_round");
 
@@ -131,4 +136,91 @@ test("withUnit: a number with its unit, anything else a placeholder", () => {
   assert.equal(withUnit(0.5, "cost units"), "0.5 cost units");
   assert.equal(withUnit(Number.NaN, "s"), "—");
   assert.equal(withUnit("2", "s"), "—");
+});
+
+// ---- P12 replacement trigger audit (optional evolution-stage summary key) ----------------------
+
+test("the committed round has no evolution stage: no trigger view, its row unchanged", () => {
+  assert.equal(replacementTriggerOf(fixture), null);
+  assert.deepEqual(replacementTriggers([fixture]), []);
+});
+
+test("an evolution stage without the key (a loop without the trigger) shows nothing", () => {
+  const round = withTrigger(fixture, undefined);
+  const stages = round.payload.stages as Record<string, unknown>[];
+  stages[stages.length - 1] = { ...stages[stages.length - 1], summary: { stage: "evolution" } };
+  assert.equal(replacementTriggerOf(round), null);
+});
+
+test("a not-due round: a view with due = false and no rows", () => {
+  const view = replacementTriggerOf(withTrigger(fixture, { due: false }));
+  assert.ok(view !== null);
+  assert.equal(view.due, false);
+  assert.deepEqual(view.rows, []);
+  assert.deepEqual(view.problems, []);
+});
+
+test("a due round: summary and every row read, proposals pending human approval", () => {
+  const view = replacementTriggerOf(withTrigger(fixture, triggerSummary()));
+  assert.ok(view !== null);
+  assert.equal(view.due, true);
+  assert.equal(view.formatVersion, 2);
+  assert.equal(view.formatKnown, true);
+  assert.equal(view.status, PENDING_HUMAN_APPROVAL);
+  assert.equal(view.proposedBy, "automation:loop:loop-x");
+  assert.deepEqual([view.familyTrials, view.unsealingCount, view.unsealingBudget], [4, 2, 2]);
+  assert.deepEqual(view.problems, []);
+  assert.deepEqual(
+    view.rows.map((row) => [row.phase, row.candidate, row.windowId, row.outcome]),
+    [
+      ["evaluate", CANDIDATE, "oos-2026q3", "proposed"],
+      ["open", "strategy:trend_a_child@1.2.0", "oos-2026q4", "window_opened"],
+      ["open", "strategy:trend_a_child@1.3.0", null, "refused"],
+    ],
+  );
+  const [proposed, opened, refused] = view.rows;
+  assert.equal(proposed.openingHash, "6".repeat(64));
+  assert.equal(proposed.consumptionHash, "7".repeat(64));
+  assert.equal(proposed.consumedReports, 1);
+  assert.equal(proposed.windowRange, "[2026-07-01T00:00:00+00:00, 2026-10-01T00:00:00+00:00)");
+  assert.deepEqual(proposed.proposals, [
+    { proposalHash: PROPOSAL_HASH, incumbent: INCUMBENT, candidate: CANDIDATE, status: PENDING_HUMAN_APPROVAL },
+  ]);
+  assert.equal(opened.openedAt, "2026-01-01T00:00:00+00:00");
+  assert.equal(opened.consumptionHash, null);
+  assert.match(refused.refusal ?? "", /global unsealing budget/);
+  assert.deepEqual(view.notEligible, [
+    { candidate: "strategy:other@1.0.0", reason: "descends from no given incumbent" },
+  ]);
+  assert.match(outcomeText("proposed"), /PENDING_HUMAN_APPROVAL/);
+  assert.equal(outcomeText("something_new"), "something_new");
+});
+
+test("a failed job row carries its error; an unknown format or a non-pending status is flagged", () => {
+  const summary = triggerSummary();
+  const rows = summary.triggers as Record<string, unknown>[];
+  rows[0] = { ...rows[0], status: "failed", job: null, error: { type: "ValueError", message: "boom" } };
+  const failed = replacementTriggerOf(withTrigger(fixture, summary));
+  assert.equal(failed?.rows[0].error, "ValueError: boom");
+  assert.deepEqual(failed?.problems, []);
+
+  const future = replacementTriggerOf(withTrigger(fixture, triggerSummary({ format_version: 3 })));
+  assert.equal(future?.formatKnown, false);
+  assert.ok(future?.problems.some((p) => p.includes("unrecognised trigger format_version 3")));
+
+  const approved = triggerSummary();
+  const job = (approved.triggers as Record<string, unknown>[])[0].job as Record<string, unknown>;
+  (job.recorded as Record<string, unknown>[])[0].status = "APPROVED";
+  const flagged = replacementTriggerOf(withTrigger(fixture, approved));
+  assert.ok(flagged?.problems.some((p) => p.includes("status is APPROVED, not PENDING_HUMAN_APPROVAL")));
+});
+
+test("trigger views follow round order", () => {
+  const later = withTrigger(fixture, triggerSummary(), "later");
+  later.payload.round_index = 2;
+  const earlier = withTrigger(fixture, { due: false }, "earlier");
+  assert.deepEqual(
+    replacementTriggers([later, fixture, earlier]).map((view) => view.id),
+    ["earlier", "later"],
+  );
 });
