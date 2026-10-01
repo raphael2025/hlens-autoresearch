@@ -14,14 +14,24 @@
 
 本轮只补全代码与必要测试用例；不运行 pytest、Ruff、format、mypy、build、容量 probe、数据生成或 Phase 验收。实现完成一律保留 `NOT_RUN / NOT_ACCEPTED` 状态。
 
-## 可执行的主线代码缺口
+## 当前可执行的主线代码缺口
 
 | ID / 模块 | 目标与依据 | 文件边界 | 依赖与并行限制 | 代码完成条件 |
 |---|---|---|---|---|
-| E1-BOUNDED / P1 | 按 ADR-0075、0076、0077 与 0100 §6，继续关闭仓库自有 E1 路径中仍随 N / batch 增长的非必要持有项。先对照[容量设计对账](../reviews/2026-09-28-e1-cap1-design-reconciliation.md)、[阶段切片复核](../reviews/2026-09-29-phase-staged-acceptance.md)及 2026-09-30 E1 审查记录，逐项标出在 `b5f80fe` 仍存在的持有量；不得把历史候选分支结论外推到主线。 | `infrastructure/catalog/`、`parser/`、`canonical/`、`revision/`、`pit/`、`universe/`、`dataset/` 中经静态复核确认的路径及对应测试 | E1 内部按数据路径串行推进；不得与其它任务同时改相同模块或 `core/`。改变公开结果类型、Iceberg 权威 metadata / retention / 写入语义时停止并提出 `ARCHITECTURE_DECISION_REQUIRED`。 | 已知仓库自有的非必要 O(N)/O(batch) 中间持有项逐项被有界化或以明确阻塞记录；必要公开输出及其兼容限制写清楚；相应测试用例已编写但未运行。**不宣称 32 MiB 达标**；容量 probe 与 E1-CAP-1 判定留待后续验证阶段。 |
-| P7-CS-EXEC / P7 | ADR-0100 §1–2 已规定 Provider allowlist、显式 universe 快照、`interval_end` 对齐、缺值处理和平局规则。主线已有 `P7RankCsProvider` / `P7QuantileCsProvider`，但 `compile_plan` 对 `rank_cs` / `quantile_cs` 仍以 `cross_sectional_execution_unsupported` 拒绝；补齐从 lowered spec 与 pinned universe 到 `CrossSectionalRequest` 的执行接线。 | `research/hypotheses/typed_plan_compiler.py`、`research/loop/operator_providers.py` 及必要的 P7 composition 文件；复用 `plugins/features/p7_cross_sectional.py`，不重定义其语义 | 单一 P7 任务；若实现需要新增跨模块契约或改变试验/admission 流程，先停下并记录架构决策需求。 | 已注册 Provider 可接收正确绑定的横截面输入并产出结果；无 pinned universe、source feature、bar 对齐或 allowlist 时整体 fail closed；运行开关默认关闭，旧计划与哈希保持不变；拒绝路径测试已编写但未运行。 |
+| P7-CS-EXEC / P7 | `main@b5f80fe` 仍对 `rank_cs` / `quantile_cs` 抛 `cross_sectional_execution_unsupported`。当前 `phase/1` 改动将它们纳入编译 allowlist；通过 `compile_plan(..., universes=...)` lower，并由 `CompiledPlan.build_providers(..., universes=...)` 以相同的显式 pinned manifest 构造专用 Provider。横截面节点仅可作为计划根；当前没有获批的跨截面到单序列适配语义，作为其它节点输入时整体拒绝。 | `research/hypotheses/typed_plan_compiler.py`、`research/hypotheses/typed_plan.py`、对应的 P7 测试及 `research/hypotheses/README.md`、能力矩阵 | 单一 P7 任务；不得与 E1 / `core/` 同时改动。若需让横截面结果进入单序列组合器或 Research Loop，先提出 `ARCHITECTURE_DECISION_REQUIRED`。 | Provider 只服务 lowered 的精确 spec hash；缺失 / 错误 universe、source ref、bar 对齐、allowlist 或显式开关时 fail closed；请求 / 结果使用 ADR-0100 的专用类型；默认开关关闭，旧计划与哈希不变；相应回归用例已编写、`NOT_RUN`。 |
 
-除此两项外，本轮静态盘点未将旧缺口清单中已由后续 ADR / PR 实现的功能重复列为主线代码缺口。若新审查发现其它缺口，先给出主线文件证据、适用 ADR / roadmap 条目与唯一文件边界，再加入本表；不能因功能“看起来有用”而扩展范围。
+## 已在基线实现但未验证的 E1 代码
+
+截至 `main@b5f80fe` 的静态源码对账，原 `E1-BOUNDED` 项涉及的仓库自有生产路径已有实现，本轮无需重写或把它们重复排入代码队列：
+
+- ADR-0075：`infrastructure/catalog/iceberg_adapter.py` 提供固定 snapshot 的逐 manifest / data-file 批次扫描；生产查询可复用该 reader。
+- ADR-0076：`infrastructure/canonical/normalizer.py` 的默认结果为固定摘要，完整 ID 通过 `iter_revision_ids()` 显式有序流式读取。
+- D1：`infrastructure/parser/binance_archive.py` 提供 `parse_archive_spooled()`；`infrastructure/revision/store.py` 的生产 ingest 使用 spool microbatches。完整 `ParsedArchive` 的物化入口仍是显式兼容便利 API。
+- ADR-0077：v3 Dataset 的 evidence builder、chunk writer、streaming verifier、manifest store 和 `DatasetBuildPipeline` 均已存在；旧 v2 manifest 保持只读，不再通过 v2 builder 创建新数据集。
+
+上述只证明主线代码路径存在，不证明其测试、静态检查或 E1-CAP-1 通过。E1-CAP-1（完整进程 ≤ 32 MiB）与 ADR-0077 DQ-9 容量参数继续开放。PyIceberg metadata、单个 Avro manifest 文件、Arrow row group / ORC stripe 与 tmpfs / cgroup 工作集须按既有 ADR 测量；改变 Iceberg history / retention、读写权威或公开完整物化接口需另行架构决定。本轮不做这些验证或语义改变。
+
+除 P7-CS-EXEC 外，本轮静态盘点未确认其它可在当前 Accepted ADR 内直接编码的主线缺口。若后续审查发现其它缺口，先给出主线文件证据、适用 ADR / roadmap 条目与唯一文件边界，再加入本表；不能因功能“看起来有用”而扩展范围。
 
 ## 未合入的进行中工作
 
@@ -53,6 +63,6 @@
 ## 派工顺序
 
 1. 先完成分支内容 / ADR 对账，避免对主线重复实现或将未接受的分支版 ADR 当作已接受。
-2. 先处理 E1-BOUNDED 的主线持有量复核和代码缺口，再单独处理 P7-CS-EXEC；模块间不得重叠写入。
+2. E1 的仓库自有生产路径代码已在基线；保持 E1-CAP-1 / DQ-9 为未验证容量门。完成 P7-CS-EXEC 后如源码复核发现新的仓库自有增长持有项，只能作为有文件证据的新任务单独排入。
 3. 分支候选只有在代码与决策状态完成独立复核后，才可以被另行列为任务；此次清单本身不授权分支合并。
-4. 每项代码任务包括必要测试用例编写，并注明 `NOT_RUN`；后续统一调试、容量测量和 Phase 验收分别登记，不把它们并入代码完成状态。
+4. 当前 P7 代码接线已补齐并加入必要回归用例，均注明 `NOT_RUN`；后续统一调试、容量测量和 Phase 验收分别登记，不把它们并入代码完成状态。

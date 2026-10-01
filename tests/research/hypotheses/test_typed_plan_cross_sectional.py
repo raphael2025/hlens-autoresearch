@@ -269,22 +269,41 @@ def test_cross_sectional_lowering_refuses_without_the_pinned_manifest() -> None:
 
 
 @pytest.mark.parametrize("transform", ["rank_cs", "quantile_cs"])
-def test_compile_plan_lowers_cross_sectional_nodes_then_refuses_execution(transform: str) -> None:
-    """ADR-0100 §2: ``universes=`` reaches the lowering, but the compiled single-series wiring
-    cannot drive CrossSectionalRequest / Result, so compilation refuses with an explicit code."""
+def test_compile_plan_builds_cross_sectional_provider_for_pinned_universe(transform: str) -> None:
+    """ADR-0100 §2: CS nodes compile through their dedicated request/provider shape."""
     overrides: dict[str, Any] = {"buckets": 4} if transform == "quantile_cs" else {}
     plan, resolution = _cs_plan(transform, **overrides)
 
+    compiled = compile_plan(
+        plan,
+        resolution=resolution,
+        created_at=NOW,
+        allowlist=P7_OPERATOR_ALLOWLIST,
+        switch=P7ExecutionSwitch(enabled=True),
+        universes=(UNIVERSE,),
+    )
+    providers = compiled.build_providers(universes=(UNIVERSE,))
+
+    assert compiled.runnable is True
+    assert providers["xs"].descriptor.supports(
+        compiled.nodes[0].spec.ref, compiled.nodes[0].spec.content_hash()
+    )
+
+
+def test_cross_sectional_provider_build_requires_the_compiled_universe_manifest() -> None:
+    plan, resolution = _cs_plan("rank_cs")
+    compiled = compile_plan(
+        plan,
+        resolution=resolution,
+        created_at=NOW,
+        allowlist=P7_OPERATOR_ALLOWLIST,
+        switch=P7ExecutionSwitch(enabled=True),
+        universes=(UNIVERSE,),
+    )
+
     with pytest.raises(PlanCompileRefused) as refused:
-        compile_plan(
-            plan,
-            resolution=resolution,
-            created_at=NOW,
-            allowlist=P7_OPERATOR_ALLOWLIST,
-            switch=P7ExecutionSwitch(enabled=True),
-            universes=(UNIVERSE,),
-        )
-    assert refused.value.code == "cross_sectional_execution_unsupported"
+        compiled.build_providers()
+    assert refused.value.code == "cross_sectional_universe_unbound"
     assert refused.value.where == "xs"
 
 

@@ -16,11 +16,13 @@ propagates unchanged as ``OperatorLoweringRefused``. Nothing is partially compil
 
 Cross-sectional ``rank_cs`` / ``quantile_cs`` nodes (plan format 1.3.0, ADR-0100 §2) lower when the
 caller passes the pinned universe manifests (``universes=``, handed to the lowering as evidence),
-but they are not compiled: their Providers (``plugins.features.p7_cross_sectional``) take a
-``CrossSectionalRequest`` / return a ``CrossSectionalResult``, which neither
-``CompiledPlan.build_providers`` (single-series ``FeatureRequest`` upstream wiring) nor the Research
-Loop path can drive. Such a plan is refused with ``cross_sectional_execution_unsupported``
-whatever the allowlist holds, never executed through the single-series wiring.
+and may be compiled only as the plan root. Their Providers consume an explicit
+``CrossSectionalRequest`` and return a ``CrossSectionalResult``; ``build_providers`` constructs
+these separately from single-series ``FeatureProvider`` nodes using the same caller-supplied pinned
+universe manifests. The returned cross-sectional Provider is invoked with its dedicated request
+shape; it is never adapted to a single-series request. A cross-sectional result consumed by another
+plan node is refused because no such adapter semantics are approved. The Research Loop still
+accepts only strategy roots, so a cross-sectional feature result is not itself a loop candidate.
 
 Compilation is pure and deterministic: it re-runs the pure lowering
 (``typed_plan_lowering.lower_typed_plan``) on the caller's hash-verified direct-reference
@@ -58,6 +60,12 @@ from core.contracts.universe import ResearchDatasetManifest
 from core.domain.base import Kind, VersionedSpec, content_hash
 from core.domain.specs import EventSpec, FeatureSpec, InstrumentType, StrategySpec
 from plugins.events.p7_temporal import P7TemporalSequenceProvider
+from plugins.features.p7_cross_sectional import (
+    QUANTILE_CS_DEFINITION,
+    RANK_CS_DEFINITION,
+    P7QuantileCsProvider,
+    P7RankCsProvider,
+)
 from plugins.features.p7_operators import (
     P7DifferenceProvider,
     P7InteractionProductProvider,
@@ -97,7 +105,7 @@ __all__ = [
 ]
 
 #: Compiler identity recorded in evidence; bump on any change of compile semantics.
-COMPILER_IDENTITY: Final = "hlens.p7.typed_plan_compiler@1.0.0"
+COMPILER_IDENTITY: Final = "hlens.p7.typed_plan_compiler@1.1.0"
 #: The configuration key ``P7ExecutionSwitch.from_config`` reads.
 P7_EXECUTION_CONFIG_KEY: Final = "p7_operator_execution"
 
@@ -236,6 +244,8 @@ P7_OPERATOR_ALLOWLIST: Final[Mapping[str, OperatorImplementation]] = MappingProx
             _implementation(P7SmoothSmaProvider, PlanOperator.TRANSFORMATION, Kind.FEATURE),
             _implementation(P7RankTsProvider, PlanOperator.TRANSFORMATION, Kind.FEATURE),
             _implementation(P7QuantileTsProvider, PlanOperator.TRANSFORMATION, Kind.FEATURE),
+            _implementation(P7RankCsProvider, PlanOperator.TRANSFORMATION, Kind.FEATURE),
+            _implementation(P7QuantileCsProvider, PlanOperator.TRANSFORMATION, Kind.FEATURE),
             _implementation(P7InteractionProductProvider, PlanOperator.INTERACTION, Kind.FEATURE),
             _implementation(P7TemporalSequenceProvider, PlanOperator.TEMPORAL, Kind.EVENT),
             _implementation(
@@ -392,6 +402,7 @@ class CompiledPlan:
         strategy_providers: Mapping[str, StrategyProvider] | None = None,
         bar_durations: Mapping[str, timedelta] | None = None,
         instrument_type: InstrumentType | None = None,
+        universes: Iterable[ResearchDatasetManifest] = (),
     ) -> dict[str, Any]:
         """Instantiate every node's allowlisted Provider, in plan order.
 
@@ -400,7 +411,9 @@ class CompiledPlan:
         the state gate reads state observations from the strategy request). ``bar_durations``
         (``str(bar_spec)`` -> duration) is required by ``temporal`` nodes and ``instrument_type``
         by strategy nodes; nothing is defaulted. Earlier nodes feed later ones. Any missing piece
-        refuses the whole wiring (``PlanCompileRefused``).
+        refuses the whole wiring (``PlanCompileRefused``). Cross-sectional Providers also require
+        the exact pinned manifests supplied when compiling the plan; pass them here as well so
+        each Provider can verify the lowered spec's universe binding.
         """
         if not self.runnable:
             raise PlanCompileRefused(
@@ -408,11 +421,18 @@ class CompiledPlan:
             )
         features = dict(feature_providers or {})
         strategies = dict(strategy_providers or {})
+        pinned_universes = tuple(universes)
         built: dict[str, Any] = {}
         for node in self.nodes:
             try:
                 built[node.node_id] = self._build(
-                    node, built, features, strategies, bar_durations or {}, instrument_type
+                    node,
+                    built,
+                    features,
+                    strategies,
+                    bar_durations or {},
+                    instrument_type,
+                    pinned_universes,
                 )
             except PlanCompileRefused:
                 raise
@@ -448,10 +468,20 @@ class CompiledPlan:
         strategies: Mapping[str, StrategyProvider],
         bar_durations: Mapping[str, timedelta],
         instrument_type: InstrumentType | None,
+        universes: tuple[ResearchDatasetManifest, ...],
     ) -> Any:
         factory = node.implementation.provider_class
         kind = node.implementation.output_kind
         if kind is Kind.FEATURE:
+            if node.definition in {RANK_CS_DEFINITION, QUANTILE_CS_DEFINITION}:
+                try:
+                    return factory((node.spec,), universes=universes)
+                except (TypeError, ValueError) as exc:
+                    raise PlanCompileRefused(
+                        "cross_sectional_universe_unbound",
+                        node.node_id,
+                        f"the pinned universe manifest is missing or mismatched: {exc}",
+                    ) from exc
             upstream: dict[str, UpstreamFeature] = {}
             for index, spec in enumerate(node.input_specs):
                 if type(spec) is not FeatureSpec:
@@ -538,18 +568,25 @@ def compile_lowered_plan(
     direct = {(item.node_id, item.input_index): item.spec for item in resolution.inputs}
 
     nodes: list[CompiledNode] = []
+    cross_sectional_nodes = {
+        node.node_id
+        for node in plan.nodes
+        if node.operator is PlanOperator.TRANSFORMATION
+        and node.parameters.get("transform") in CROSS_SECTIONAL_TRANSFORMS
+    }
     for node in plan.nodes:
-        if (
-            node.operator is PlanOperator.TRANSFORMATION
-            and node.parameters.get("transform") in CROSS_SECTIONAL_TRANSFORMS
+        if any(
+            isinstance(item, NodeInput) and item.node_id in cross_sectional_nodes
+            for item in node.inputs
         ):
             raise PlanCompileRefused(
-                "cross_sectional_execution_unsupported",
+                "cross_sectional_output_consumption_unsupported",
                 node.node_id,
-                "cross-sectional rank_cs / quantile_cs lower, but their CrossSectionalRequest / "
-                "CrossSectionalResult Providers cannot be driven by the compiled single-series "
-                "wiring or the Research Loop (ADR-0100 §2); not compiled",
+                "cross-sectional outputs require a dedicated batch consumer and cannot be wired "
+                "as a single-series plan input",
             )
+
+    for node in plan.nodes:
         spec = lowered[node.node_id]
         definition, provider = _declared_identity(spec)
         if not isinstance(definition, str):

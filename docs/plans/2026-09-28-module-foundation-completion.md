@@ -14,12 +14,12 @@
 | Phase / 模块 | 主线代码状态 | 当前代码任务 | 进行中候选 / 阻塞 |
 |---|---|---|---|
 | P0.5 Knowledge Base | `IN_MAIN_UNVERIFIED`：检索、review 写入、标签/资产路径已实现 | 无已确认代码缺口 | tags/assets 需具名人工审阅；golden hash 留后续生成与验证。 |
-| P1 Data foundation | `IN_MAIN_UNVERIFIED`：D0–D4 基础链已实现并有各自历史验收记录 | E1 按 `E1-BOUNDED` 逐项清理仓库自有增长持有量；不可据此宣称 32 MiB 达标 | `feature/e1-catalog`, `feature/e1-ingest`, `feature/e1-listing` 有未合入候选。 |
-| P1 Dataset / Quality | `IN_MAIN_UNVERIFIED`：主线已有 Dataset v3 及报告流基础 | 只处理 E1-BOUNDED 明确核实的主线缺口 | `feature/p1-entry` 有未提交 Dataset CLI/factory/pinning/profile 与 Quality identity 代码；先核对 ADR-0101 状态与主线。 |
+| P1 Data foundation | `IN_MAIN_UNVERIFIED`：ADR-0075 bounded scan、ADR-0076 normalizer summary/ID stream、D1 spooled ingest 已在基线 | 本轮静态对账未发现需在已接受 ADR 内新增的 E1 生产代码；E1-CAP-1 / DQ-9 仍未验证 | `feature/e1-catalog`, `feature/e1-ingest`, `feature/e1-listing` 有未合入候选，不计主线完成。 |
+| P1 Dataset / Quality | `IN_MAIN_UNVERIFIED`：ADR-0077 v3 evidence builder、chunk writer、streaming verifier、manifest store、pipeline 已在基线；v2 只读 | 无已确认的主线代码缺口；32 MiB 容量门未测 | `feature/p1-entry` 有未提交 Dataset CLI/factory/pinning/profile 与 Quality identity 代码；先核对 ADR-0101 状态与主线。 |
 | P2 State | `IN_MAIN_UNVERIFIED`：State 计算与诊断路径存在 | 无已确认的主线代码缺口 | `feature/p2-state` / `claude/module-completion` 含 CLI 候选；待对账。 |
 | P3 Event / P4 Outcome | `IN_MAIN_UNVERIFIED`：Provider、存储和显式操作路径已有 | 无已确认的主线代码缺口 | 真实 Catalog 操作不属于本轮代码任务；留待获授权运行。 |
 | P5 Strategy / Validation / P6 Matrix | `IN_MAIN_UNVERIFIED`：策略、验证与矩阵逻辑存在 | 无已确认的主线代码缺口 | Profile 数值未冻结；不通过实现推断。 |
-| P7 Discovery | `IN_MAIN_UNVERIFIED`：ADR-0100 算子 Provider / allowlist 已有；`rank_cs` / `quantile_cs` 仍无法通过编译执行 | `P7-CS-EXEC`：接通已有横截面 Provider 与 pinned-universe 输入，保持默认关闭和旧计划身份 | `feature/p7-bind` 有未提交 binding/evidence/算子代码；不得把候选视为完成。 |
+| P7 Discovery | `main@b5f80fe` 对横截面计划仍拒绝编译；`phase/1` 已加入专用 Provider 编译接线及拒绝路径，`CODE_COMPLETE / NOT_RUN`（本地提交后状态） | 横截面节点仅作为计划根；不适配成单序列输入，也不直接进入只接受 Strategy 根的 Research Loop | `feature/p7-bind` 是另一份未合入候选，不计为本实现；当前更改仅在 `phase/1`。 |
 | P8 Retro audit / P9 Calibration | `IN_MAIN_UNVERIFIED`：报告链与合成校准代码已在主线 | 无已确认的主线代码缺口 | fixture 更新、运行回归属于后续调试 / 验证。 |
 | P10 Router | `IN_MAIN_UNVERIFIED`：纸面路由和报告路径存在 | 无已确认的主线代码缺口 | `feature/p10-deviation` 有未提交 Paper deviation Web/API 修改；按 ADR 与当前 DTO 先对账。 |
 | P11 Research Loop | `IN_MAIN_UNVERIFIED`：权威解析、指标闭集、默认环境与报告已有；PR #19 增加只读证据 / 提案审计视图 | 无已确认的主线基础代码缺口 | `feature/p11-ops`, `feature/p11-tests`, `claude/module-completion` 有运维 CLI 候选；真实运行还需部署设置。 |
@@ -31,9 +31,9 @@
 ## 当前派工顺序
 
 1. 对所有 feature worktree 和 branch-only ADR 做只读对账；未合入的实现仍是 `IN_PROGRESS`，不把 ADR-0101–0107 的 branch-only 版本当作主线决策。
-2. 先做 `E1-BOUNDED` 的主线静态持有量收口；同一 E1 数据路径内串行，保留全部历史 / PIT 语义与当前容量门槛。
-3. 再完成 `P7-CS-EXEC`；与 E1 使用不重叠模块文件，仍分别提交任务与状态记录。
-4. 仅在任务代码与必要测试用例写完时标记 `CODE_COMPLETE / NOT_RUN`；不运行检查、不执行数据 / Catalog 操作、不作 Phase 验收。
+2. E1 的仓库自有代码已按已接受 ADR 静态对账；E1-CAP-1 / DQ-9 留待授权的后续容量测量，不能标为通过。
+3. `P7-CS-EXEC` 已在 `phase/1` 接线并添加回归用例；尚未合入 `main`。仅在未来实际运行验证后才能更新 `NOT_RUN` 状态。
+4. 本轮不运行检查、不执行数据 / Catalog 操作、不作 Phase 验收。
 
 ## 状态分类
 

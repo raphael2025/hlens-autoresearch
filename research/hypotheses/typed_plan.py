@@ -701,10 +701,11 @@ def compile_plan(
     plan's hash-verified direct references), an explicit timezone-aware ``created_at`` and an
     explicit ``allowlist`` (e.g. ``typed_plan_compiler.P7_OPERATOR_ALLOWLIST``) are required, and
     every node's lowered definition must map to an allowlisted Provider. ``universes`` (the
-    caller-supplied pinned universe manifests) are passed to the lowering so cross-sectional nodes
-    can lower; their execution is not supported by the compiled wiring, so such a plan is refused
-    with ``cross_sectional_execution_unsupported``. Trial counting and admission rules are
-    unchanged; see ``research.hypotheses.typed_plan_compiler``.
+    caller-supplied pinned universe manifests) are passed to the lowering. Cross-sectional nodes
+    compile only as the root, and ``CompiledPlan.build_providers`` requires those pinned manifests
+    again to construct their dedicated request/result Provider; outputs cannot feed single-series
+    plan nodes. Trial counting and admission rules are unchanged; see
+    ``research.hypotheses.typed_plan_compiler``.
     """
     if not isinstance(plan, TypedPlan):
         raise TypeError("plan must be a TypedPlan")
