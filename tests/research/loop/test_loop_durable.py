@@ -135,7 +135,7 @@ def test_exact_registration_duplicate_is_read_only_through_durable_gate(
     state = durable.durable_state
     assert state is not None
     ledger = durable.memory.ledger
-    original_trial = ExperimentStage._trial
+    original_trial = ExperimentStage._execute
     observed: list[Any] = []
 
     def check_admission_lease(
@@ -152,7 +152,7 @@ def test_exact_registration_duplicate_is_read_only_through_durable_gate(
             assert (ledger.journal_head(), ledger.trials(hypothesis.family_id)) == before
         return original_trial(stage, ctx, hypothesis, origin, attempt)
 
-    monkeypatch.setattr(ExperimentStage, "_trial", check_admission_lease)
+    monkeypatch.setattr(ExperimentStage, "_execute", check_admission_lease)
     try:
         durable.loop.run_unattended(1)
         assert observed

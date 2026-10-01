@@ -57,6 +57,7 @@ from core.domain.base import (
 )
 from core.domain.specs import Zone
 from tests.contract_version_support import as_published_at, at_version
+from tests.test_adr_0088_contract_240 import _schema_bytes, _without_adr_0088
 from tests.test_universe_contracts import (
     HASH,
     dataset,
@@ -729,6 +730,10 @@ def test_the_v2_schemas_change_only_their_envelope_default(name: str, tmp_path: 
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
     assert committed == regenerated
     for schema in (committed, regenerated):
+        if name in ("ResearchDatasetManifest", "UniverseMember"):
+            # ADR-0088 (2.4.0, 9925f0a) added the optional `UniverseMember.assumption`: strip
+            # exactly that addition; the rest may differ from the 2.2.0 pin only by the envelope.
+            schema = _schema_bytes(_without_adr_0088(name, json.loads(schema)))
         digest = hashlib.sha256(as_published_at(schema, "2.2.0")).hexdigest()
         assert digest == V2_SCHEMA_SHA256_AT_2_2_0[name]
 

@@ -59,15 +59,19 @@ from infrastructure.dataset.builder import (
     ChunkCommitted,
     DatasetBuilder,
     DatasetBuilt,
+    DatasetEmpty,
     DatasetEvidenceRequest,
     DatasetEvidenceSources,
+    DatasetSpecError,
     MemberSpan,
     PitKeyEvaluation,
     PitKeyGroup,
     PitSelectedRevision,
+    _JustSelected,
     _manifest_of,
 )
 from infrastructure.dataset.evidence import publish_evidence_object
+from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality.listing_report import ListingQualityReporter
@@ -285,42 +289,8 @@ class World:
         data_type: str = "agg_trades",
         window: tuple[datetime, datetime] = (START, END),
     ) -> DatasetBuilt:
-        """Seed a historical v2 manifest for replay / compatibility tests only.
-
-        ADR-0077 DQ-10 disables new v2 builds through ``DatasetBuilder.build``. These tests need
-        old-form rows to keep exercising the supported v2 read and verification path, so this
-        fixture uses the lower-level writer to represent a build made before that cutoff.
-        """
-        builder = self.builder()
-        selection = builder.select(universe, pit, data_type, window[0], window[1])
-        commit = builder._materialize(selection)
-        recorded = builder._recorded_manifest_version(commit)
-        if recorded is None:
-            contract_version.new_group_version()
-            manifest = _manifest_of(
-                selection,
-                DatasetRef(
-                    zone=Zone.RESEARCH_DATASET,
-                    table=DATASET_SELECTIONS.table,
-                    snapshot_id=commit.snapshot_id,
-                    time_range_start=window[0],
-                    time_range_end=window[1],
-                ),
-            )
-        else:
-            with contract_schema_version_scope(recorded):
-                manifest = _manifest_of(
-                    selection,
-                    DatasetRef(
-                        zone=Zone.RESEARCH_DATASET,
-                        table=DATASET_SELECTIONS.table,
-                        snapshot_id=commit.snapshot_id,
-                        time_range_start=window[0],
-                        time_range_end=window[1],
-                    ),
-                )
-        persisted = builder.manifests().persist(manifest)
-        return DatasetBuilt(selection, manifest, commit, persisted)
+        """Seed a historical v2 manifest for replay / compatibility tests only (see below)."""
+        return seed_historical_v2(self.builder(), universe, pit, data_type, *window)
 
     def universe(self) -> UniverseBuilder:
         return UniverseBuilder(self.h.adapter, self.h.storage, market_data_base_url=ORIGIN)
@@ -885,3 +855,71 @@ def v3_sources(
     universe: FakeUniverse, pit: FakePit, quality: FakeQuality
 ) -> DatasetEvidenceSources:
     return DatasetEvidenceSources(universe=universe, pit=pit, quality=quality)
+
+
+def seed_historical_v2(
+    builder: DatasetBuilder,
+    universe: UniverseSelectionSpec,
+    pit: PointInTimeSpec,
+    data_type: str,
+    start: datetime,
+    end: datetime,
+) -> DatasetBuilt:
+    """Seed a historical v2 manifest for replay / compatibility tests only.
+
+    ADR-0077 DQ-10 disables new v2 builds through ``DatasetBuilder.build``. These tests need
+    old-form rows to keep exercising the supported v2 read and verification path, so this
+    fixture uses the lower-level writer to represent a build made before that cutoff. The
+    selection, materialization and the persisted manifest's full re-derivation still run.
+    """
+    selection = builder.select(universe, pit, data_type, start, end)
+    if not selection.rows:
+        raise DatasetEmpty(
+            f"{data_type} [{start.isoformat()}, {end.isoformat()}) selects nothing for the "
+            "universe's members: an empty Research Dataset has no snapshot of its own"
+        )
+    commit = builder._materialize(selection)
+    recorded = builder._recorded_manifest_version(commit)
+    dataset = DatasetRef(
+        zone=Zone.RESEARCH_DATASET,
+        table=DATASET_SELECTIONS.table,
+        snapshot_id=commit.snapshot_id,
+        time_range_start=start,
+        time_range_end=end,
+    )
+    if recorded is None:
+        contract_version.new_group_version()
+        manifest = _manifest_of(selection, dataset)
+    else:
+        with contract_schema_version_scope(recorded):
+            manifest = _manifest_of(selection, dataset)
+    # As the pre-cutoff build did: checked against the selection just derived and read back,
+    # not re-selected (``DatasetBuilder.verify_manifest`` runs on every later load).
+    verifier = _JustSelected(builder._adapter, builder._table, selection)
+    persisted = ManifestStore(builder._adapter, verifier).persist(manifest)
+    return DatasetBuilt(selection, manifest, commit, persisted)
+
+
+def legacy_v2_build(
+    builder: DatasetBuilder,
+    universe: UniverseSelectionSpec,
+    pit: PointInTimeSpec,
+    data_type: str,
+    start: datetime,
+    end: datetime,
+) -> DatasetBuilt:
+    """A v2 build as the pre-DQ-10 suites ran it: the public replay, else a seeded history.
+
+    When the selection already has its persisted v2 manifest, this is exactly
+    ``DatasetBuilder.build`` (the DQ-10 replay path, with every check it makes). Otherwise the
+    first build is seeded with ``seed_historical_v2``, which stands for a v2 dataset built before
+    the cutoff; production code still refuses to create it.
+    """
+    selection = builder.select(universe, pit, data_type, start, end)
+    try:
+        builder._require_existing_v2_manifest(selection.selection_id)
+    except DatasetSpecError as exc:
+        if "disabled by ADR-0077 DQ-10" not in str(exc):
+            raise
+        return seed_historical_v2(builder, universe, pit, data_type, start, end)
+    return builder.build(universe, pit, data_type, start, end)

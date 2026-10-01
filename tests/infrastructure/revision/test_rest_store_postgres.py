@@ -84,7 +84,7 @@ def test_all_fifteen_phase1_tables_exist_with_their_bindings(pg: RestHarness) ->
         info = pg.adapter.load_table(definition.table)
         assert info is not None, definition.table
         bound[definition.table] = info.definition
-    assert len(bound) == 15
+    assert len(bound) == 18  # ADR-0077 added three Dataset / Quality v3 tables
     for definition in (RESPONSES, REST_AGGS, REST_KLINES, EVIDENCE):
         assert bound[definition.table] == definition.binding
 

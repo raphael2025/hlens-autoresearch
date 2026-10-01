@@ -23,6 +23,7 @@ from research.router import (
     paper_run,
     paper_run_or_stop,
 )
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 from tests.research.router.test_paper import (
     BARS,
     LIFECYCLE,
@@ -47,6 +48,8 @@ from tests.research.router.test_paper import (
 #: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
 #: test passes inside ``contract_schema_version_scope("2.1.0")``).
 #: 2.1.0 values (evidence, git history): 7f30d3d4…
+#: Recorded at contract 2.2.0: the tests asserting it run with every contract object built at
+#: 2.2.0 (``at_contract_version``) after the envelope-only 2.3.0 – 2.5.0 minors.
 BASELINE_RUN_HASH = "6c1231639a4312f4a6c7cccba16d92b519f7ad4caa9d6b22e56c94ba74291c25"
 REPORT_A = content_hash({"validation_report": "trend_a"})
 REPORT_B = content_hash({"validation_report": "revert_b"})
@@ -158,20 +161,33 @@ def test_the_paper_run_records_a_stop_bound_to_its_inputs() -> None:
     assert other.lifecycle == {str(A): LifecycleState.VALIDATION.value}
 
 
-def test_paper_run_or_stop_is_paper_run_when_the_router_can_route() -> None:
+def _at_pin(name: str) -> None:
+    """Run this module's ``name`` with every contract object built at 2.2.0."""
+    assert at_contract_version(PINNED_CONTRACT_VERSION, f"{__name__}:{name}") is None
+
+
+def _paper_run_or_stop_is_paper_run() -> None:
     run = _or_stop(SPEC, LIFECYCLE)
     assert isinstance(run, RouterPaperRun)
     assert run == _run() and run.run_hash == BASELINE_RUN_HASH
 
 
+def test_paper_run_or_stop_is_paper_run_when_the_router_can_route() -> None:
+    _at_pin("_paper_run_or_stop_is_paper_run")
+
+
 # ------------------------------------------------------------------ (b) run hash coverage, tamper
 
 
-def test_an_omitted_report_mapping_keeps_the_existing_run_hash() -> None:
+def _an_omitted_report_mapping_keeps_the_run_hash() -> None:
     run = _run()
     assert run.validation_reports is None
     assert run.run_hash == BASELINE_RUN_HASH == run.expected_run_hash()
     run.verify()
+
+
+def test_an_omitted_report_mapping_keeps_the_existing_run_hash() -> None:
+    _at_pin("_an_omitted_report_mapping_keeps_the_run_hash")
 
 
 def test_every_recorded_identity_is_covered_by_the_run_hash() -> None:
@@ -249,7 +265,7 @@ def test_input_identities_are_bound_even_when_routing_and_targets_do_not_change(
 # ---------------------------------------------------------------- (c) validation report binding
 
 
-def test_supplied_validation_reports_are_recorded_and_hashed() -> None:
+def _supplied_validation_reports_are_recorded_and_hashed() -> None:
     run = _paper(validation_reports={B: REPORT_B, A: REPORT_A})
     assert run.validation_reports == {str(B): REPORT_B, str(A): REPORT_A}
     assert list(run.validation_reports) == sorted([str(A), str(B)])
@@ -262,6 +278,10 @@ def test_supplied_validation_reports_are_recorded_and_hashed() -> None:
     assert other.run_hash != run.run_hash
     # everything but the reports is unchanged
     assert replace(run, validation_reports=None, run_hash=BASELINE_RUN_HASH) == _run()
+
+
+def test_supplied_validation_reports_are_recorded_and_hashed() -> None:
+    _at_pin("_supplied_validation_reports_are_recorded_and_hashed")
 
 
 def test_a_routed_strategy_without_a_report_is_refused_when_reports_are_supplied() -> None:

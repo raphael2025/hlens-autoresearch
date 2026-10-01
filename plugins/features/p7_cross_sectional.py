@@ -572,11 +572,7 @@ class _CrossSectionalProvider:
         for member in population:
             member_value = valid.get(member)
             value: SourceValue | None = None
-            if (
-                member_value is not None
-                and member_value.value is not None
-                and n >= _MIN_POPULATION
-            ):
+            if member_value is not None and member_value.value is not None and n >= _MIN_POPULATION:
                 less = bisect_left(ordered, member_value.value)
                 equal = bisect_right(ordered, member_value.value) - less
                 value = self._value(served, 2 * less + equal - 1, 2 * (n - 1))

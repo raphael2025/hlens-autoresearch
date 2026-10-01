@@ -81,11 +81,11 @@ __all__ = [
 #: node carries no ``window``; it requires ``universe`` (the pinned universe snapshot, written as
 #: ``research_dataset:<namespace.table>@<snapshot_id>``, i.e. the ``DatasetRef`` of a
 #: ``ResearchDatasetManifest``) and ``universe_hash`` (that manifest's content hash);
-#: ``quantile_cs`` also requires ``buckets`` (integer >= 2). Under 1.3.0 ``window`` is therefore required per
-#: transform (every time-series transform) instead of for every transformation node; time-series
-#: nodes keep exactly their 1.2.0 grammar and meaning. "1.1.0" / "1.2.0" plans still parse with
-#: their original grammar (``rank_cs`` / ``quantile_cs`` are unknown transforms there) and keep
-#: their payload, content hash and meaning.
+#: ``quantile_cs`` also requires ``buckets`` (integer >= 2). Under 1.3.0 ``window`` is therefore
+#: required per transform (every time-series transform) instead of for every transformation node;
+#: time-series nodes keep exactly their 1.2.0 grammar and meaning. "1.1.0" / "1.2.0" plans still
+#: parse with their original grammar (``rank_cs`` / ``quantile_cs`` are unknown transforms there)
+#: and keep their payload, content hash and meaning.
 PLAN_FORMAT_VERSION: Final = "1.3.0"
 _LEGACY_PLAN_FORMAT_VERSION: Final = "1.1.0"
 _RANK_TS_PLAN_FORMAT_VERSION: Final = "1.2.0"

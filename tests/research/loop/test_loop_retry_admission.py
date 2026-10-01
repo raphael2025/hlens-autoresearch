@@ -102,7 +102,7 @@ def _fail_round_0(
         raise RuntimeError("TEST ONLY: the experiment infrastructure died")
 
     with monkeypatch.context() as patch:
-        patch.setattr(ExperimentStage, "_trial", died)
+        patch.setattr(ExperimentStage, "_execute", died)
         [record] = durable.loop.run_unattended(1)
     experiment = {stage.name: stage for stage in record.stages}["experiment"]
     assert experiment.status is StageStatus.FAILED
@@ -154,7 +154,7 @@ def _fail_round_1_with_two_hypotheses(
         raise RuntimeError("TEST ONLY: the experiment infrastructure died")
 
     with monkeypatch.context() as patch:
-        patch.setattr(ExperimentStage, "_trial", died)
+        patch.setattr(ExperimentStage, "_execute", died)
         [record] = durable.loop.run_unattended(1)
     experiment = {stage.name: stage for stage in record.stages}["experiment"]
     assert experiment.status is StageStatus.FAILED
@@ -195,7 +195,7 @@ def _fail_round_1_with_two_hypotheses_one_trial_each(
         raise RuntimeError("TEST ONLY: the experiment infrastructure died")
 
     with monkeypatch.context() as patch:
-        patch.setattr(ExperimentStage, "_trial", died)
+        patch.setattr(ExperimentStage, "_execute", died)
         [record] = durable.loop.run_unattended(1)
     experiment = {stage.name: stage for stage in record.stages}["experiment"]
     assert experiment.status is StageStatus.FAILED

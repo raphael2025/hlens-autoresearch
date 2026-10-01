@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,6 +33,7 @@ from core.contracts.universe import (
     AvailabilityEvidenceGap,
     DatasetQualityReportRef,
     EvidenceStream,
+    PitConflictEvidenceResult,
     PitConflictHeadEvidence,
     SelectedRevisionLineage,
     UniverseExclusion,
@@ -917,6 +918,7 @@ def test_first_interval_conflict_does_not_pull_the_next_conflict_instant(
     groups = pit_key_groups(
         records(), knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
     )
+    assert isinstance(groups, Generator)
     group = next(groups)
     evaluations = iter(group.evaluations)
     first = next(evaluations)
@@ -1014,6 +1016,7 @@ def test_dataset_conflict_seals_only_first_interval_evaluation_and_closes_select
         )
 
     result = caught.value.result
+    assert isinstance(result, PitConflictEvidenceResult)
     assert result is not None and result.simulation_time == start
     assert emitted == [start]
     assert selector.active == 0

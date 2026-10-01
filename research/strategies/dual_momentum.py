@@ -4,9 +4,9 @@ Research code — never production (H5). Source: the strategy library entry ``ST
 (Antonacci's dual momentum: pick the asset with the best trailing return — relative momentum — and
 hold it only while its own trailing return is positive — absolute momentum). The spec's ``lineage``
 cites the project knowledge items the rule combines:
-``factor_crypto_market_size_momentum@1.0.0`` (relative, cross-sectional momentum) and ``strategy_time_series_momentum@1.0.0`` /
-``strategy_crypto_time_series_momentum@1.0.0`` (absolute, time-series momentum). They are claims to
-test, not evidence.
+``factor_crypto_market_size_momentum@1.0.0`` (relative, cross-sectional momentum) and
+``strategy_time_series_momentum@1.0.0`` / ``strategy_crypto_time_series_momentum@1.0.0`` (absolute,
+time-series momentum). They are claims to test, not evidence.
 
 ADR-0085 defines the universe as BTCUSDT / ETHUSDT; the provider ranks exactly the request's
 instruments (the caller passes that pair) and hard-codes no instrument name. The strategy is

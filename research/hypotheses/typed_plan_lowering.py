@@ -355,9 +355,7 @@ def _lower_transformation(
     buckets = node.parameters.get("buckets")
     if transform == "quantile":
         if type(buckets) is not int or buckets < _MIN_BUCKETS:  # Defensive: parser enforces.
-            _refuse(
-                node, "invalid_buckets", f"quantile requires integer buckets >= {_MIN_BUCKETS}"
-            )
+            _refuse(node, "invalid_buckets", f"quantile requires integer buckets >= {_MIN_BUCKETS}")
     elif buckets is not None:  # Defensive: parser rejects buckets on every other transform.
         _refuse(node, "invalid_buckets", "buckets is only admitted for transform 'quantile'")
 

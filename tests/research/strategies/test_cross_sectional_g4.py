@@ -32,6 +32,7 @@ from research.strategies.cross_sectional_momentum import (
     CrossSectionalMomentumProvider,
     xsmom_spec,
 )
+from research.strategies.dual_momentum import DUAL_MOMENTUM_NAME, dual_momentum_spec
 from research.strategies.pipeline import CandidateTrialRunner, StrategyCandidate
 from research.strategies.time_series_momentum import tsmom_spec, tsmom_vol_scaled_spec
 from research.strategies.validation import PipelineBacktestValidator, TrialRun, TrialRunner
@@ -44,6 +45,7 @@ from research.validation.robustness import (
     ZERO_EXPOSURE_SINGLE_ASSET,
     RobustnessCheck,
 )
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 from tests.research.strategies import test_backtest_validation as single
 from tests.research.strategies import test_cross_sectional_momentum as xs
 from tests.research.strategies import test_multi_instrument_validation as multi
@@ -77,6 +79,8 @@ def _sha(text: str) -> str:
 #: test passes inside ``contract_schema_version_scope("2.1.0")``).
 #: 2.1.0 values (evidence, git history): d5ca922f…, ab660a9f…, c90fb699…, 679840de…,
 #: e95b1e91…, 4d2a52e5…, c941d036…, 87af742d…
+#: Recorded at contract 2.2.0: checked with every contract object built at 2.2.0
+#: (``single.at_contract_version``) after the envelope-only 2.3.0 – 2.5.0 minors.
 PINNED = {
     "single_planted_report": "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76",
     "single_planted_view": "b05266ae6f1c584125a6b694b734d385e9f9e57e1f66b1176fc4df18598ca947",
@@ -89,7 +93,8 @@ PINNED = {
 }
 
 
-def test_single_instrument_and_time_series_reports_are_byte_identical(tmp_path: Path) -> None:
+def _single_instrument_and_time_series_hashes(tmp: str) -> dict[str, str]:
+    tmp_path = Path(tmp)
     candidate = multi._candidate()  # tsmom_bars: time series, not declared cross-sectional
     assert not is_cross_sectional(candidate.spec)
     found: dict[str, str] = {}
@@ -114,6 +119,15 @@ def test_single_instrument_and_time_series_reports_are_byte_identical(tmp_path: 
         g4 = validator.robustness_input(candidate.spec, backtest.backtest)
         assert g4.sub_universes is None  # a time-series strategy gets no sub-universe re-run
         assert g4.per_asset_exposed == dict.fromkeys(book.names, True)
+    return found
+
+
+def test_single_instrument_and_time_series_reports_are_byte_identical(tmp_path: Path) -> None:
+    found = at_contract_version(
+        PINNED_CONTRACT_VERSION,
+        f"{__name__}:_single_instrument_and_time_series_hashes",
+        str(tmp_path),
+    )
     assert found == PINNED
 
 
@@ -135,8 +149,10 @@ def _candidate(spec: StrategySpec) -> StrategyCandidate:
 
 
 def test_the_declaration_is_a_static_set_of_spec_names() -> None:
-    assert frozenset({XSMOM_NAME}) == CROSS_SECTIONAL_STRATEGIES
+    # dual_momentum is declared cross-sectional by ADR-0085 (24e3e79)
+    assert frozenset({XSMOM_NAME, DUAL_MOMENTUM_NAME}) == CROSS_SECTIONAL_STRATEGIES
     assert is_cross_sectional(xsmom_spec())
+    assert is_cross_sectional(dual_momentum_spec(lookback=60))
     assert not is_cross_sectional(tsmom_spec())
     assert not is_cross_sectional(tsmom_vol_scaled_spec())
     # The same rule under another name is not declared: behaviour does not make it one.

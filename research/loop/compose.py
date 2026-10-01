@@ -523,8 +523,7 @@ class DurableLoop:
         loop = self.loop
         if loop.recovery_required is None or loop.halted is not None or loop.stopped is not None:
             raise LoopStateInconsistent(
-                "a retry is admitted only while this loop is stopped by its failed experiment "
-                "round"
+                "a retry is admitted only while this loop is stopped by its failed experiment round"
             )
         receipt = state.admit_failed_round_retry(
             packet=packet, reviewer=reviewer, manifest=manifest
@@ -842,9 +841,7 @@ def _check_recorded_epoch(
     whole fingerprint is compared by ``open_state``; this names the P12 rule explicitly)."""
     header = state.checkpoint.header()
     fingerprint = header.payload.get("fingerprint") if header.type == LOOP_STATE_OPENED else None
-    recorded = (
-        fingerprint.get("replacement_trigger") if isinstance(fingerprint, Mapping) else None
-    )
+    recorded = fingerprint.get("replacement_trigger") if isinstance(fingerprint, Mapping) else None
     expected = epoch_check_payload(trigger, epoch)
     if not isinstance(recorded, Mapping) or recorded.get(EPOCH_CHECK_KEY) != expected:
         raise LoopStateInconsistent(

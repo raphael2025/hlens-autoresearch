@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pyiceberg.expressions import AlwaysTrue, EqualTo
 
-from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
+from core.contracts.storage import (
+    ObjectRef,
+    PublishResult,
+    StagedObject,
+    StageRequest,
+    StorageAdapter,
+)
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalUnitIncomplete
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
@@ -52,7 +58,7 @@ def _populate(
     harness: RestHarness, data_type: str = "klines_1m", *, reconcile: bool = True
 ) -> None:
     if data_type == "klines_1m":
-        items = ss.kline_items(2)
+        items: list[Any] = ss.kline_items(2)
         archive_lines = ss.archive_kline_lines(items)
         raw_tables = (c.ARCHIVE_KLINES, c.REST_KLINES)
     else:
@@ -153,7 +159,7 @@ def test_reporter_owns_finite_identity_and_snapshot_rule_sets(
 
 
 class _CountingStorage:
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: StorageAdapter) -> None:
         self.inner = inner
         self.stages = 0
         self.publishes = 0
@@ -224,19 +230,19 @@ def test_new_report_publishes_three_streams_before_manifest_and_existing_only_re
 def test_input_row_cap_rejects_long_text_before_json_materialization() -> None:
     from infrastructure.quality import report_v3
 
-    original = report_v3.json.dumps
+    original: Callable[..., str] = report_v3.json.dumps  # type: ignore[attr-defined]
 
     def bounded_encoding(value: Any, **kwargs: Any) -> str:
         if isinstance(value, str):
             assert len(value) <= 128
         return original(value, **kwargs)
 
-    report_v3.json.dumps = bounded_encoding  # type: ignore[assignment]
+    report_v3.json.dumps = bounded_encoding  # type: ignore[attr-defined]
     try:
         with pytest.raises(report_v3.QualityReportV3Error, match="max_input_record_bytes"):
             report_v3._row_size({"field": "x" * 100_000}, 128)
     finally:
-        report_v3.json.dumps = original
+        report_v3.json.dumps = original  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
@@ -302,7 +308,7 @@ def test_report_clock_must_follow_day_revisions_and_edges(
 
 def test_report_rejects_shared_evidence_and_scratch_adapter(harness: RestHarness) -> None:
     with pytest.raises(ValueError, match="distinct adapter"):
-        _reporter(harness, harness.storage, StepClock(start=utc(2023, 12, 20)))  # type: ignore[arg-type]
+        _reporter(harness, harness.storage, StepClock(start=utc(2023, 12, 20)))
 
 
 def test_report_fails_closed_when_canonical_has_no_snapshot(
@@ -420,7 +426,7 @@ def test_complete_rest_page_still_runs_persisted_verifier(
             BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
         )
     )
-    original_check = report_v3.check_rest_page
+    original_check = report_v3.check_rest_page  # type: ignore[attr-defined]
     checked: list[str] = []
 
     def observe_check(view: Any, verifier: Any, channel: Any, revision: str, own: Any) -> None:

@@ -113,7 +113,7 @@ def test_archive_rest_single_key_multi_history_edge_order_matches_materializer(
         monkeypatch.setattr(reconciler, "_plan", forbidden_plan)
         maximum_pending = 0
         finalized_roots: list[tuple[int, int]] = []
-        base_builder = channel_reconcile_module.RunSetBuilder
+        base_builder = channel_reconcile_module.RunSetBuilder  # type: ignore[attr-defined]
 
         class ObservedRunSetBuilder(base_builder):  # type: ignore[misc, valid-type]
             def add(self, row: Any) -> None:

@@ -5,10 +5,10 @@ volume threshold and a fixed ``canonical.trades`` snapshot. Trades must have non
 ``event_time`` and strictly increasing numeric ``venue_trade_id``; both are checked while
 streaming because the bounded Iceberg scan does not promise a global sort. The monotonic ID check
 rejects repeated venue IDs without retaining an unbounded set. A violated ordering or duplicate
-trade key fails closed. The first trade that brings a bar's accumulated quantity to or above the threshold
-closes it whole (trades are never split). A trailing partial bar is not emitted. Day boundaries do
-not reset accumulation. Bar ``event_time`` and ``available_time`` are both copied from its last
-trade.
+trade key fails closed. The first trade that brings a bar's accumulated quantity to or above the
+threshold closes it whole (trades are never split). A trailing partial bar is not emitted. Day
+boundaries do not reset accumulation. Bar ``event_time`` and ``available_time`` are both copied from
+its last trade.
 
 The adapter scan uses the fixed-snapshot bounded path specified by ADR-0075. Only the current bar
 and a single scan batch are retained by this implementation; the returned tuple is caller-owned.
@@ -52,9 +52,13 @@ VOLUME_BAR_SPEC: Final[dict[str, Any]] = {
     "rule": VOLUME_BAR_ID,
     "version": VOLUME_BAR_VERSION,
     "source": "canonical.trades at an explicitly bound Iceberg snapshot",
-    "order": "event_time non-decreasing and numeric venue_trade_id strictly increasing; otherwise reject",
+    "order": (
+        "event_time non-decreasing and numeric venue_trade_id strictly increasing; otherwise reject"
+    ),
     "selection": "snapshot must contain at most one row per venue trade; duplicates reject",
-    "threshold": "explicit positive Decimal base-asset quantity; close on first cumulative >= threshold",
+    "threshold": (
+        "explicit positive Decimal base-asset quantity; close on first cumulative >= threshold"
+    ),
     "overshoot": "include the entire threshold-crossing trade; never split a trade",
     "partial": "do not emit a trailing bar below threshold",
     "day_boundary": "does not reset accumulation",
@@ -62,11 +66,11 @@ VOLUME_BAR_SPEC: Final[dict[str, Any]] = {
     "arithmetic": "exact Decimal addition; inexact results reject",
     "content": "sha256 of canonical JSON bar values and an ordered length-prefixed trade digest",
 }
-VOLUME_BAR_HASH: Final = hashlib.sha256(
-    canonical_json(VOLUME_BAR_SPEC).encode("utf-8")
-).hexdigest()
+VOLUME_BAR_HASH: Final = hashlib.sha256(canonical_json(VOLUME_BAR_SPEC).encode("utf-8")).hexdigest()
 
 _EXACT: Final = Context(prec=80, traps=[Inexact, InvalidOperation, Overflow, DivisionByZero])
+
+
 class VolumeBarError(ValueError):
     """The pinned Canonical trade stream cannot safely produce deterministic volume bars."""
 
@@ -152,8 +156,12 @@ def _aggregate_batches(
             trade = _trade(row, symbol)
             order = (trade["event_time"], trade["venue_trade_id"])
             if previous_order is not None and order <= previous_order:
-                reason = "duplicate venue trade" if order == previous_order else "out-of-order trade"
-                raise VolumeBarError(f"{reason}: stream must be strictly ordered by event_time and venue_trade_id")
+                reason = (
+                    "duplicate venue trade" if order == previous_order else "out-of-order trade"
+                )
+                raise VolumeBarError(
+                    f"{reason}: stream must be strictly ordered by event_time and venue_trade_id"
+                )
             if previous_trade_id is not None and trade["venue_trade_id"] <= previous_trade_id:
                 reason = (
                     "duplicate venue trade ID"

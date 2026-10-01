@@ -63,9 +63,9 @@ The research loop, the ADR-0074 synthetic operator and the API never open this r
 **Honest boundary.** A file-backed stand-in for Control Plane storage (like ``StrategyRegistry``,
 ADR-0005 §7). It proves the stored transitions are a legal, append-only, hash-chained lifecycle; it
 does not authenticate ``triggered_by`` / ``approved_by`` (declared names) and does not check that
-the evidence references exist. Backfilling existing strategies means appending their **real** history
-record by record (ADR-0098 后果); nothing here fabricates one. Rolling the anchor back together with
-the registry is still undetectable.
+the evidence references exist. Backfilling existing strategies means appending their **real**
+history record by record (ADR-0098 后果); nothing here fabricates one. Rolling the anchor back
+together with the registry is still undetectable.
 """
 
 from __future__ import annotations
@@ -455,9 +455,7 @@ class LifecycleRegistry:
                     f"{have}: records were removed"
                 )
             if self._journal.entry(length - 1).hash != head:
-                raise RegistryCorrupted(
-                    "the lifecycle registry is not the history its anchor saw"
-                )
+                raise RegistryCorrupted("the lifecycle registry is not the history its anchor saw")
         if have > length + 1:
             raise RegistryCorrupted(
                 f"the lifecycle registry has {have} records but its anchor saw {length}: "
@@ -565,8 +563,7 @@ class LifecycleRegistry:
         records = self._state.records
         if head.record_count > len(records) or _head_of(records, head.record_count) != head:
             raise UnknownHead(
-                f"head {head.record_count}/{head.last_record_hash} is not on this registry's "
-                "chain"
+                f"head {head.record_count}/{head.last_record_hash} is not on this registry's chain"
             )
         return head
 

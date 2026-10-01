@@ -299,6 +299,7 @@ def test_run_set_builder_releases_refs_after_storage_read_failure(
     assert not builder._rows
     assert all(not level for level in builder._refs._levels)
 
+
 def test_merge_consumes_a_lazy_run_stream_with_bounded_multilevel_folding(
     tmp_path: Path,
 ) -> None:

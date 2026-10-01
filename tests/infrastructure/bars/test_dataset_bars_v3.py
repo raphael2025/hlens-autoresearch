@@ -24,7 +24,7 @@ from infrastructure.bars.dataset import (
     feature_observations_from_dataset,
     outcome_request_from_dataset,
 )
-from infrastructure.dataset.builder import DatasetBuilt, DatasetBuildSummary
+from infrastructure.dataset.builder import DatasetBuildSummary, DatasetBuilt
 from infrastructure.dataset.manifests import ManifestFormError
 from infrastructure.feature.dataset import DatasetBindingError
 from infrastructure.feature.observations import bar_observations

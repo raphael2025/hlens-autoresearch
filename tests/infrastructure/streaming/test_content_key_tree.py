@@ -6,7 +6,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -51,7 +51,7 @@ class _TrackingStorage:
 
 class _CountingHandle:
     def __init__(self, handle: Any, storage: _TrackingStorage) -> None:
-        self._handle = handle
+        self._handle: BinaryIO = handle
         self._storage = storage
         self._closed = False
 

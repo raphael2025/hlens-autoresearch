@@ -22,7 +22,7 @@ Mirrors ``tests/infrastructure/dataset/test_universe.py``'s scenarios but drives
 from __future__ import annotations
 
 import inspect
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from datetime import datetime, timedelta
 from itertools import islice
 from pathlib import Path
@@ -74,10 +74,6 @@ _RUN_PARAMS = UniverseRunParams(
     merge_fanout=3,
     limits=RunLimits(leaf_max_records=8, leaf_max_bytes=4096, fanout=3),
 )
-
-
-def _cursor(w: World, spec: Any, pit: Any) -> UniverseSpanCursor:
-    return w.universe().cursor(spec, pit, run_params=_RUN_PARAMS)
 
 
 def _members(cursor: UniverseSpanCursor) -> tuple[UniverseMember, ...]:
@@ -278,7 +274,7 @@ def test_lineage_projection_dedupes_revisions_and_rejects_conflicting_payloads(
         gap=None,
     )
 
-    def repeated():
+    def repeated() -> Generator[ub._SpanEvent]:
         yield event
         yield event
 
@@ -303,7 +299,7 @@ def test_lineage_projection_dedupes_revisions_and_rejects_conflicting_payloads(
         gap=None,
     )
 
-    def conflicting():
+    def conflicting() -> Generator[ub._SpanEvent]:
         yield event
         yield conflicting_event
 
@@ -336,7 +332,7 @@ def test_lineage_projection_dedupes_revisions_and_rejects_conflicting_payloads(
         gap="missing-availability-evidence",
     )
 
-    def conflicting_gaps():
+    def conflicting_gaps() -> Generator[ub._SpanEvent]:
         yield gap_event
         yield gap_conflict
 
@@ -388,7 +384,7 @@ def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
     unique_count = 128
     ids = [f"revision-{index:04d}" for index in range(unique_count)]
     event_sources_closed: list[bool] = []
-    stores: list[RunSetBuilder] = []
+    stores: list[TrackingBuilder] = []
 
     class TrackingBuilder(RunSetBuilder):
         added = 0
@@ -875,14 +871,16 @@ def test_point_in_time_instants_remain_a_singleton_without_run_parameters(w: Wor
     w.listed(ds.TRADING, L1)
     pit = w.spec(at=SIM)
     replay = ub._instants_v3(
-        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, None
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings),
+        pit,
+        w.h.storage,
+        None,  # type: ignore[arg-type]
     )
     with replay.open() as instants:
         assert tuple(instants) == (SIM,)
 
 
-
 def test_interval_cursor_requires_explicit_run_parameters(w: World) -> None:
     w.listed(ds.TRADING, L1)
     with pytest.raises(TypeError, match="run_params"):
-        w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
+        w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))  # type: ignore[call-arg]

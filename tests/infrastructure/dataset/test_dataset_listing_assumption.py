@@ -249,7 +249,7 @@ def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, 
         def quality_factory(
             adapter: RevisionCatalog,
             storage: StorageAdapter,
-            request_pit: PointInTimeSpec,
+            pit: PointInTimeSpec,
             data_type: str,
             *,
             view: PinnedCatalogView,
@@ -258,7 +258,7 @@ def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, 
         ) -> BoundedQualityEvidence:
             assert adapter is w.h.adapter
             assert canonical_scratch_directory == w.h.canonical_scratch_directory
-            return _source(w, request_pit, storage, params, view)
+            return _source(w, pit, storage, params, view)
 
         return dataset_evidence_sources(
             w.h.adapter,

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from apps.worker.degradation import DegradationCheck
-from core.domain.base import Ref, content_hash
+from core.domain.base import content_hash
 from core.domain.research import RetirementRecord
 from core.domain.specs import StrategySpec
 from infrastructure.registry.retirement import RetirementRegistry

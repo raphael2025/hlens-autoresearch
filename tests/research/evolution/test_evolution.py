@@ -87,9 +87,7 @@ def test_combine_rejects_disagreeing_search_spaces_for_a_shared_param() -> None:
 def test_combine_rejects_params_outside_the_combined_search_space() -> None:
     """ADR-0069 §2: a param carried over from one parent must still fit the *combined* space."""
     a = _spec("tsmom", params={"target": 5}, param_search_space={})
-    b = _spec(
-        "volscaled", signals=(OTHER,), params={}, param_search_space={"target": (1, 2, 3)}
-    )
+    b = _spec("volscaled", signals=(OTHER,), params={}, param_search_space={"target": (1, 2, 3)})
     with pytest.raises(EvolutionError, match="outside the combined search spaces"):
         combine(a, b, "tsmom_volscaled")
 

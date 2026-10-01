@@ -31,6 +31,7 @@ from infrastructure.catalog.phase1_tables import (
     DATASET_SELECTIONS,
     PHASE1_TABLES,
 )
+from infrastructure.dataset.builder import DatasetSpecError
 from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.pit.assumption import ASSUMPTION_BINDING
 from infrastructure.pit.selector import PitSelection, PitSelector
@@ -177,7 +178,10 @@ def test_an_earlier_first_slice_is_read_and_replayed_unchanged_now(w: ds.World, 
     with written_at(old):
         _walk(w)
         spec = w.spec()
-        built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END)
+        # A v2 dataset of that era (seeded: DQ-10 refuses new v2 builds); replayed below.
+        built = ds.seed_historical_v2(
+            w.builder(), FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END
+        )
         assumed = w.spec(availability_bindings=_ASSUMED)
         first_reads = {
             (data_type, symbol): _picture(_select(w, assumed, data_type, symbol))
@@ -222,11 +226,9 @@ def test_earlier_and_current_groups_are_read_side_by_side(w: ds.World, old: str)
         w.trades()  # BTCUSDT aggTrades: archive + REST + edge + Canonical, all at old
         fs.ingest_bars_for(w, fs.BTC, tag="btc", base="100")
         w.report("klines_1m", symbols=(fs.BTC, fs.ETH), listing=True)
-        old_manifest = (
-            w.builder()
-            .build(FIRST_SLICE_UNIVERSE, w.spec(), "klines_1m", fs.DAY_START, fs.DAY_END)
-            .manifest
-        )
+        old_manifest = ds.seed_historical_v2(
+            w.builder(), FIRST_SLICE_UNIVERSE, w.spec(), "klines_1m", fs.DAY_START, fs.DAY_END
+        ).manifest
     fs.ingest_trades_for(w, fs.ETH, tag="eth")  # ETHUSDT aggTrades at the current version
     fs.ingest_bars_for(w, fs.ETH, tag="eth", base="200")
     w.report("klines_1m", symbols=(fs.BTC, fs.ETH), listing=True)
@@ -256,7 +258,13 @@ def test_earlier_and_current_groups_are_read_side_by_side(w: ds.World, old: str)
     # The earlier manifest still loads; a new dataset over both symbols is a current manifest.
     assert w.builder().manifests().load(old_manifest.content_hash()) == old_manifest
     spec = w.spec(skip=(DATASET_SELECTIONS.table,))  # the dataset table is never an input
-    built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END)
+    # ADR-0077 DQ-10: the public path no longer creates a new v2 dataset at all ...
+    with pytest.raises(DatasetSpecError, match="disabled by ADR-0077 DQ-10"):
+        w.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END)
+    # ... but a v2 selection over both versions still derives a current manifest beside the old.
+    built = ds.seed_historical_v2(
+        w.builder(), FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END
+    )
     assert not built.replayed and built.manifest.schema_version == CONTRACT_SCHEMA_VERSION
     assert {m.schema_version for m in built.manifest.members} == {CONTRACT_SCHEMA_VERSION}
     assert {row["revision_id"] for row in built.selection.rows} >= {

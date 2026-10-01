@@ -69,9 +69,10 @@ class LoweredOutputBinding:
     node_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.experiment_hash, str) or _HASH_PATTERN.fullmatch(
-            self.experiment_hash
-        ) is None:
+        if (
+            not isinstance(self.experiment_hash, str)
+            or _HASH_PATTERN.fullmatch(self.experiment_hash) is None
+        ):
             raise ValueError("experiment_hash must be a canonical lowercase SHA-256")
         if type(self.spec) not in _LOWERED_SPEC_TYPES:
             raise TypeError("lowered output must be an exact Feature/State/Event/StrategySpec")
@@ -432,8 +433,7 @@ def validate_complete_experiment_bindings(
             "invalid_plan_map", "plans_by_experiment", "must be an experiment-to-plan mapping"
         )
     if any(
-        not isinstance(experiment_hash, str)
-        or _HASH_PATTERN.fullmatch(experiment_hash) is None
+        not isinstance(experiment_hash, str) or _HASH_PATTERN.fullmatch(experiment_hash) is None
         for experiment_hash in plans_by_experiment
     ):
         raise PlanBindingRefused(

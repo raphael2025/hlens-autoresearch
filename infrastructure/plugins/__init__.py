@@ -19,10 +19,10 @@ from infrastructure.plugins.discovery import (
     entry_point_group,
 )
 from infrastructure.plugins.manifest import (
+    SUPPORTED_CONTRACT_MAJOR,
     PluginKind,
     PluginManifest,
     PluginManifestError,
-    SUPPORTED_CONTRACT_MAJOR,
     validate_params_schema,
 )
 

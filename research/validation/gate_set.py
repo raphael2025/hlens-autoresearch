@@ -7,34 +7,35 @@
   the part of the gate set that is fixed by the pipeline code alone. The literal gate ids inside a
   stage are not: how many a report carries depends on the bound Profile instance
   (``G2.cost_stress.<i>`` / ``.cost_report.<i>`` — one pair per ``cost_stress.stress_multipliers`` /
-  ``.reported_only_multipliers`` entry — ``G2.market_benchmark(.<rule>)?`` / ``G2.inverse_control`` —
-  only when the Profile calls for them, ADR-0060, already checked by ``research.promotion`` itself —
-  the multi-seed ``G1.shuffle_control.seed.<n>`` / ``G1.shift_control.seed.<n>`` extras, ADR-0041's
-  per-check G4 items) and on what happened while the pipeline ran (an isolated G4 check that raised
-  is reported under ``<prefix>.check_error`` instead of its normal gates; no robustness input at all
-  collapses every G4 check to the single ``G4.robustness_input`` gate; a consumed sealed evaluation
-  that produced no statistic is ``G5.oos_evaluation`` instead of the two ordinary G5 statistic
-  gates). Every one of these variants keeps its gate under the *same stage prefix*
+  ``.reported_only_multipliers`` entry — ``G2.market_benchmark(.<rule>)?`` / ``G2.inverse_control``
+  — only when the Profile calls for them, ADR-0060, already checked by ``research.promotion`` itself
+  — the multi-seed ``G1.shuffle_control.seed.<n>`` / ``G1.shift_control.seed.<n>`` extras,
+  ADR-0041's per-check G4 items) and on what happened while the pipeline ran (an isolated G4 check
+  that raised is reported under ``<prefix>.check_error`` instead of its normal gates; no robustness
+  input at all collapses every G4 check to the single ``G4.robustness_input`` gate; a consumed
+  sealed evaluation that produced no statistic is ``G5.oos_evaluation`` instead of the two ordinary
+  G5 statistic gates). Every one of these variants keeps its gate under the *same stage prefix*
   (``gate_id.split(".", 1)[0]``), so stage membership is the invariant a pipeline version can
-  promise without a Profile instance in hand. Finer, Profile-specific gate completeness (the ADR-0060
-  benchmark items, the ADR-0013 threshold binding) stays a promotion-time check that does hold a
-  Profile instance (``research.validation.verification``) — it is not part of the version-level
-  required set this module defines.
+  promise without a Profile instance in hand. Finer, Profile-specific gate completeness (the
+  ADR-0060 benchmark items, the ADR-0013 threshold binding) stays a promotion-time check that does
+  hold a Profile instance (``research.validation.verification``) — it is not part of the
+  version-level required set this module defines.
 
 - **mode from the report's own gates, not a declared field.** No domain field records which "mode"
   (07-validation.md §2.1: "样本内模式" / "封存 OOS 模式") a report is in (H1: no contract change);
   it is read off the stages the report's own gates show, the same way
   ``research.validation.report.promotion_blocked_reason`` reads "did this report reach G5" off the
-  gates rather than a flag. Three shapes occur in this codebase (``research/strategies/validation.py``
-  builds a G0 – G4 report through ``run_validation``; ``research/loop`` — out of this module's scope —
-  builds a **separate** G5-only report through ``run_sealed_oos``/``sealed_oos_without_result``, the
-  shape ``research.promotion``'s own evidence chain and ``tests/promotion/fixtures.py::toy_evidence``
-  already rely on for "sealed_oos_passed"; a report could in principle carry both at once):
+  gates rather than a flag. Three shapes occur in this codebase
+  (``research/strategies/validation.py`` builds a G0 – G4 report through ``run_validation``;
+  ``research/loop`` — out of this module's scope — builds a **separate** G5-only report through
+  ``run_sealed_oos``/``sealed_oos_without_result``, the shape ``research.promotion``'s own evidence
+  chain and ``tests/promotion/fixtures.py::toy_evidence`` already rely on for "sealed_oos_passed"; a
+  report could in principle carry both at once):
 
   | report's own stages | mode | required |
   |---|---|---|
   | any of G0 – G4, no G5 | in-sample | G0 – G4 (07-validation.md §2.1 "样本内模式") |
-  | any of G0 – G4, and G5 | sealed OOS | G0 – G4 + G5 ("封存 OOS 模式：在样本内门集基础上加上 G5") |
+  | any of G0 – G4 and G5 | sealed OOS | G0 – G4 + G5 ("封存 OOS 模式：在样本内门集基础上加上 G5") |
   | G5 only | sealed OOS, standalone | G5 (the report is already exactly what it claims to be) |
   | neither | unscoped | none (only the "unknown stage" check can fire) |
 

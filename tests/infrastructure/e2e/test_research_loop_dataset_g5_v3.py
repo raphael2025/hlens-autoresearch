@@ -100,9 +100,7 @@ def test_a_v3_pair_releases_bars_runs_signals_and_binds_v3_evidence(
 
 
 @pytest.mark.parametrize("v2_side", ["feature", "price"])
-def test_a_v2_v3_mixed_sealed_pair_is_refused(
-    world: World, v2_side: str
-) -> None:
+def test_a_v2_v3_mixed_sealed_pair_is_refused(world: World, v2_side: str) -> None:
     feature_pit = v3.spec_of(world, interval=v3.INTERVAL)
     price_pit = v3.spec_of(world)
     v2_feature = rt.build(world, feature_pit, data_type="klines_1m", window=WINDOW)
@@ -132,5 +130,6 @@ def test_a_v2_v3_mixed_sealed_pair_is_refused(
         research_price=research_price,
     )
 
-    with pytest.raises(SealedDataRefused, match="never one chain"):
+    # the sealed side's dataset table (v2 selections vs v3 chunks) is checked before the chain
+    with pytest.raises(SealedDataRefused, match="never one chain|is of another dataset table"):
         pair.release(SealedEvaluation(FAMILY, SealedWindow(*WINDOW)))

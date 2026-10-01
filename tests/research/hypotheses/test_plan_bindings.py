@@ -135,13 +135,16 @@ def _experiment(*, output_hash: str) -> ExperimentSpec:
 
 def test_output_producer_requires_the_complete_ast_node_set() -> None:
     plan = _plan()
-    assert len(
-        produce_lowered_output_bindings(
-            experiment_hash=EXPERIMENT_HASH,
-            plan=plan,
-            specs_by_node={"combined": _feature()},
+    assert (
+        len(
+            produce_lowered_output_bindings(
+                experiment_hash=EXPERIMENT_HASH,
+                plan=plan,
+                specs_by_node={"combined": _feature()},
+            )
         )
-    ) == 1
+        == 1
+    )
 
     with pytest.raises(PlanBindingRefused, match="missing_node_output"):
         produce_lowered_output_bindings(

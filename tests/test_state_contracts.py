@@ -56,7 +56,7 @@ def _request(**overrides: Any) -> StateRequest:
 
 def test_phase2_only_appends_five_models_to_the_registry(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 146
+    assert len(names) == 148  # +2 PitConflict* models: ADR-0094 (b6f9e11)
     # Phases append in merge order: the five state models are one contiguous block after F4.
     start = names.index(STATE_MODELS[0].__name__)
     assert start >= 79

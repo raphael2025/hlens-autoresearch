@@ -12,24 +12,23 @@ from collections.abc import Mapping
 
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
 from core.contracts.strategy import BacktestProviderDescriptor
+from plugins.backtest.bar import BarBacktester
+from plugins.features.bars import BarLogReturnProvider
+from plugins.outcomes.forward_return import ForwardReturnOutcome
+from plugins.states.regimes import TrendRangeProvider
+from plugins.synthetic.random_walk import RandomWalkMarket
 from research.loop.operator_config import (
+    _ALLOWLIST_VALIDATION_SEAL,
+    PROVIDER_ROLES,
     InjectedProviders,
     OperatorConfig,
-    PROVIDER_ROLES,
     ProviderIdentity,
-    _ALLOWLIST_VALIDATION_SEAL,
 )
 from research.strategies.time_series_momentum import (
     TimeSeriesMomentumProvider,
     tsmom_spec,
     tsmom_vol_scaled_spec,
 )
-
-from plugins.backtest.bar import BarBacktester
-from plugins.features.bars import BarLogReturnProvider
-from plugins.outcomes.forward_return import ForwardReturnOutcome
-from plugins.states.regimes import TrendRangeProvider
-from plugins.synthetic.random_walk import RandomWalkMarket
 
 __all__ = ["OperatorProviderError", "build_providers"]
 
@@ -108,7 +107,8 @@ def _verify_supported_specs(
         raise _refuse(f"{role} descriptor has an invalid {field}: {exc}") from exc
     if actual_map != dict(expected):
         raise _refuse(
-            f"{role} descriptor {field} does not exactly match the configured spec references/hashes"
+            f"{role} descriptor {field} does not exactly match the configured spec "
+            "references/hashes"
         )
 
 
@@ -165,7 +165,8 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
                 != allowed_strategy_specs[spec.content_hash()].model_dump(mode="json")
             ):
                 raise _refuse(
-                    f"strategy spec {spec.ref} is not exactly an allowlisted TSMOM spec or declares risk"
+                    f"strategy spec {spec.ref} is not exactly an allowlisted TSMOM spec "
+                    "or declares risk"
                 )
         strategy = TimeSeriesMomentumProvider(specs=strategy_specs)
         _verify_descriptor(config, "strategy_provider", strategy.descriptor)
@@ -185,9 +186,7 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
             or descriptor.simulation_only is not True
             or descriptor.execution_model != "next_bar_open"
         ):
-            raise _refuse(
-                "backtester must be simulation-only with execution_model=next_bar_open"
-            )
+            raise _refuse("backtester must be simulation-only with execution_model=next_bar_open")
 
         label_spec = wiring.label_spec
         if (

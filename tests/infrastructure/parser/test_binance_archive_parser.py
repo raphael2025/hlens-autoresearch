@@ -645,18 +645,18 @@ def test_spooled_parser_matches_the_public_table_result_and_cursor_is_owned(
     assert isinstance(parsed, ParsedArchive)
 
     temp_files: list[io.BufferedRandom] = []
-    make_temp = parser_mod.tempfile.TemporaryFile
+    make_temp = parser_mod.tempfile.TemporaryFile  # type: ignore[attr-defined]
 
     def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
         assert kwargs.get("dir") == str(tmp_path)
-        handle = make_temp(*args, **kwargs)
+        handle: io.BufferedRandom = make_temp(*args, **kwargs)
         temp_files.append(handle)
         return handle
 
-    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
+    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)  # type: ignore[attr-defined]
     spooled = parse_archive_spooled(
         case.request,
-        _MemoryArchiveStorage(case.request.object_ref, case.data),
+        _MemoryArchiveStorage(case.request.object_ref, case.data),  # type: ignore[arg-type]
         scratch_directory=tmp_path,
     )
     assert isinstance(spooled, parser_mod.SpooledArchive)
@@ -691,16 +691,17 @@ def test_spooled_parser_rejects_late_csv_failure_and_cleans_provisional_batches(
     rows[-1] = ",".join(last)
     case = csv_case(AGG, US_DAY, csv_bytes(rows))
     temp_files: list[io.BufferedRandom] = []
-    make_temp = parser_mod.tempfile.TemporaryFile
+    make_temp = parser_mod.tempfile.TemporaryFile  # type: ignore[attr-defined]
 
     def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
-        handle = make_temp(*args, **kwargs)
+        handle: io.BufferedRandom = make_temp(*args, **kwargs)
         temp_files.append(handle)
         return handle
 
-    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
+    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)  # type: ignore[attr-defined]
     outcome = parse_archive_spooled(
-        case.request, _MemoryArchiveStorage(case.request.object_ref, case.data)
+        case.request,
+        _MemoryArchiveStorage(case.request.object_ref, case.data),  # type: ignore[arg-type]
     )
     assert isinstance(outcome, ArchiveRejection)
     assert outcome.code is RejectionCode.INVALID_BOOLEAN
@@ -716,16 +717,17 @@ def test_spooled_parser_rejects_bad_crc_after_flushing_and_cleans_spool(
     damaged = patch_member(data, crc=0)
     case = make_case(AGG, US_DAY, damaged)
     temp_files: list[io.BufferedRandom] = []
-    make_temp = parser_mod.tempfile.TemporaryFile
+    make_temp = parser_mod.tempfile.TemporaryFile  # type: ignore[attr-defined]
 
     def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
-        handle = make_temp(*args, **kwargs)
+        handle: io.BufferedRandom = make_temp(*args, **kwargs)
         temp_files.append(handle)
         return handle
 
-    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
+    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)  # type: ignore[attr-defined]
     outcome = parse_archive_spooled(
-        case.request, _MemoryArchiveStorage(case.request.object_ref, case.data)
+        case.request,
+        _MemoryArchiveStorage(case.request.object_ref, case.data),  # type: ignore[arg-type]
     )
     assert isinstance(outcome, ArchiveRejection)
     assert outcome.code is RejectionCode.ZIP_MEMBER_CORRUPT
@@ -734,13 +736,16 @@ def test_spooled_parser_rejects_bad_crc_after_flushing_and_cleans_spool(
 
 def test_public_parse_archive_keeps_the_complete_table_api() -> None:
     case = csv_case(KLINES, US_DAY, csv_bytes(kline_rows(US_DAY, 2)))
-    parsed = parse_archive(case.request, _MemoryArchiveStorage(case.request.object_ref, case.data))
+    parsed = parse_archive(
+        case.request,
+        _MemoryArchiveStorage(case.request.object_ref, case.data),  # type: ignore[arg-type]
+    )
     assert isinstance(parsed, ParsedArchive)
     assert parsed.rows.num_rows == 2
 
 
 def test_verifier_retains_at_most_one_archive_metadata_entry() -> None:
-    verifier = PersistedRowVerifier(object(), object(), cache_archives=True)
+    verifier = PersistedRowVerifier(object(), object(), cache_archives=True)  # type: ignore[arg-type]
     first_item = VerifiedArchive("archive-rev-1", TimeUnit.MICROSECOND, {}, 2)
     second_item = VerifiedArchive("archive-rev-2", TimeUnit.MICROSECOND, {}, 2)
 

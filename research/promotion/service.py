@@ -504,13 +504,13 @@ def _check_profiles(
         except Exception as exc:
             raise _refuse(
                 PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
-                f"trusted replay provider refused report {report.report_id} "
-                f"({type(exc).__name__})",
+                f"trusted replay provider refused report {report.report_id} ({type(exc).__name__})",
             ) from exc
         if not isinstance(replay, ValidationReplayResult):
             raise _refuse(
                 PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
-                f"trusted replay provider returned no ValidationReplayResult for {report.report_id}",
+                "trusted replay provider returned no ValidationReplayResult for "
+                f"{report.report_id}",
             )
         replay_problems = verify_replayed_values(report, checked, experiment, replay)
         if replay_problems:

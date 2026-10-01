@@ -66,6 +66,11 @@ from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, FrozenMapping
 from tests.contract_suites.catalog import INVALID_TABLE_NAMES
 from tests.contract_suites.storage import INVALID_OBJECT_KEYS
 from tests.contract_version_support import as_published_at, as_published_at_2_0_0
+from tests.test_adr_0088_contract_240 import (
+    SCHEMA_SHA256_AT_2_3_0,
+    _schema_bytes,
+    _without_adr_0088,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 CURRENT_SCHEMA_DIR = REPO / "schemas"
@@ -1556,6 +1561,14 @@ def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
 def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) -> None:
     committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
+    if name in SCHEMA_SHA256_AT_2_3_0:  # gained ADR-0088's optional fields (2.4.0, 9925f0a)
+        # With exactly those additions stripped, the ADR-0088 (2.4.0) and ADR-0094 (2.5.0) bumps
+        # may change only the envelope default: the original 2.0.0 pin still holds.
+        for schema in (committed, regenerated):
+            stripped = _schema_bytes(_without_adr_0088(name, json.loads(schema)))
+            digest = hashlib.sha256(as_published_at_2_0_0(stripped)).hexdigest()
+            assert digest == PRE_B3_SCHEMA_SHA256[name]
+        return
     if name in ADR_0055_SCHEMA_SHA256:  # changed by ADR-0055's fields: the 2.2.0 pin
         # ADR-0077: the 2.3.0 bump may change only the envelope default of these schemas.
         for schema in (committed, regenerated):
@@ -1568,8 +1581,8 @@ def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) ->
             digest = hashlib.sha256(as_published_at(schema, "2.1.0")).hexdigest()
             assert digest == ADR_0052_SCHEMA_SHA256[name]
         return
-    # ADR-0052 §4 / ADR-0055 / ADR-0077: the 2.1.0, 2.2.0 and 2.3.0 bumps may change only the
-    # envelope default.
+    # ADR-0052 §4 / ADR-0055 / ADR-0077 / ADR-0088 / ADR-0094: the 2.1.0 through 2.5.0 bumps may
+    # change only the envelope default.
     assert (
         hashlib.sha256(as_published_at_2_0_0(committed)).hexdigest() == (PRE_B3_SCHEMA_SHA256[name])
     )

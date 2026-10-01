@@ -7,12 +7,12 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import pytest
 from pyiceberg.expressions import AlwaysFalse, And, EqualTo, GreaterThanOrEqual, In
@@ -35,6 +35,7 @@ from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveIngested, RawRevisionStore
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
+from infrastructure.revision.row_integrity import PersistedRowVerifier
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.collector import rest_support as cs
 from tests.infrastructure.revision import rest_store_support as ss
@@ -53,6 +54,21 @@ K_REST = utc(2023, 12, 5)
 K_NORM = utc(2023, 12, 6)
 K_EDGE = utc(2023, 12, 10)
 KEY = f"binance:spot:agg_trade:{SYMBOL}:100"
+
+
+class _BatchStream(Protocol):
+    """The closable stream a catalog's ``scan_column_batches`` hands back."""
+
+    _closed: bool
+
+    @property
+    def schema(self) -> Any: ...
+
+    def __iter__(self) -> Iterator[Any]: ...
+
+    def __next__(self) -> Any: ...
+
+    def close(self) -> None: ...
 
 
 def _sha(document: dict[str, Any]) -> str:
@@ -134,6 +150,7 @@ def test_iter_revision_ids_early_close_releases_disk_backed_position_index(
     created.clear()
 
     ids = n.iter_revision_ids(out)
+    assert isinstance(ids, Generator)
     assert next(ids)
     assert created and any(not index._closed for index in created)
     ids.close()
@@ -181,16 +198,22 @@ def test_normalizer_pin_uses_one_stable_bounded_pointer_and_streams_exact_histor
     assert all(handle.snapshot_count <= handle._limits.max_snapshots for handle in handles.values())
     assert all(not handle.metadata.snapshots for handle in handles.values())
 
-    batches = pin.catalog.scan_column_batches(
-        channel.element.table, columns=("archive_line_number", "symbol")
+    batches = cast(
+        _BatchStream,
+        pin.catalog.scan_column_batches(
+            channel.element.table, columns=("archive_line_number", "symbol")
+        ),
     )
     try:
         assert [row for batch in batches for row in batch.to_pylist()] == expected_rows
     finally:
         batches.close()
 
-    early = pin.catalog.scan_column_batches(
-        channel.element.table, columns=("archive_line_number", "symbol")
+    early = cast(
+        _BatchStream,
+        pin.catalog.scan_column_batches(
+            channel.element.table, columns=("archive_line_number", "symbol")
+        ),
     )
     next(early)
     stream = early
@@ -233,13 +256,19 @@ def test_bounded_pinned_view_can_be_nested_without_eager_reads(h: RestHarness) -
         adapter=inner,
         metadata_limits=nz.NORMALIZER_METADATA_LIMITS,
     )
-    expected = list(h.adapter.history(c.TRADES.table, h.head(c.TRADES.table)))
+    trades_head = h.head(c.TRADES.table)
+    assert trades_head is not None
+    expected = list(h.adapter.history(c.TRADES.table, trades_head))
 
     pin = reader._pin(channel, archive)
     assert pin.catalog.load_table(channel.element.table) is not None
+    assert pin.canonical_head is not None
     assert list(pin.catalog.history(c.TRADES.table, pin.canonical_head)) == expected
-    batches = pin.catalog.scan_column_batches(
-        channel.element.table, columns=("archive_line_number", "symbol")
+    batches = cast(
+        _BatchStream,
+        pin.catalog.scan_column_batches(
+            channel.element.table, columns=("archive_line_number", "symbol")
+        ),
     )
     try:
         assert sum(batch.num_rows for batch in batches) == 3
@@ -259,7 +288,9 @@ def test_bounded_scan_columns_keeps_pointer_limit_and_empty_schema_after_metadat
     pin = normalizer._pin(channel, archive)
     columns = ("arrival_seq", "revision_id")
 
-    before_batches = pin.catalog.scan_column_batches(c.TRADES.table, columns=columns)
+    before_batches = cast(
+        _BatchStream, pin.catalog.scan_column_batches(c.TRADES.table, columns=columns)
+    )
     try:
         expected = [row for batch in before_batches for row in batch.to_pylist()]
     finally:
@@ -300,11 +331,18 @@ def test_bounded_scan_columns_keeps_pointer_limit_and_empty_schema_after_metadat
     assert bounded_limited.to_pylist() == expected[:2]
 
     no_rows = pin.catalog.scan_columns(
-        c.TRADES.table, columns=columns, row_filter=EqualTo("arrival_seq", -1)
+        c.TRADES.table,
+        columns=columns,
+        row_filter=EqualTo("arrival_seq", -1),  # type: ignore[call-arg, arg-type]
     )
     assert no_rows.num_rows == 0
-    empty_stream = pin.catalog.scan_column_batches(
-        c.TRADES.table, columns=columns, row_filter=EqualTo("arrival_seq", -1)
+    empty_stream = cast(
+        _BatchStream,
+        pin.catalog.scan_column_batches(
+            c.TRADES.table,
+            columns=columns,
+            row_filter=EqualTo("arrival_seq", -1),  # type: ignore[call-arg, arg-type]
+        ),
     )
     try:
         assert no_rows.schema == empty_stream.schema
@@ -1371,7 +1409,7 @@ def test_per_call_pins_close_their_verifiers_on_success_and_failure(
     opened: list[Any] = []
     closed: list[Any] = []
 
-    class Tracked(nz.PersistedRowVerifier):
+    class Tracked(PersistedRowVerifier):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             opened.append(self)
@@ -1464,14 +1502,14 @@ def test_positions_closes_reader_when_scratch_index_initialization_fails(
 
     monkeypatch.setattr(nz, "_PositionIndex", fail_index)
     normalizer = CanonicalNormalizer(
-        object(),
-        object(),
-        scratch_directory=tmp_path / "scratch",  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        scratch_directory=tmp_path / "scratch",
     )
     pin = type("Pin", (), {"catalog": Catalog()})()
 
     with pytest.raises(OSError, match="scratch index initialization failed"):
-        normalizer._positions(pin, rules.raw_channel_of(c.ARCHIVE_AGGS.table), "unit")  # type: ignore[arg-type]
+        normalizer._positions(pin, rules.raw_channel_of(c.ARCHIVE_AGGS.table), "unit")
 
     assert reader.closed
 

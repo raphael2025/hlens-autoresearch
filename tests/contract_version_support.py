@@ -10,14 +10,20 @@ the 2.0.0 twin of the object (every envelope at 2.0.0, every other value identic
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, contract_schema_version_scope
 
 __all__ = [
+    "PINNED_CONTRACT_VERSION",
     "PRE_BUMP_VERSION",
+    "at_contract_version",
     "as_published_at",
     "as_published_at_2_0_0",
     "at_pre_bump",
@@ -104,3 +110,34 @@ def built_at(version: str) -> Iterator[str]:
     built earlier keep their envelope: pass them through ``at_version`` first."""
     with contract_schema_version_scope(version):
         yield version
+
+
+#: The contract version at which the 2026-09-26/27 report and run hash pins were taken.
+PINNED_CONTRACT_VERSION = "2.2.0"
+
+
+def at_contract_version(version: str, call: str, *args: str) -> Any:
+    """The JSON result of ``call`` (``"module:function"``, given ``args``) run in a fresh
+    interpreter in which every contract object — the module constants of every import included —
+    is built at the published contract ``version`` (``contract_schema_version_scope``).
+
+    A fresh interpreter because objects built at import time (fixture Profiles, specs, results)
+    would otherwise keep the current envelope (ADR-0052 versioned replay; test only)."""
+    script = (
+        "import importlib, json, sys\n"
+        "from core.domain.base import contract_schema_version_scope\n"
+        "with contract_schema_version_scope(sys.argv[1]):\n"
+        "    module, _, name = sys.argv[2].partition(':')\n"
+        "    result = getattr(importlib.import_module(module), name)(*sys.argv[3:])\n"
+        "print(json.dumps(result))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script, version, call, *args],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr[-8000:]
+    return json.loads(done.stdout.splitlines()[-1])

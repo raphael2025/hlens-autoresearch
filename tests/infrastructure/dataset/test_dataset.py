@@ -38,6 +38,7 @@ from infrastructure.quality.reporter import (
     evidence_gaps_of,
     quality_report_id,
 )
+from infrastructure.revision import row_integrity
 from infrastructure.universe.builder import (
     FIRST_SLICE_UNIVERSE,
     UniverseSpecError,
@@ -197,7 +198,7 @@ def test_a_v2_selection_committed_in_two_snapshots_is_refused(
     _ready(w)
     spec = w.spec()
     first = _build(w, spec)
-    found = b.snapshots_of_batches
+    found = row_integrity.snapshots_of_batches
 
     def twice(adapter: Any, table: str, ids: Any) -> Any:
         snapshots = found(adapter, table, ids)

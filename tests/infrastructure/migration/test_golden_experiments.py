@@ -38,7 +38,11 @@ REPO = Path(__file__).resolve().parents[3]
 #: verdict is unchanged, and the old record is still reproduced bit-exactly when the run builds
 #: every contract object at 2.1.0 (verified: the rerun test passes inside
 #: ``contract_schema_version_scope("2.1.0")`` against the old record).
-GOLDEN_HASH = "b81a3feb854e3adbb02ecbf41d07e465625f8660a0551c88bf2e5e60dbde7a15"
+#: Regenerated for contracts 2.3.0 – 2.5.0 (ADR-0077 / later additive minors, 2026-10-01; was
+#: ``b81a3feb…dbde7a15``): again the one changed output is ``backtest.result_hash`` (the envelope);
+#: every gate value, threshold and verdict is unchanged, and the old record is still reproduced
+#: bit-exactly when the run (imports included) builds every contract object at 2.2.0 (verified).
+GOLDEN_HASH = "75c58fd4dfff83f3f0269c68cee4d95920d996eeb9e0633c837eeccf64fcccea"
 ZERO = Decimal(0)
 
 

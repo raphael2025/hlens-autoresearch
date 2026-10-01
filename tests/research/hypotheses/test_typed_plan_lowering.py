@@ -469,9 +469,7 @@ def test_temporal_equal_observable_lags_are_accepted() -> None:
     same_lag = EVENT_A.model_copy(update={"observable_lag": EVENT_B.observable_lag})
     plan, resolution = _temporal(same_lag, EVENT_B)
 
-    output = cast(
-        EventSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["seq"]
-    )
+    output = cast(EventSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["seq"])
 
     assert output.observable_lag == EVENT_B.observable_lag
 

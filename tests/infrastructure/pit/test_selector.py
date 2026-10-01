@@ -396,7 +396,7 @@ class _RawScans(ProxyCatalog):
                     owner.widths.append((len(columns), self._rows_read))
                     owner.closed_readers += 1
 
-        return ObservedReader()  # type: ignore[return-value]
+        return ObservedReader()
 
 
 def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> None:
@@ -416,9 +416,7 @@ def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> Non
     assert log.closed_readers == log.batch_requests
     whole = PitSelector(
         h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
-    ).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, START, END
-    )
+    ).select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, START, END)
     assert {r: whole.selected_rows[r] for r in out.selected_rows} == dict(out.selected_rows)
 
 

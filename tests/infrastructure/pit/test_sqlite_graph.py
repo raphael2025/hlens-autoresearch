@@ -9,24 +9,32 @@ from typing import Any
 
 import pytest
 
-from core.contracts.revision import RevisionGraph
+from core.contracts.revision import PrecedenceEvidence, RevisionGraph, RevisionRecord
 from infrastructure.pit.graph_runs import PITGraphInvariantError
 from infrastructure.pit.sqlite_graph import SQLitePitGraph
 from infrastructure.revision.precedence import maximal_heads
 from tests.infrastructure.revision.test_precedence import KEY, T0, edge, record
 
 
-def _available(records: tuple) -> dict[str, datetime]:
+def _available(records: tuple[RevisionRecord, ...]) -> dict[str, datetime]:
     return {item.revision_id: item.availability.times.available_time for item in records}
 
 
-def _validate(root: Path, records: tuple, evidence: tuple, cutoff=T0) -> None:
+def _validate(
+    root: Path,
+    records: tuple[RevisionRecord, ...],
+    evidence: tuple[PrecedenceEvidence, ...],
+    cutoff: datetime = T0,
+) -> None:
     with SQLitePitGraph(root, cutoff=cutoff) as graph:
         graph.build(records, evidence, _available(records))
 
 
 def _oracle_heads(
-    records: tuple, evidence: tuple, available: dict, at: datetime
+    records: tuple[RevisionRecord, ...],
+    evidence: tuple[PrecedenceEvidence, ...],
+    available: dict[str, datetime],
+    at: datetime,
 ) -> tuple[str, ...]:
     known_records = tuple(row for row in records if row.availability.times.knowledge_time <= T0)
     known_evidence = tuple(row for row in evidence if row.knowledge_time <= T0)
@@ -194,7 +202,7 @@ def test_sqlite_graph_schema_setup_failure_closes_database_and_cleans_directory(
     ],
 )
 def test_sqlite_graph_rejects_duplicate_record_indexes(
-    tmp_path: Path, rows: tuple, message: str
+    tmp_path: Path, rows: tuple[RevisionRecord, ...], message: str
 ) -> None:
     with pytest.raises(PITGraphInvariantError, match=message):
         _validate(tmp_path / "scratch", rows, ())

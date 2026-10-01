@@ -141,9 +141,7 @@ class _Composite:
         # Without a declaration for this composition type the spec must carry no params; with
         # one, its params must equal the declaration exactly (empty params are refused too: the
         # declaration is part of the served spec's identity, not optional).
-        params_ok = (
-            not spec.params if declared is None else _same_params(spec.params, declared)
-        )
+        params_ok = not spec.params if declared is None else _same_params(spec.params, declared)
         if spec.param_search_space or not params_ok:
             raise ValueError(
                 f"{spec.ref}: a composite strategy has no parameters of its own; the referenced "
@@ -184,8 +182,7 @@ class _Composite:
 def _same_params(params: Mapping[str, object], declared: Mapping[str, object]) -> bool:
     """Exact equality, type included (``True`` is not ``1``)."""
     return set(params) == set(declared) and all(
-        type(params[key]) is type(value) and params[key] == value
-        for key, value in declared.items()
+        type(params[key]) is type(value) and params[key] == value for key, value in declared.items()
     )
 
 

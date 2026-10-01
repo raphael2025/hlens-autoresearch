@@ -3,8 +3,9 @@
 Run with ``python -m infrastructure.tools.registry_audit`` and pass every registry path
 explicitly. The four original registries are required; the ADR-0098 Lifecycle Registry
 (``--lifecycle-root`` / optional ``--lifecycle-anchor``, ADR-0098 修订 1) is audited when its root
-is given and is then part of the overall status. The command never opens a normal registry instance, creates directories or locks,
-or repairs an anchor. Failure Registry output is structural evidence only.
+is given and is then part of the overall status. The command never opens a normal registry instance,
+creates directories or locks, or repairs an anchor. Failure Registry output is structural evidence
+only.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
 from pydantic import ValidationError
 
 from core.domain.research import FailureRecord
@@ -106,9 +108,7 @@ def _parser() -> argparse.ArgumentParser:
 def audit_registries(args: argparse.Namespace) -> dict[str, Any]:
     """Return an independent result for each explicitly named registry."""
     results: dict[str, dict[str, object]] = {
-        "strategy": _audit_one(
-            audit_strategy, args.strategy_root, anchor=args.strategy_anchor
-        ),
+        "strategy": _audit_one(audit_strategy, args.strategy_root, anchor=args.strategy_anchor),
         "profile_freeze": _audit_one(
             audit_profile_freeze,
             args.profile_freeze_root,

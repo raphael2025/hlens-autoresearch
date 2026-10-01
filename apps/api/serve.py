@@ -120,9 +120,7 @@ def run(app: Any, *, port: int, host: str = LOOPBACK) -> None:
 
     uvicorn = _uvicorn()
     configure_logging()
-    server = uvicorn.Server(
-        uvicorn.Config(app, **options, access_log=False, log_config=None)
-    )
+    server = uvicorn.Server(uvicorn.Config(app, **options, access_log=False, log_config=None))
     with _successful_signal_replay(server.handle_exit):
         server.run()
 

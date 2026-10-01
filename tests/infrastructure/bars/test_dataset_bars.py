@@ -29,7 +29,7 @@ from core.contracts.outcome import (
 )
 from core.contracts.revision import PointInTimeSpec
 from core.contracts.strategy import BacktestRequest, BacktestResult, PriceBar, TargetPosition
-from core.domain.base import FrozenMapping, content_hash
+from core.domain.base import FrozenMapping, content_hash, contract_schema_version_scope
 from core.domain.specs import OutcomeSpec
 from infrastructure.bars import (
     DatasetBarsError,
@@ -292,6 +292,16 @@ def test_backtest_bars_carry_the_selected_revisions_decimal_volume(w: World) -> 
         assert "volume" in bar.model_dump()
 
 
+def _unversioned(document: Any) -> Any:
+    """``document`` without any ``schema_version`` (re-validated, every contract takes the
+    envelope of the scope it is built in)."""
+    if isinstance(document, dict):
+        return {k: _unversioned(v) for k, v in document.items() if k != "schema_version"}
+    if isinstance(document, list | tuple):
+        return type(document)(_unversioned(item) for item in document)
+    return document
+
+
 def test_the_volume_is_bound_into_the_request_hash_and_the_empty_payload_is_unchanged(
     w: World,
 ) -> None:
@@ -301,8 +311,13 @@ def test_the_volume_is_bound_into_the_request_hash_and_the_empty_payload_is_unch
     stripped = _request(bars, _without_volume(bars))
     # the expected change: the dataset request now hashes its bars' volume
     assert with_volume.content_hash() != PRE_VOLUME_REQUEST_HASH
-    # without volume the payload omits it and the pre-B61 hash is reproduced bit for bit
-    assert stripped.content_hash() == PRE_VOLUME_REQUEST_HASH
+    # without volume the payload omits it and the pre-B61 hash — recorded at contract 2.2.0 —
+    # is reproduced bit for bit when every contract object is built at that envelope
+    with contract_schema_version_scope("2.2.0"):
+        stripped_then = BacktestRequest.model_validate(_unversioned(stripped.model_dump()))
+    assert stripped_then.content_hash() == PRE_VOLUME_REQUEST_HASH
+    # at the current envelope the stripped payload differs from it only by the contract version
+    assert _unversioned(stripped.model_dump()) == _unversioned(stripped_then.model_dump())
     assert all("volume" not in bar.model_dump() for bar in stripped.bars)
     # a different volume on one bar is a different request
     first, *rest = bars.bars

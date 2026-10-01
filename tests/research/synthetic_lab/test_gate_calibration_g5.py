@@ -42,6 +42,7 @@ from research.validation.gates import ProfileFieldMissing, profile_value
 from research.validation.sealed_oos import InMemoryUnsealingLedger
 from research.validation.splits import LabeledSpan
 from tests import factories
+from tests.contract_version_support import PINNED_CONTRACT_VERSION, at_contract_version
 from tests.research.synthetic_lab import gate_fixtures as fx
 from tests.research.synthetic_lab.test_gate_calibration import (
     TOY_EFFECT,
@@ -77,6 +78,8 @@ SEEDS = 4
 #: also reports ``pass_rate_bounds``; the raising report is the only pinned one with errors.
 #: Removing that key from its payload reproduces the previous value e31fc17f… exactly (verified);
 #: the toy and pipeline hashes (no detector errors) are unchanged.
+#: All three recorded at contract 2.2.0: checked with every contract object built at 2.2.0
+#: (``at_contract_version``) after the envelope-only 2.3.0 – 2.5.0 minors.
 PRE_G5_TOY_HASH = "8499223e39d1c260e76e2cb18b6af4c227914b140ffcf6089771accd3b16b535"
 PRE_G5_RAISING_HASH = "0ea408c308dcb739b585892941af14e5c06e8777a70a8ad762c18d8cea311a7e"
 PRE_G5_PIPELINE_ONE_SEED_HASH = "6fa8c6ec2c479b3d96039465cce050933f341385dcde272e061e09e8703c91dc"
@@ -259,7 +262,7 @@ def _toy_g5_setup(detector: _ToySealedDetector | None = None) -> GateCalibration
 # --------------------------------------------------------------------------------------
 
 
-def test_g5_mode_off_keeps_every_pre_g5_report_hash() -> None:
+def _g5_mode_off_keeps_every_pre_g5_report_hash() -> None:
     assert _toy_setup().sealed_oos_g5 is False  # opt-in: off unless the caller sets it
     assert run_gate_calibration(_toy_setup()).report_hash == PRE_G5_TOY_HASH
     explicit = GateCalibrationSetup(**{**_toy_setup().__dict__, "sealed_oos_g5": False})
@@ -271,6 +274,11 @@ def test_g5_mode_off_keeps_every_pre_g5_report_hash() -> None:
     assert "sealed_oos_g5" not in text and "end_to_end" not in text
     with pytest.raises(ValueError, match="sealed_oos_g5 is off"):
         _ = pipeline.candidate(fx.LAX_TEST_ONLY_PROFILE).end_to_end_false_positive_rate
+
+
+def test_g5_mode_off_keeps_every_pre_g5_report_hash() -> None:
+    call = f"{__name__}:_g5_mode_off_keeps_every_pre_g5_report_hash"
+    assert at_contract_version(PINNED_CONTRACT_VERSION, call) is None
 
 
 def test_g5_mode_off_never_claims_an_evaluation(ledger_log: list[tuple[str, str]]) -> None:
