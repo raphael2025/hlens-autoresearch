@@ -1115,9 +1115,11 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     wide = [(table, rows) for table, width, rows in log.scans if width > 3]
     # Canonical rows are only ever read one window (or its block slice) at a time.
     assert max(rows for table, rows in wide if table == c.TRADES.table) <= 2
-    # Raw rows: 4 proving windows + 4 writing windows of <= 2 rows (the verifier's own reads of
-    # the D2 batch are bounded by D2's microbatch, not by this unit).
-    assert sum(1 for table, rows in wide if table == c.ARCHIVE_AGGS.table and rows <= 2) >= 8
+    # Raw rows: the first proving window is one filtered scan (<= 2 rows); the second window
+    # spools the unit once (one 7-row scan) and the remaining proving and all four writing
+    # windows read that spool. The other four 7-row reads are the verifier's own lineage checks.
+    # There is no Raw scan per window (E1-RAW-WINDOW-REUSE).
+    assert [rows for table, rows in wide if table == c.ARCHIVE_AGGS.table] == [2] + [7] * 5
     rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
     assert [row["revision_id"] for row in rows] == list(
         c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)
@@ -1240,6 +1242,150 @@ def test_position_index_keeps_database_and_ordered_read_under_explicit_scratch(
     finally:
         index.close()
     assert list(scratch.iterdir()) == []
+
+
+def _raw_spool_batch(lines: list[int], revisions: list[str]) -> Any:
+    import pyarrow as pa  # type: ignore[import-untyped]
+
+    return pa.record_batch(
+        [pa.array(lines, pa.int64()), pa.array(revisions, pa.string())],
+        names=["archive_line_number", "revision_id"],
+    )
+
+
+def test_raw_window_spool_reuses_one_scan_across_resliced_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    monkeypatch.setattr(nz, "_RAW_SPOOL_BATCH_ROWS", 2)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    batch = _raw_spool_batch([5, 1, 4, 2, 3, 3], ["e", "a", "d", "b", "c2", "c1"])
+    spool = nz._RawWindowSpool(scratch, batch.schema, "archive_line_number")
+    child = Path(spool._temporary.name)
+    try:
+        spool.add_batch(batch)
+        spool.add_batch(_raw_spool_batch([6], ["f"]))
+        spool.finalize()
+        # One 6-row scan batch is spooled as three 2-row IPC batches, plus the 1-row batch.
+        assert spool._batch_count == 4
+        assert child.parent == scratch
+        window = spool.window(2, 4, expected_rows=4, channel=channel, display_low=2, display_high=4)
+        assert [(row["archive_line_number"], row["revision_id"]) for row in window] == [
+            (2, "b"),
+            (3, "c1"),
+            (3, "c2"),
+            (4, "d"),
+        ]
+        # Windows are reread from disk, in any order, without another source scan.
+        assert [
+            row["revision_id"]
+            for row in spool.window(
+                5, 6, expected_rows=2, channel=channel, display_low=5, display_high=6
+            )
+        ] == ["e", "f"]
+        with pytest.raises(CatalogIntegrityError, match="Raw window 2..4 contains extra rows"):
+            spool.window(2, 4, expected_rows=3, channel=channel, display_low=2, display_high=4)
+        with pytest.raises(CatalogIntegrityError, match="has 1 rows; expected 2"):
+            spool.window(6, 7, expected_rows=2, channel=channel, display_low=6, display_high=7)
+    finally:
+        spool.close()
+    assert not child.exists()
+    assert list(scratch.iterdir()) == []
+    with pytest.raises(RuntimeError, match="not readable"):
+        spool.window(1, 1, expected_rows=1, channel=channel, display_low=1, display_high=1)
+
+
+def test_raw_windows_scan_one_window_then_spool_the_unit_once(h: RestHarness) -> None:
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    pin = n._pin(channel, archive)
+    log = _ScanLog(h.adapter)
+    logged = nz._Pin(log, pin.canonical_head, pin.verifier)  # type: ignore[arg-type]
+    scratch = h.canonical_scratch_directory
+    baseline = set(scratch.iterdir())
+    positions, windows, _ = n._positions(logged, channel, archive)
+    try:
+        before = set(scratch.iterdir())
+        first = windows.window(logged, 3, 4, expected_rows=2)
+        assert not windows.spooled and set(scratch.iterdir()) == before
+        later = [windows.window(logged, low, low + 1, expected_rows=2) for low in (1, 5, 3)]
+        assert windows.spooled
+        assert [row["archive_line_number"] for row in first] == [3, 4]
+        assert [[row["archive_line_number"] for row in rows] for rows in later] == [
+            [1, 2],
+            [5, 6],
+            [3, 4],
+        ]
+        # Spooled rows are the rows the filtered window scan returns.
+        assert later[2] == first
+        assert windows.window(logged, 7, 7, expected_rows=1)[0]["archive_line_number"] == 7
+        with pytest.raises(CatalogIntegrityError, match="has 1 rows; expected 2"):
+            windows.window(logged, 7, 8, expected_rows=2)
+        wide = [rows for table, width, rows in log.scans if width > 3]
+        # One 2-row window scan, then one 7-row unit spool; no scan per later window.
+        assert wide == [2, 7]
+    finally:
+        positions.close()
+        windows.close()
+        windows.close()
+    assert set(scratch.iterdir()) == baseline
+    with pytest.raises(RuntimeError, match="closed"):
+        windows.window(logged, 1, 2, expected_rows=2)
+
+
+def test_raw_windows_release_the_spool_when_the_unit_scan_fails(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items = ss.agg_items(5, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    pin = n._pin(channel, archive)
+    positions, windows, _ = n._positions(pin, channel, archive)
+    scratch = h.canonical_scratch_directory
+    before = set(scratch.iterdir())
+
+    def broken(self: Any, record_batch: Any) -> None:
+        raise OSError("scratch full")
+
+    monkeypatch.setattr(nz._RawWindowSpool, "add_batch", broken)
+    try:
+        windows.window(pin, 1, 2, expected_rows=2)
+        with pytest.raises(OSError, match="scratch full"):
+            windows.window(pin, 3, 4, expected_rows=2)
+        assert not windows.spooled
+        assert set(scratch.iterdir()) == before
+    finally:
+        positions.close()
+        windows.close()
+
+
+def test_raw_window_spool_rejects_null_positions_and_releases_scratch(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    batch = _raw_spool_batch([1], ["a"])
+    spool = nz._RawWindowSpool(scratch, batch.schema, "archive_line_number")
+    try:
+        with pytest.raises(CatalogIntegrityError, match="Raw position is null"):
+            spool.add_batch(_raw_spool_batch([None], ["b"]))  # type: ignore[list-item]
+        with pytest.raises(RuntimeError, match="not readable"):
+            spool.window(
+                1,
+                1,
+                expected_rows=1,
+                channel=rules.raw_channel_of(c.ARCHIVE_AGGS.table),
+                display_low=1,
+                display_high=1,
+            )
+    finally:
+        spool.close()
+        spool.close()
+    assert list(scratch.iterdir()) == []
+    with pytest.raises(RuntimeError, match="finalized"):
+        spool.add_batch(batch)
 
 
 def test_normalizer_refuses_unusable_scratch_before_any_catalog_access(tmp_path: Path) -> None:
@@ -1552,7 +1698,7 @@ def _page_verdicts(h: RestHarness, units: list[str]) -> list[tuple[Any, ...]]:
     verdicts: list[tuple[Any, ...]] = []
     for unit in units:
         pin = n._pin(channel, unit)
-        positions, _ = n._positions(pin, channel, unit)
+        positions, raw_rows, _ = n._positions(pin, channel, unit)
         for check in ("bounded", "unbounded"):
             spy = _SpyVerifier(pin.verifier)
             spied = nz._Pin(pin.catalog, pin.canonical_head, spy)  # type: ignore[arg-type]
@@ -1565,6 +1711,8 @@ def _page_verdicts(h: RestHarness, units: list[str]) -> list[tuple[Any, ...]]:
             except CatalogIntegrityError as exc:
                 outcome = (type(exc).__name__, str(exc))
             verdicts.append((unit, check, outcome, spy.proved))
+        positions.close()
+        raw_rows.close()
     return verdicts
 
 

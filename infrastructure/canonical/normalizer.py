@@ -61,9 +61,12 @@ from collections.abc import (
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Final, cast, overload
 
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.ipc as pa_ipc  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
     BooleanExpression,
@@ -128,6 +131,9 @@ _BATCH_CACHE: Final = 2
 _POSITION_DB_CACHE_KIB: Final = 1024
 _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
+#: Rows per Arrow IPC batch in a unit's Raw spool. Catalog scan batches (up to 65,536 rows) are
+#: re-sliced on write so that one window read decodes only the few small batches it touches.
+_RAW_SPOOL_BATCH_ROWS: Final = 1024
 # Named E1-CAP-1 parser/index profile a caller may pass explicitly as ``metadata_limits`` to take
 # the bounded double-pin read pass. It is never applied implicitly: its caps cover a table's whole
 # snapshot array (there is no snapshot expiry), so a default would break normalization once a
@@ -411,6 +417,279 @@ class _PositionSlice(Sequence[int]):
         yield from self._positions._iter_ranks(self._ranks)
 
 
+class _RawWindowSpool:
+    """One pinned unit's Raw rows in Arrow IPC, indexed by position on bounded SQLite scratch.
+
+    Read batches through ``OSFile`` instead of memory-mapping the whole spool, so repeated window
+    access does not pin every touched Arrow page in the process working set.
+    """
+
+    def __init__(self, scratch_directory: Path, schema: pa.Schema, position_column: str) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="hlens-raw-windows-", dir=str(scratch_directory)
+        )
+        self._arrow_path = os.path.join(self._temporary.name, "raw.arrow")
+        self._database_path = os.path.join(self._temporary.name, "rows.sqlite3")
+        self._closed = False
+        self._finalized = False
+        self._batch_count = 0
+        self._connection: sqlite3.Connection | None = None
+        self._writer: Any | None = None
+        self._source: Any | None = None
+        self._reader: Any | None = None
+        self._position_column = position_column
+        self._schema = schema
+        try:
+            self._connection = sqlite3.connect(self._database_path)
+            self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
+            self._connection.execute("PRAGMA temp_store = FILE")
+            self._connection.execute("PRAGMA journal_mode = OFF")
+            self._connection.execute("PRAGMA synchronous = OFF")
+            self._connection.execute(
+                "CREATE TABLE raw_rows (position INTEGER NOT NULL, batch_index INTEGER NOT NULL, "
+                "row_index INTEGER NOT NULL)"
+            )
+            self._connection.execute(
+                "CREATE INDEX raw_rows_position ON raw_rows(position, batch_index, row_index)"
+            )
+            self._writer = pa_ipc.new_file(self._arrow_path, schema)
+        except BaseException:
+            self.close()
+            raise
+
+    def add_batch(self, record_batch: pa.RecordBatch) -> None:
+        if self._closed or self._finalized or self._writer is None or self._connection is None:
+            raise RuntimeError("raw window spool is finalized")
+        if not record_batch.schema.equals(self._schema, check_metadata=False):
+            raise CatalogIntegrityError(
+                f"a Raw batch does not have the registered schema: {record_batch.schema}"
+            )
+        positions = record_batch.column(
+            record_batch.schema.get_field_index(self._position_column)
+        ).to_pylist()
+        if any(position is None for position in positions):
+            raise CatalogIntegrityError("Raw position is null")
+        for start in range(0, record_batch.num_rows, _RAW_SPOOL_BATCH_ROWS):
+            self._writer.write_batch(record_batch.slice(start, _RAW_SPOOL_BATCH_ROWS))
+            self._connection.executemany(
+                "INSERT INTO raw_rows(position, batch_index, row_index) VALUES (?, ?, ?)",
+                (
+                    (position, self._batch_count, row_index)
+                    for row_index, position in enumerate(
+                        positions[start : start + _RAW_SPOOL_BATCH_ROWS]
+                    )
+                ),
+            )
+            self._batch_count += 1
+
+    def finalize(self) -> None:
+        if self._closed or self._finalized or self._writer is None or self._connection is None:
+            raise RuntimeError("raw window spool is finalized")
+        try:
+            self._writer.close()
+            self._writer = None
+            self._connection.commit()
+            self._source = pa.OSFile(self._arrow_path, "rb")
+            self._reader = pa_ipc.open_file(self._source)
+            self._finalized = True
+        except BaseException:
+            self.close()
+            raise
+
+    def window(
+        self,
+        low: int,
+        high: int,
+        *,
+        expected_rows: int,
+        channel: rules.RawChannel,
+        display_low: int,
+        display_high: int,
+    ) -> list[Mapping[str, Any]]:
+        if self._closed or not self._finalized or self._connection is None:
+            raise RuntimeError("raw window spool is not readable")
+        refs = self._connection.execute(
+            "SELECT batch_index, row_index FROM raw_rows "
+            "WHERE position BETWEEN ? AND ? ORDER BY batch_index, row_index LIMIT ?",
+            (low, high, expected_rows + 1),
+        ).fetchall()
+        if len(refs) > expected_rows:
+            raise CatalogIntegrityError(
+                f"{channel.element.table}: Raw window {display_low}..{display_high} contains "
+                "extra rows"
+            )
+        if len(refs) != expected_rows:
+            raise CatalogIntegrityError(
+                f"{channel.element.table}: Raw window {display_low}..{display_high} has "
+                f"{len(refs)} rows; expected {expected_rows}"
+            )
+        assert self._reader is not None
+        rows: list[Mapping[str, Any]] = []
+        for batch_index, grouped in groupby(refs, key=lambda item: item[0]):
+            row_indexes = [row_index for _, row_index in grouped]
+            selected = self._reader.get_batch(batch_index).take(pa.array(row_indexes))
+            rows.extend(selected.to_pylist())
+        return sorted(rows, key=lambda row: (rules.position_of(channel, row), row["revision_id"]))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        connection, self._connection = self._connection, None
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        reader, self._reader = self._reader, None
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+        source, self._source = self._source, None
+        if source is not None:
+            try:
+                source.close()
+            except Exception:
+                pass
+        self._temporary.cleanup()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _RawWindows:
+    """A unit's Raw rows, window by window, from one pinned unit (E1-RAW-WINDOW-REUSE).
+
+    The first window is one filtered catalog scan, so a narrow read (one batch of a PIT proof)
+    still reads only that window. A second window spools the whole unit once — one pinned
+    full-row scan into a bounded ``_RawWindowSpool`` on scratch — and that and every later window
+    is served from the spool instead of rescanning the Raw table per window. Rows, ordering and
+    the extra / missing row errors are the same on both paths.
+    """
+
+    def __init__(
+        self, scratch_directory: Path, channel: rules.RawChannel, source_revision_id: str
+    ) -> None:
+        self._scratch_directory = scratch_directory
+        self._channel = channel
+        self._source_revision_id = source_revision_id
+        self._scanned = False
+        self._spool: _RawWindowSpool | None = None
+        self._closed = False
+
+    @property
+    def spooled(self) -> bool:
+        return self._spool is not None
+
+    def window(
+        self, pin: _Pin, low: int, high: int, *, expected_rows: int
+    ) -> list[Mapping[str, Any]]:
+        if self._closed:
+            raise RuntimeError("raw windows are closed")
+        channel = self._channel
+        offset = 0 if channel.name == "archive" else 1
+        if self._spool is None and not self._scanned:
+            self._scanned = True
+            return self._scan_window(pin, low, high, expected_rows=expected_rows)
+        if self._spool is None:
+            self._spool = self._spool_unit(pin)
+        return self._spool.window(
+            low - offset,
+            high - offset,
+            expected_rows=expected_rows,
+            channel=channel,
+            display_low=low,
+            display_high=high,
+        )
+
+    def _scan_window(
+        self, pin: _Pin, low: int, high: int, *, expected_rows: int
+    ) -> list[Mapping[str, Any]]:
+        channel = self._channel
+        offset = 0 if channel.name == "archive" else 1
+        columns = tuple(field.name for field in channel.element.arrow_schema)
+        rows: list[Mapping[str, Any]] = []
+        with _scan_rows(
+            pin.catalog,
+            channel.element.table,
+            columns=columns,
+            row_filter=And(
+                _equals(channel.lineage_column, self._source_revision_id),
+                _between(_position_column(channel), low - offset, high - offset),
+            ),
+        ) as scanned:
+            for row in scanned:
+                rows.append(row)
+                if len(rows) > expected_rows:
+                    raise CatalogIntegrityError(
+                        f"{channel.element.table}: Raw window {low}..{high} contains extra rows"
+                    )
+        if len(rows) != expected_rows:
+            raise CatalogIntegrityError(
+                f"{channel.element.table}: Raw window {low}..{high} has {len(rows)} rows; "
+                f"expected {expected_rows}"
+            )
+        return sorted(rows, key=lambda row: (rules.position_of(channel, row), row["revision_id"]))
+
+    def _spool_unit(self, pin: _Pin) -> _RawWindowSpool:
+        channel = self._channel
+        columns = tuple(field.name for field in channel.element.arrow_schema)
+        spool = _RawWindowSpool(
+            self._scratch_directory, channel.element.arrow_schema, _position_column(channel)
+        )
+        try:
+            reader = pin.catalog.scan_column_batches(
+                channel.element.table,
+                columns=columns,
+                row_filter=_equals(channel.lineage_column, self._source_revision_id),
+            )
+            try:
+                for record_batch in reader:
+                    spool.add_batch(record_batch)
+            except BaseException:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                raise
+            else:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    close()
+            spool.finalize()
+            return spool
+        except BaseException:
+            spool.close()
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        spool, self._spool = self._spool, None
+        if spool is not None:
+            spool.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 class _OffsetSequence(Sequence[int]):
     """A lazy integer offset view used for exact committed-row comparisons."""
 
@@ -561,9 +840,10 @@ class _Pin:
 
 @dataclass(frozen=True, slots=True)
 class _UnitFacts:
-    """A unit's proven unit-wide facts (no Raw or Canonical rows)."""
+    """A unit's proven facts plus its Raw row windows (spooled to scratch once reused)."""
 
     positions: _PositionIndex
+    raw_rows: _RawWindows
     plan: _CommittedPlan | None
     base: int | None
     ready: datetime | None
@@ -584,6 +864,8 @@ class _Survey:
     ready: datetime | None
     #: The committed rows, window by window (only collected when asked for).
     committed_rows: tuple[Mapping[str, Any], ...]
+    #: The unit's Raw row windows: proof, replay and write windows share one spool.
+    raw_rows: _RawWindows
     #: The unit's Raw positions, ascending and distinct (batches are rank slices of them).
     positions: _PositionIndex | None = None
     #: Recovered from the committed rows when ``plan`` is set: the unit is rebuilt, and
@@ -636,9 +918,10 @@ class CanonicalNormalizer:
         self._batches: dict[tuple[str, str, int], tuple[Mapping[str, Any], ...]] = {}
 
     def close(self) -> None:
-        """Release temporary rank files retained by immutable-view unit facts."""
+        """Release temporary position and Raw-row files retained by immutable-view facts."""
         for facts in self._facts.values():
             facts.positions.close()
+            facts.raw_rows.close()
         self._facts.clear()
         self._batches.clear()
         for pin in self._pins.values():
@@ -715,6 +998,8 @@ class CanonicalNormalizer:
             finally:
                 if survey.positions is not None:
                     survey.positions.close()
+                if survey.raw_rows is not None:
+                    survey.raw_rows.close()
         raise CanonicalNormalizeConflict(
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
         ) from last_error
@@ -795,16 +1080,18 @@ class CanonicalNormalizer:
                 raw = self._raw_window(
                     pin,
                     channel,
-                    result.source_revision_id,
                     low,
                     high,
                     expected_rows=end - index * survey.plan.chunk,
+                    raw_rows=survey.raw_rows,
                 )
                 planned = self._planned(channel, raw, survey.base, survey.ready, survey.version)
                 yield from (row["revision_id"] for row in planned)
         finally:
             if survey.positions is not None:
                 survey.positions.close()
+            if survey.raw_rows is not None:
+                survey.raw_rows.close()
 
     def verify_unit(
         self,
@@ -841,6 +1128,8 @@ class CanonicalNormalizer:
             finally:
                 if survey.positions is not None:
                     survey.positions.close()
+                if survey.raw_rows is not None:
+                    survey.raw_rows.close()
         # A caller may transfer a built-in set's ownership for this read-only proof path. Do not
         # copy it: selector consumes its per-unit set before calling us, and verification only
         # iterates these values. General iterables retain the historical frozen snapshot.
@@ -988,10 +1277,10 @@ class CanonicalNormalizer:
                         raw = self._raw_window(
                             pin,
                             channel,
-                            source_revision_id,
                             low,
                             high,
                             expected_rows=end - index * plan.chunk,
+                            raw_rows=facts.raw_rows,
                         )
                         self._prove(pin, channel, raw)
                         planned = self._planned(channel, raw, base, ready, facts.version)
@@ -1019,10 +1308,10 @@ class CanonicalNormalizer:
                 raw = self._raw_window(
                     pin,
                     channel,
-                    source_revision_id,
                     low,
                     high,
                     expected_rows=end - index * plan.chunk,
+                    raw_rows=facts.raw_rows,
                 )
                 self._prove(pin, channel, raw)
                 planned = self._planned(channel, raw, base, ready, facts.version)
@@ -1041,6 +1330,7 @@ class CanonicalNormalizer:
         finally:
             if not self._frozen:
                 facts.positions.close()
+                facts.raw_rows.close()
 
     def _plan_snapshots_for_run(
         self,
@@ -1125,21 +1415,24 @@ class CanonicalNormalizer:
         cached = self._facts.get(key) if self._frozen else None
         if cached is not None:
             return cached
-        positions, symbol = self._positions(pin, channel, source_revision_id)
+        positions, raw_rows, symbol = self._positions(pin, channel, source_revision_id)
         try:
             facts = self._unit_facts_for_positions(
-                pin, channel, source_revision_id, positions, symbol
+                pin, channel, source_revision_id, positions, raw_rows, symbol
             )
         except BaseException:
             positions.close()
+            raw_rows.close()
             raise
         if self._frozen:
             while len(self._facts) >= _FACT_CACHE:
                 _, evicted = self._facts.popitem()
                 evicted.positions.close()
+                evicted.raw_rows.close()
             previous = self._facts.pop(key, None)
             if previous is not None:
                 previous.positions.close()
+                previous.raw_rows.close()
             self._facts[key] = facts
         return facts
 
@@ -1149,6 +1442,7 @@ class CanonicalNormalizer:
         channel: rules.RawChannel,
         source_revision_id: str,
         positions: _PositionIndex,
+        raw_rows: _RawWindows,
         symbol: str | None,
     ) -> _UnitFacts:
         table = channel.canonical.table
@@ -1158,7 +1452,7 @@ class CanonicalNormalizer:
         plan, ordered = self._committed_plan(pin, channel, source_revision_id)
         committed = self._committed_times(pin, channel, source_revision_id)
         try:
-            facts = _UnitFacts(positions, None, None, None)
+            facts = _UnitFacts(positions, raw_rows, None, None, None)
             if not positions:
                 if committed.seq_count or plan is not None:
                     raise CatalogIntegrityError(
@@ -1186,7 +1480,7 @@ class CanonicalNormalizer:
                         f"{table}: the committed rows of unit {source_revision_id} are not exactly "
                         "the rows of its committed batches (rows deleted or added)"
                     )
-                facts = _UnitFacts(positions, plan, base, ready, version)
+                facts = _UnitFacts(positions, raw_rows, plan, base, ready, version)
             self._check_rest_unit(pin, channel, source_revision_id, positions)
             return facts
         finally:
@@ -1309,6 +1603,7 @@ class CanonicalNormalizer:
             return survey
         except BaseException:
             survey.positions.close()
+            survey.raw_rows.close()
             raise
 
     def _survey_unit(
@@ -1319,7 +1614,7 @@ class CanonicalNormalizer:
         *,
         keep_rows: bool,
     ) -> _Survey:
-        positions, symbol = self._positions(pin, channel, source_revision_id)
+        positions, raw_rows, symbol = self._positions(pin, channel, source_revision_id)
         try:
             return self._survey_with_positions(
                 pin,
@@ -1327,10 +1622,12 @@ class CanonicalNormalizer:
                 source_revision_id,
                 keep_rows=keep_rows,
                 positions=positions,
+                raw_rows=raw_rows,
                 symbol=symbol,
             )
         except BaseException:
             positions.close()
+            raw_rows.close()
             raise
 
     def _survey_with_positions(
@@ -1341,6 +1638,7 @@ class CanonicalNormalizer:
         *,
         keep_rows: bool,
         positions: _PositionIndex,
+        raw_rows: _RawWindows,
         symbol: str | None,
     ) -> _Survey:
         floor: datetime | None = None
@@ -1348,10 +1646,10 @@ class CanonicalNormalizer:
             raw = self._raw_window(
                 pin,
                 channel,
-                source_revision_id,
                 low,
                 high,
                 expected_rows=expected_rows,
+                raw_rows=raw_rows,
             )
             self._prove(pin, channel, raw)
             latest = max(row["knowledge_time"] for row in raw)
@@ -1369,6 +1667,7 @@ class CanonicalNormalizer:
                 source_revision_id,
                 keep_rows=keep_rows,
                 positions=positions,
+                raw_rows=raw_rows,
                 symbol=symbol,
                 floor=floor,
                 unit_rows=unit_rows,
@@ -1387,6 +1686,7 @@ class CanonicalNormalizer:
         *,
         keep_rows: bool,
         positions: _PositionIndex,
+        raw_rows: _RawWindows,
         symbol: str | None,
         floor: datetime | None,
         unit_rows: int,
@@ -1401,13 +1701,13 @@ class CanonicalNormalizer:
                     f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
                     "has no Raw element revision"
                 )
-            return _Survey(0, None, None, None, None, (), positions)
+            return _Survey(0, None, None, None, None, (), raw_rows, positions)
         if plan is None:
             if committed.seq_count:
                 raise CatalogIntegrityError(
                     f"{table}: unit {source_revision_id} has committed rows but no committed batch"
                 )
-            return _Survey(unit_rows, floor, None, None, None, (), positions)
+            return _Survey(unit_rows, floor, None, None, None, (), raw_rows, positions)
         base, ready, version = self._recover(channel, source_revision_id, committed)
         _check_plan(channel, source_revision_id, plan, ordered, unit_rows)
         # Newest first, i.e. highest index first: each batch's snapshot is streamed from the
@@ -1420,10 +1720,10 @@ class CanonicalNormalizer:
             raw = self._raw_window(
                 pin,
                 channel,
-                source_revision_id,
                 low,
                 high,
                 expected_rows=end - index * plan.chunk,
+                raw_rows=raw_rows,
             )
             planned = self._planned(channel, raw, base, ready, version)
             check_batch_snapshot(
@@ -1456,6 +1756,7 @@ class CanonicalNormalizer:
             base,
             ready,
             tuple(row for rows in reversed(kept) for row in rows),
+            raw_rows,
             positions,
             version,
             digest.digest(),
@@ -1463,8 +1764,8 @@ class CanonicalNormalizer:
 
     def _positions(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
-    ) -> tuple[_PositionIndex, str | None]:
-        """Disk-sorted Raw positions of a single-symbol unit."""
+    ) -> tuple[_PositionIndex, _RawWindows, str | None]:
+        """Disk-sorted Raw positions of a single-symbol unit, and its (lazy) Raw row windows."""
         column = _position_column(channel)
         reader = pin.catalog.scan_column_batches(
             channel.element.table,
@@ -1521,7 +1822,8 @@ class CanonicalNormalizer:
                     close()
                 reader_closed = True
             index.finalize()
-            return index, symbol
+            raw_windows = _RawWindows(self._scratch_directory, channel, source_revision_id)
+            return index, raw_windows, symbol
         except BaseException:
             if not reader_closed:
                 close = getattr(reader, "close", None)
@@ -1587,37 +1889,14 @@ class CanonicalNormalizer:
         self,
         pin: _Pin,
         channel: rules.RawChannel,
-        source_revision_id: str,
         low: int,
         high: int,
         *,
         expected_rows: int,
+        raw_rows: _RawWindows,
     ) -> list[Mapping[str, Any]]:
         """The unit's Raw rows at positions ``low … high``, in position order."""
-        offset = 0 if channel.name == "archive" else 1
-        columns = tuple(field.name for field in channel.element.arrow_schema)
-        rows: list[Mapping[str, Any]] = []
-        with _scan_rows(
-            pin.catalog,
-            channel.element.table,
-            columns=columns,
-            row_filter=And(
-                _equals(channel.lineage_column, source_revision_id),
-                _between(_position_column(channel), low - offset, high - offset),
-            ),
-        ) as scanned:
-            for row in scanned:
-                rows.append(row)
-                if len(rows) > expected_rows:
-                    raise CatalogIntegrityError(
-                        f"{channel.element.table}: Raw window {low}..{high} contains extra rows"
-                    )
-        if len(rows) != expected_rows:
-            raise CatalogIntegrityError(
-                f"{channel.element.table}: Raw window {low}..{high} has {len(rows)} rows; "
-                f"expected {expected_rows}"
-            )
-        return sorted(rows, key=lambda row: (rules.position_of(channel, row), row["revision_id"]))
+        return raw_rows.window(pin, low, high, expected_rows=expected_rows)
 
     def _prove(
         self, pin: _Pin, channel: rules.RawChannel, raw_rows: Sequence[Mapping[str, Any]]
@@ -1974,10 +2253,10 @@ class CanonicalNormalizer:
                 self._raw_window(
                     pin,
                     channel,
-                    source_revision_id,
                     low,
                     high,
                     expected_rows=end - index * chunk,
+                    raw_rows=survey.raw_rows,
                 ),
                 base,
                 ready,
