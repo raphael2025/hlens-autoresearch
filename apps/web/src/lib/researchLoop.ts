@@ -196,6 +196,223 @@ export function usageChartOption(labels: readonly string[], series: UsageSeries)
   };
 }
 
+// ---- P12 replacement trigger audit (ADR-0100 item 7; optional, default off) ---------------------
+//
+// research/loop/replacement.py `ReplacementTriggerStage.run`: when a loop runs with the optional
+// trigger, the `evolution` stage summary carries `replacement_trigger` — `{"due": false}` in a
+// round the trigger is not due, else the trigger summary (format_version 2): `status`
+// (always PENDING_HUMAN_APPROVAL), `proposed_by`, `triggers` (one row per eligible candidate:
+// phase open / evaluate, trial, window, opening, consumption, outcome `status` refused /
+// window_opened / proposed / not_proposed / failed with its `refusal` / `error`, and the job
+// payload whose `recorded` proposals are always PENDING_HUMAN_APPROVAL), `not_eligible`,
+// `already_triggered`, `family_trials`, `unsealing_count`, `unsealing_budget`. A loop without the
+// trigger has no such key: nothing is shown. Additive to the LoopRoundRecord DTO (stage summaries
+// are free-form JSON in ADR-0050), so every older round reads exactly as before.
+
+export const REPLACEMENT_TRIGGER_KEY = "replacement_trigger";
+/** research/loop/replacement.py TRIGGER_FORMAT values this console reads. */
+export const KNOWN_TRIGGER_FORMATS: readonly number[] = [2];
+export const PENDING_HUMAN_APPROVAL = "PENDING_HUMAN_APPROVAL";
+
+export type TriggerProposal = {
+  proposalHash: string | null;
+  incumbent: string | null;
+  candidate: string | null;
+  status: string | null;
+};
+
+export type TriggerRow = {
+  phase: string;
+  candidate: string;
+  candidateState: string | null;
+  incumbents: string[];
+  trial: string | null;
+  trialHash: string | null;
+  windowId: string | null;
+  windowRange: string | null;
+  windowProfile: string | null;
+  openingHash: string | null;
+  openedAt: string | null;
+  consumptionHash: string | null;
+  consumedReports: number | null;
+  /** the row's outcome code: refused / window_opened / proposed / not_proposed / failed */
+  outcome: string;
+  refusal: string | null;
+  error: string | null;
+  proposals: TriggerProposal[];
+  alreadyProposed: number;
+  jobRefusals: { incumbent: string | null; candidate: string | null; reason: string | null }[];
+};
+
+export type ReplacementTriggerView = {
+  id: string;
+  loopId: string;
+  roundIndex: number | null;
+  asOf: string;
+  due: boolean;
+  formatVersion: number | null;
+  formatKnown: boolean;
+  status: string | null;
+  proposedBy: string | null;
+  rows: TriggerRow[];
+  notEligible: { candidate: string | null; reason: string | null }[];
+  alreadyTriggered: { candidate: string | null; hypothesis: string | null }[];
+  familyTrials: number | null;
+  unsealingCount: number | null;
+  unsealingBudget: number | null;
+  /** what does not read as this console expects (never hidden: shown as a warning) */
+  problems: string[];
+  /** the raw trigger summary, for the page's raw-JSON disclosure */
+  raw: unknown;
+};
+
+function optText(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function optInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(record) : [];
+}
+
+function triggerRow(value: unknown, problems: string[]): TriggerRow {
+  const row = record(value);
+  const trial = record(row.trial);
+  const window = typeof row.window === "object" && row.window !== null ? record(row.window) : null;
+  const opening =
+    typeof row.window_opening === "object" && row.window_opening !== null ? record(row.window_opening) : null;
+  const consumption =
+    typeof row.window_consumption === "object" && row.window_consumption !== null
+      ? record(row.window_consumption)
+      : null;
+  const job = typeof row.job === "object" && row.job !== null ? record(row.job) : null;
+  const error = typeof row.error === "object" && row.error !== null ? record(row.error) : null;
+  const proposals = records(job?.recorded).map((proposal) => ({
+    proposalHash: optText(proposal.proposal_hash),
+    incumbent: optText(proposal.incumbent),
+    candidate: optText(proposal.candidate),
+    status: optText(proposal.status),
+  }));
+  const candidate = text(row.candidate, "?");
+  for (const proposal of proposals) {
+    if (proposal.status !== PENDING_HUMAN_APPROVAL) {
+      problems.push(`${candidate}: proposal ${proposal.proposalHash ?? "?"} status is ${proposal.status ?? "missing"}, not ${PENDING_HUMAN_APPROVAL}`);
+    }
+  }
+  if (job !== null && job.status !== PENDING_HUMAN_APPROVAL) {
+    problems.push(`${candidate}: job status is ${optText(job.status) ?? "missing"}, not ${PENDING_HUMAN_APPROVAL}`);
+  }
+  const consumed = consumption === null ? null : consumption.report_hashes;
+  const alreadyProposed = job === null ? null : job.already_proposed;
+  const start = optText(window?.start);
+  const end = optText(window?.end);
+  const profileRef = optText(window?.profile_ref);
+  return {
+    phase: text(row.phase),
+    candidate,
+    candidateState: optText(row.candidate_state),
+    incumbents: Array.isArray(row.incumbents) ? row.incumbents.filter((i): i is string => typeof i === "string") : [],
+    trial: optText(trial.hypothesis),
+    trialHash: optText(trial.hypothesis_hash),
+    windowId: optText(window?.window_id) ?? optText(opening?.window_id),
+    windowRange: start === null && end === null ? null : `[${start ?? "—"}, ${end ?? "—"})`,
+    windowProfile: profileRef,
+    openingHash: optText(row.window_opening_hash),
+    openedAt: optText(opening?.opened_at),
+    consumptionHash: optText(row.window_consumption_hash),
+    consumedReports: Array.isArray(consumed) ? consumed.length : null,
+    outcome: text(row.status),
+    refusal: optText(row.refusal),
+    error: error === null ? null : `${text(error.type, "Error")}: ${text(error.message, "")}`,
+    proposals,
+    alreadyProposed: Array.isArray(alreadyProposed) ? alreadyProposed.length : 0,
+    jobRefusals: records(job?.refused).map((refused) => ({
+      incumbent: optText(refused.incumbent),
+      candidate: optText(refused.candidate),
+      reason: optText(refused.reason),
+    })),
+  };
+}
+
+/**
+ * The round's replacement-trigger summary, or `null` when the round carries none (no `evolution`
+ * stage, or no `replacement_trigger` key in its summary: a loop without the trigger).
+ */
+export function replacementTriggerOf(envelope: ReportEnvelope): ReplacementTriggerView | null {
+  const payload = record(envelope.payload);
+  const stages = Array.isArray(payload.stages) ? payload.stages.map(record) : [];
+  const evolution = stages.find((stage) => stage.name === "evolution");
+  if (evolution === undefined) return null;
+  const summary = record(evolution.summary);
+  if (!(REPLACEMENT_TRIGGER_KEY in summary)) return null;
+  const raw = summary[REPLACEMENT_TRIGGER_KEY];
+  const trigger = record(raw);
+  const problems: string[] = [];
+  const due = trigger.due === true;
+  if (typeof trigger.due !== "boolean") problems.push("replacement_trigger.due is not a boolean");
+  const formatVersion = optInt(trigger.format_version);
+  const formatKnown = formatVersion !== null && KNOWN_TRIGGER_FORMATS.includes(formatVersion);
+  if (due && !formatKnown) {
+    problems.push(`unrecognised trigger format_version ${String(trigger.format_version ?? "missing")}`);
+  }
+  const status = optText(trigger.status);
+  if (due && status !== PENDING_HUMAN_APPROVAL) {
+    problems.push(`trigger status is ${status ?? "missing"}, not ${PENDING_HUMAN_APPROVAL}`);
+  }
+  if (due && !Array.isArray(trigger.triggers)) problems.push("replacement_trigger.triggers is not a list");
+  const rows = due ? (Array.isArray(trigger.triggers) ? trigger.triggers : []).map((row) => triggerRow(row, problems)) : [];
+  return {
+    id: envelope.id,
+    loopId: text(payload.loop_id),
+    roundIndex: typeof payload.round_index === "number" ? payload.round_index : null,
+    asOf: text(payload.as_of),
+    due,
+    formatVersion,
+    formatKnown,
+    status,
+    proposedBy: optText(trigger.proposed_by),
+    rows,
+    notEligible: records(trigger.not_eligible).map((item) => ({
+      candidate: optText(item.candidate),
+      reason: optText(item.reason),
+    })),
+    alreadyTriggered: records(trigger.already_triggered).map((item) => ({
+      candidate: optText(item.candidate),
+      hypothesis: optText(item.hypothesis),
+    })),
+    familyTrials: optInt(trigger.family_trials),
+    unsealingCount: optInt(trigger.unsealing_count),
+    unsealingBudget: optInt(trigger.unsealing_budget),
+    problems,
+    raw,
+  };
+}
+
+/** Every round that carries a trigger summary, in round order (as `roundRows`). */
+export function replacementTriggers(reports: readonly ReportEnvelope[]): ReplacementTriggerView[] {
+  const order = new Map(roundRows(reports).map((row, index) => [row.id, index]));
+  return reports
+    .map(replacementTriggerOf)
+    .filter((view): view is ReplacementTriggerView => view !== null)
+    .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+}
+
+const OUTCOME_TEXT: Record<string, string> = {
+  refused: "拒绝（refused）",
+  window_opened: "已开封窗口（window_opened）— 本轮不使用证据",
+  proposed: `已提出替换提案（proposed）— ${PENDING_HUMAN_APPROVAL}`,
+  not_proposed: "未提出提案（not_proposed）",
+  failed: "作业失败（failed）— 窗口保持已消耗",
+};
+
+/** The outcome code in words; an unknown code is shown verbatim. */
+export function outcomeText(outcome: string): string {
+  return OUTCOME_TEXT[outcome] ?? outcome;
+}
+
 export function formatUsage(usage: LoopUsage): string {
   const show = (value: number | null) => (value === null ? "—" : String(value));
   return `trials ${show(usage.trials)} · llm ${show(usage.llm_cost_units)} · compute ${show(usage.compute_seconds)}s`;

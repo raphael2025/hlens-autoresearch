@@ -18,7 +18,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api import create_app
-from apps.api.report_dto import REPORT_DTOS, decode_report_payload
+from apps.api.report_dto import (
+    DEGRADATION_AUTHORITY_FORMATS,
+    REPORT_DTOS,
+    decode_report_payload,
+)
 from apps.api.store import ReportKind, ReportMalformed, ReportStore
 from core.domain.base import content_hash
 from tests.factories import validation_report
@@ -294,3 +298,184 @@ def test_an_unsupported_version_is_served_opaquely_without_the_identity_check(
     body = listing.json()
     assert body["invalid"] == []
     assert [item["id"] for item in body["reports"]] == [report_id]
+
+
+# --- degradation_check 1.1.0: optional evidence.authority (ADR-0098 §4, additive) ---------------
+#
+# The shapes below follow research/operations/degradation.py ``DegradationEvidence.as_mapping``
+# and research/operations/authority.py ``AuthorityProvenance.payload`` (restated: nothing here
+# imports research/). Hash values are syntactic placeholders; ``check_hash`` is recomputed only in
+# the store test, where ReportStore's identity rule needs it.
+
+_HISTORY, _MANIFEST, _PROFILE, _REPORT = ("1" * 64, "2" * 64, "3" * 64, "4" * 64)
+_START, _END = "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z"
+
+
+def _evidence(**overrides: Any) -> Payload:
+    evidence: Payload = {
+        "lifecycle_history_hash": _HISTORY,
+        "lifecycle_scope": "scope text",
+        "profile_ref": "validation_profile:p@1.0.0",
+        "profile_hash": _PROFILE,
+        "validation_report_hash": _REPORT,
+        "recent_observation_set_id": "obs-1",
+        "recent_observation_set_hash": _MANIFEST,
+        "metric_method_id": "method@1",
+        "window_start": _START,
+        "window_end": _END,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def _lifecycle(**overrides: Any) -> Payload:
+    lifecycle: Payload = {
+        "head": {"record_count": 3, "last_record_hash": "5" * 64},
+        "anchor": "absent",
+        "history_hash": _HISTORY,
+        "record_hashes": ["6" * 64, "7" * 64],
+    }
+    lifecycle.update(overrides)
+    return lifecycle
+
+
+def _authority(**overrides: Any) -> Payload:
+    authority: Payload = {
+        "format": "hlens.p11.authority-provenance@1.2.0",
+        "subject": "strategy:trend_a@1.0.0",
+        "lifecycle": _lifecycle(),
+        "source": {"dataset_id": "ds-btc-1h", "manifest_hash": "8" * 64},
+        "baseline": {
+            "run_id": "run-1",
+            "manifest_hash": "9" * 64,
+            "baseline_set_hash": "a" * 64,
+            "validation_report_hash": _REPORT,
+            "profile_ref": "validation_profile:p@1.0.0",
+            "profile_hash": _PROFILE,
+        },
+        "metrics": {
+            "registry": "hlens.p11.monitoring-metrics@2.0.0",
+            "definitions": [{"metric": "sharpe", "definition": "p11.sharpe@1.0.0"}],
+        },
+        "execution": {},
+        "recent_manifest_hash": _MANIFEST,
+        "as_of": "2026-02-02T00:00:00Z",
+        "window_start": _START,
+        "window_end": _END,
+    }
+    authority.update(overrides)
+    return authority
+
+
+def _degradation(evidence: Payload | None) -> Payload:
+    payload: Payload = {
+        "kind": "degradation_check",
+        "schema_version": "1.1.0",
+        "check_hash": "b" * 64,
+        "metrics": [],
+    }
+    if evidence is not None:
+        payload["evidence"] = evidence
+    return payload
+
+
+def test_the_current_authority_format_is_registered() -> None:
+    assert "hlens.p11.authority-provenance@1.2.0" in DEGRADATION_AUTHORITY_FORMATS
+
+
+def test_a_caller_declared_1_1_0_report_without_authority_is_supported() -> None:
+    dto = decode_report_payload(ReportKind.DEGRADATION_CHECK, _degradation(_evidence()))
+    assert dto.supported is True
+    assert "authority" not in dto.payload["evidence"]
+
+
+def test_a_legacy_1_0_0_report_without_evidence_is_unchanged() -> None:
+    payload = {**_degradation(None), "schema_version": "1.0.0"}
+    assert decode_report_payload(ReportKind.DEGRADATION_CHECK, payload).supported is True
+
+
+def test_a_known_format_authority_bound_to_its_evidence_is_supported() -> None:
+    evidence = _evidence(authority=_authority())
+    dto = decode_report_payload(ReportKind.DEGRADATION_CHECK, _degradation(evidence))
+    assert dto.supported is True
+    assert dto.payload["evidence"]["authority"]["lifecycle"]["anchor"] == "absent"
+
+
+def test_an_unknown_authority_format_is_kept_opaque() -> None:
+    """ADR-0081 §6: an additive object of a format this API does not know is not interpreted."""
+    evidence = _evidence(authority={"format": "hlens.p11.authority-provenance@9.0.0"})
+    assert decode_report_payload(ReportKind.DEGRADATION_CHECK, _degradation(evidence)).supported
+
+
+@pytest.mark.parametrize(
+    ("evidence", "reason"),
+    [
+        ({}, "evidence must be a non-empty object"),
+        (_evidence(authority=[]), "must be an object with a string format"),
+        (_evidence(authority={"lifecycle": {}}), "must be an object with a string format"),
+        (_evidence(authority=_authority(source={"dataset_id": "ds"})), "source is not a"),
+        (
+            _evidence(authority=_authority(lifecycle=_lifecycle(anchor="maybe"))),
+            "anchor must be present or absent",
+        ),
+        (
+            _evidence(authority=_authority(lifecycle=_lifecycle(head={"record_count": True}))),
+            "lifecycle.head is not",
+        ),
+        (
+            _evidence(authority=_authority(metrics={"registry": "r", "definitions": [1]})),
+            "entries must name their definition",
+        ),
+        (
+            _evidence(authority=_authority(window_end="2026-03-01T00:00:00Z")),
+            "describes another window end",
+        ),
+        (
+            _evidence(authority=_authority(recent_manifest_hash="c" * 64)),
+            "describes another recent manifest",
+        ),
+        (
+            _evidence(lifecycle_history_hash="d" * 64, authority=_authority()),
+            "describes another lifecycle history",
+        ),
+        (
+            _evidence(profile_hash="e" * 64, authority=_authority()),
+            "describes another Profile",
+        ),
+        (
+            _evidence(authority=_authority(as_of="2026-01-15T00:00:00Z")),
+            "as_of is before the window end",
+        ),
+        (
+            _evidence(authority=_authority(as_of="yesterday")),
+            "are not comparable UTC times",
+        ),
+    ],
+)
+def test_a_malformed_or_unbound_known_authority_is_malformed(
+    evidence: Payload, reason: str
+) -> None:
+    with pytest.raises(ReportMalformed, match=reason):
+        decode_report_payload(
+            ReportKind.DEGRADATION_CHECK, _degradation(evidence), path=Path("<test>")
+        )
+
+
+def test_the_store_serves_an_authority_report_and_lists_an_unbound_one_as_invalid(
+    tmp_path: Path,
+) -> None:
+    """Integration: the DTO check runs before ``check_hash``; a bound report is served."""
+
+    def self_hashed(evidence: Payload) -> tuple[str, Payload]:
+        body = {k: v for k, v in _degradation(evidence).items() if k != "check_hash"}
+        check_hash = content_hash(body)
+        return check_hash, {**body, "check_hash": check_hash}
+
+    good_id, good = self_hashed(_evidence(authority=_authority()))
+    bad_id, bad = self_hashed(_evidence(authority=_authority(window_start="2025-12-01T00:00:00Z")))
+    _write(tmp_path, ReportKind.DEGRADATION_CHECK, good_id, good)
+    _write(tmp_path, ReportKind.DEGRADATION_CHECK, bad_id, bad)
+    listing = ReportStore(tmp_path).listing(ReportKind.DEGRADATION_CHECK)
+    assert [envelope.id for envelope in listing.reports] == [good_id]
+    assert [item.id for item in listing.invalid] == [bad_id]
+    assert "describes another window start" in listing.invalid[0].reason

@@ -207,6 +207,8 @@ const rounds = c.researchLoop.roundRows(listings.research_loop_round.reports);
 assert.equal(rounds.length, listings.research_loop_round.reports.length);
 c.researchLoop.usageSeries(rounds);
 rounds.forEach((row) => [c.researchLoop.formatUsage(row.roundUsage), c.researchLoop.formatUsage(row.totalUsage)]);
+// the optional P12 trigger audit: the committed round carries none, so this is empty
+c.researchLoop.replacementTriggers(listings.research_loop_round.reports);
 
 for (const report of [...listings.router_paper_run.reports, ...listings.router_stop.reports]) {
   const view = c.routerEligibility.eligibilityOf(report.payload);
@@ -255,6 +257,10 @@ for (const check of parsed("degradation_check", c.degradationCheck.asDegradation
   }
   c.degradationCheck.checkSummary(check);
   c.degradationCheck.degradationLabel(check);
+  // the committed fixtures carry no evidence.authority: every one is caller-declared
+  c.degradationCheck.authorityOf(check);
+  c.degradationCheck.evidenceStrengthText(check);
+  c.degradationCheck.evidenceStrengthLabel(c.degradationCheck.evidenceStrength(check));
 }
 step("every page's src/lib view model over the live report payloads");
 

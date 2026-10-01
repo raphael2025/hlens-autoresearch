@@ -16,7 +16,7 @@
 |---|---|---|
 | Dashboard | 健康检查、契约数、各类报告计数 | `/health`、`/contracts`、`/reports/{kind}` |
 | Validation Reports | 报告列表 + 详情（gate 结果表） | `/reports/validation_report[/​{id}]` |
-| Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 每个用量维度一张图（trials / llm_cost_units / compute_seconds，带单位；每轮用量柱在左轴、累计线在右轴） | `/reports/research_loop_round` |
+| Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 每个用量维度一张图（trials / llm_cost_units / compute_seconds，带单位；每轮用量柱在左轴、累计线在右轴）+ 可选的 P12 替换提案触发审计表（只读；无触发器时隐藏） | `/reports/research_loop_round` |
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
 | Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比；证据模式下的资格证据与验证报告绑定） | `/reports/router_paper_run[/​{id}]` |
 | Router Stops | 停止记录列表 + 详情（停止原因、spec / 状态结果哈希、每个策略的 lifecycle / 结果哈希 / 验证报告绑定；证据模式下每个策略的资格核验结果与拒绝原因）；没有模拟任何运行 | `/reports/router_stop[/​{id}]` |
@@ -25,7 +25,7 @@
 | State Diagnostics | 诊断报告列表 + 详情（每个状态的计数 / 占比 / run 持续时间、转移矩阵、flicker、runs 表）；只描述、无阈值 | `/reports/state_diagnostics[/​{id}]` |
 | Event Statistics | 报告列表 + 详情（来源事件运行哈希；频率分桶、共现、领先-滞后直方、重叠 / 独立性诊断）；只描述、非 Profile 输入 | `/reports/event_statistics[/​{id}]` |
 | Retro Audits | 显式提交的回溯差异报告列表 + 逐对象 / gate 详情；只展示，不重跑验证或改变生命周期 | `/reports/retro_audit[/​{id}]` |
-| Degradation Checks | 退化检查列表 + 详情（subject、window、每个指标的状态 / 方向 / baseline / recent / decline / 允许下降 / 阈值来源）；missing = 证据不足而非健康；只作证据、不改生命周期 | `/reports/degradation_check[/​{id}]` |
+| Degradation Checks | 退化检查列表 + 详情（subject、window、每个指标的状态 / 方向 / baseline / recent / decline / 允许下降 / 阈值来源；证据强度徽章与 authority provenance）；missing = 证据不足而非健康；只作证据、不改生命周期 | `/reports/degradation_check[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
 | Jobs | worker 结果日志的任务列表（按状态筛选）+ 详情（params、result / error），只读 | `/jobs[/​{job_id}]` |
 | Knowledge Search | 知识条目检索（待检验主张，非结论）；关键词 + 标签（全部满足）+ 资产（任一满足，精确；ADR-0055） | `/knowledge/search` |
@@ -183,6 +183,25 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
   两者都有中文说明 + 原始代码。G5 状态按拒绝代码的含义判定（`SEALED_OOS_BY_REFUSAL`），不再假设 G5 是最后一项检查：
   这两种拒绝下 G5 显示为「通过」；无法识别的代码显示为「未知」。2026-09-27（B58）起还有 Profile 要求反向对照而报告缺
   `G2.inverse_control` 的 `inverse_control_missing`（最后一项检查，G5 同样显示为「通过」）。
+- **退化检查的证据强度与 authority provenance**（2026-10-01，ADR-0098，CODE_COMPLETE / NOT_RUN）：schema 1.1.0 报告的
+  `evidence` 可带附加的 `authority` 块（`AuthorityProvenance`：lifecycle head 身份 + anchor present / absent、source
+  dataset_id + manifest_hash、闭集 metric 定义 id@version + gate + window_scope、as_of、窗口、baseline_set_hash、格式版本）。
+  详情页对每份检查显示证据强度徽章：`AUTHORITY-RESOLVED（权威解析）`（已知格式且与周围 evidence 的生命周期历史、近期清单、
+  Profile、基线报告、窗口哈希一致，as_of ≥ window_end）、`CALLER-DECLARED（调用方声明）`（无 `authority`，含全部 1.0.0
+  旧报告）、`AUTHORITY UNREADABLE`（带 `authority` 但格式未知或绑定不一致：列出原因，按调用方声明对待，从不显示为权威）。
+  anchor absent 时明示无法检测尾部回滚；权威解析仍只是证据。视图模型 `authorityOf` / `evidenceStrength`
+  （`src/lib/degradationCheck.ts`）；1.1.0 测试载荷按 writer 形状内联构造（`src/lib/degradationAuthority.test-util.ts`），
+  未新增 fixture。
+- **研究循环的 P12 替换提案触发审计**（2026-10-01，ADR-0100 第 7 项，CODE_COMPLETE / NOT_RUN）：循环启用可选触发器时，
+  `evolution` 阶段 summary 带 `replacement_trigger`（`research/loop/replacement.py`，format_version 2）。Research Loop 页面
+  在 round 表下方增加只读「替换提案触发审计」：每个到期轮次的 summary（status、proposed_by、族试验数、开封计数 / 预算）与逐候选
+  表（phase、候选、trial、窗口、opening / consumption 哈希、结果代码 + refusal / error、提案哈希与其
+  `PENDING_HUMAN_APPROVAL` 状态）；未到期轮次只计数；没有任何轮次带该键时整节隐藏。未知 format_version 或非
+  `PENDING_HUMAN_APPROVAL` 的提案以警告列出、原始 JSON 可展开，从不隐藏。视图模型 `replacementTriggerOf` /
+  `replacementTriggers`（`src/lib/researchLoop.ts`）；测试载荷见 `src/lib/replacementTrigger.test-util.ts`，未新增 fixture。
+  报告 payload 在 OpenAPI 中仍是通用对象，`src/api.d.ts` 无需重新生成。
+- **Registry audit**：`infrastructure/tools/registry_audit.py` 的报告（schema 1.1.0，可选 `lifecycle` 条目）不是
+  `ReportKind`，API 不提供，控制台因此不显示；本次未新增端点。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（已跑 `npm run build`、`npm test` 与下文的 live-backend
   smoke；后者不是浏览器验收）。
 

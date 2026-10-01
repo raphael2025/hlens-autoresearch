@@ -152,6 +152,16 @@ Phase 11 退化检查、Phase 8 回溯审计；写入方见 `research/reports/RE
 
 `apps/api/report_dto.py` 为全部 11 种 `ReportKind` 注册基线版本、可读取版本和必需字段；API 对已知 DTO 执行结构与现有身份校验。已有 `schema_version` 原样使用；历史 payload 没有该字段的 kind 使用注册表里的虚拟基线版本，不向文件注入字段、不改变其哈希。已知版本缺字段会按 malformed 处理（列表 `invalid`、详情 422）。未知版本以 JSON 原样只读透传并计算 envelope `content_hash`，不假设当前版本的 kind 身份规则；Web 仅显示原始 JSON 和版本提示，不把它解释成已知 DTO。版本与兼容矩阵见 [ADR-0081](../../docs/adr/0081-versioned-report-payload-dtos.md)。
 
+`degradation_check` 1.1.0 的 `evidence` 可带附加的 `authority` 块（ADR-0098 §4 `AuthorityProvenance`，2026-10-01，
+CODE_COMPLETE / NOT_RUN）。DTO 版本不变（仍为 1.1.0，附加字段）：没有 `authority` 的报告是调用方声明路径，原样通过；`format`
+属于 `DEGRADATION_AUTHORITY_FORMATS`（`hlens.p11.authority-provenance@1.0.0 / 1.1.0 / 1.2.0`，在 `report_dto.py` 中复述，
+`apps/` 不 import `research/`，`tests/research/reports/test_degradation_writer.py` 核对与 writer 常量一致）时，API 校验其形状
+（lifecycle head `(record_count, last_record_hash)`、anchor ∈ present / absent、source `(dataset_id, manifest_hash)`、baseline
+哈希、metric definitions、as_of / 窗口）以及它与外层 evidence 的绑定（生命周期历史、近期清单、Profile、基线报告、窗口），
+不符即 malformed（列表 `invalid`、详情 422）；未知 `format` 原样透传，不当作权威证据（Web 显示为无法读取）。
+`research_loop_round` 的 DTO 不变：可选的 P12 `replacement_trigger` 位于 `evolution` 阶段 summary 内（ADR-0050 中为自由 JSON），
+由 `LoopRoundRecord` 契约校验整轮记录，Web 防御性解析。Registry audit 报告不是 `ReportKind`，API 不提供。
+
 `paper_deviation` 的 2.0.0 DTO 必须包含 ADR-0079 声明范围；API 校验嵌套 `scope_schema_version=1.0.0` 和 `scope_hash`，以及外层 `deviation_hash`。1.0.0 历史报告仍可读，但不构成声明范围证据。
 
 ## 本机运行（Uvicorn，ADR-0063，B65；CODE_COMPLETE / DEBUG_PENDING）

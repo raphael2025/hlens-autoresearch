@@ -3,6 +3,13 @@ import { test } from "node:test";
 import { api, count, escaped, renderInitial, renderSettled } from "../components/render.test-util.tsx";
 import { fixtureEnvelopes } from "../lib/fixtures.test-util.ts";
 import { formatUsage, roundRow } from "../lib/researchLoop.ts";
+import {
+  CANDIDATE,
+  INCUMBENT,
+  PROPOSAL_HASH,
+  triggerSummary,
+  withTrigger,
+} from "../lib/replacementTrigger.test-util.ts";
 import { ResearchLoop } from "./ResearchLoop.tsx";
 
 // The Research Loop page reads the real LoopRoundRecord fixture (ADR-0050) directly from the list.
@@ -57,4 +64,63 @@ test("error: the server detail in an alert", async () => {
   });
   assert.ok(html.includes('role="alert"'));
   assert.ok(html.includes("后端未配置该数据源（HTTP 503）：reports root not configured"));
+});
+
+// P12 replacement trigger audit: the committed round has no trigger (section hidden); the
+// trigger rounds are built inline in the writer's shape (src/lib/replacementTrigger.test-util.ts).
+
+const AUDIT = 'aria-label="Replacement trigger audit"';
+
+test("no trigger in any round: the audit section is hidden", async () => {
+  const { html } = await renderSettled(<ResearchLoop />, { routes: [api.listing(KIND, reports)] });
+  assert.ok(!html.includes(AUDIT));
+  assert.ok(!html.includes("PENDING_HUMAN_APPROVAL"));
+});
+
+test("a due trigger round: read-only table with trial, window, opening / consumption, outcome and pending proposal", async () => {
+  const round = withTrigger(fixture, triggerSummary(), "round-trigger");
+  round.payload.round_index = 1;
+  const notDue = withTrigger(fixture, { due: false }, "round-not-due");
+  const { html } = await renderSettled(<ResearchLoop />, {
+    routes: [api.listing(KIND, [...reports, notDue, round])],
+  });
+  assert.ok(html.includes(AUDIT));
+  assert.ok(html.includes(escaped("替换提案触发审计（P12 replacement trigger，ADR-0100）")));
+  assert.ok(html.includes(escaped("1 轮触发器未到期（due = false）。")));
+  assert.equal(count(html, "data-trigger-round="), 1);
+  assert.ok(html.includes('data-trigger-round="round-trigger"'));
+  assert.ok(!html.includes("data-trigger-problems"), "a well-formed summary lists no problems");
+  assert.equal(count(html, 'data-trigger-outcome="proposed"'), 1);
+  assert.equal(count(html, 'data-trigger-outcome="window_opened"'), 1);
+  assert.equal(count(html, 'data-trigger-outcome="refused"'), 1);
+  for (const text of [
+    "format_version 2",
+    "automation:loop:loop-x",
+    CANDIDATE,
+    "oos-2026q3",
+    "[2026-07-01T00:00:00+00:00, 2026-10-01T00:00:00+00:00)",
+    "666666666666…",
+    "777777777777…",
+    "1 report(s)",
+    "eeeeeeeeeeee…",
+    `${INCUMBENT} → ${CANDIDATE}`,
+    "已提出替换提案（proposed）— PENDING_HUMAN_APPROVAL",
+    "拒绝（refused）",
+    "the global unsealing budget (2) is used up",
+    "strategy:other@1.0.0（descends from no given incumbent）",
+  ]) {
+    assert.ok(html.includes(escaped(text)), text);
+  }
+  assert.ok(html.includes(`<strong>PENDING_HUMAN_APPROVAL</strong>`));
+  assert.ok(PROPOSAL_HASH.startsWith("eeeeeeeeeeee"));
+  // read-only: no controls that could change state
+  assert.ok(!html.includes("<button") && !html.includes("<form") && !html.includes("<input"));
+});
+
+test("a trigger summary of an unknown format is flagged and shown raw, never hidden", async () => {
+  const round = withTrigger(fixture, triggerSummary({ format_version: 3 }), "round-future");
+  const { html } = await renderSettled(<ResearchLoop />, { routes: [api.listing(KIND, [round])] });
+  assert.ok(html.includes('data-trigger-problems="1"'));
+  assert.ok(html.includes(escaped("unrecognised trigger format_version 3")));
+  assert.ok(html.includes(escaped("原始 replacement_trigger JSON")));
 });

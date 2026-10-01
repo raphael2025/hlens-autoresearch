@@ -10,15 +10,35 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
 from apps.api.store import ReportKind, ReportMalformed
 from core.domain.base import content_hash
 
-__all__ = ["ReportDTO", "ReportPayloadDTO", "decode_report_payload"]
+__all__ = [
+    "DEGRADATION_AUTHORITY_FORMATS",
+    "DEGRADATION_AUTHORITY_FORMAT_PREFIX",
+    "ReportDTO",
+    "ReportPayloadDTO",
+    "decode_report_payload",
+]
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+#: ``degradation_check`` 1.1.0 ``evidence.authority`` (ADR-0098 §4 ``AuthorityProvenance``): an
+#: optional, additive object inside the hash-bound evidence. Its ``format`` names the provenance
+#: payload version. Only these known formats get the structural / cross-binding check below; any
+#: other ``format`` is kept as opaque JSON (ADR-0081 §6: an additive field an older reader does
+#: not understand is ignored, never interpreted). Restated here because ``apps/`` never imports
+#: ``research/`` (``research.operations.authority.AUTHORITY_FORMAT``; tests keep them in step).
+DEGRADATION_AUTHORITY_FORMAT_PREFIX: Final = "hlens.p11.authority-provenance@"
+DEGRADATION_AUTHORITY_FORMATS: Final = frozenset(
+    f"{DEGRADATION_AUTHORITY_FORMAT_PREFIX}{version}" for version in ("1.0.0", "1.1.0", "1.2.0")
+)
+#: ``authority.lifecycle.anchor`` (ADR-0098 修订 1): verified against an external anchor, or not.
+_AUTHORITY_ANCHORS: Final = frozenset({"present", "absent"})
 
 
 @dataclass(frozen=True)
@@ -141,4 +161,112 @@ def decode_report_payload(
                 raise ReportMalformed(
                     source_path, "paper_deviation 2.0.0 scope_hash does not match declared_scope"
                 )
+    if kind is ReportKind.DEGRADATION_CHECK and version == "1.1.0" and "evidence" in payload:
+        _check_degradation_evidence(source_path, payload["evidence"])
     return ReportPayloadDTO(kind, version, payload, supported=True)
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and _SHA256.fullmatch(value) is not None
+
+
+def _check_degradation_evidence(path: Path, evidence: object) -> None:
+    """The 1.1.0 ``evidence`` object and, when present, its known-format ``authority`` block.
+
+    A report without ``evidence.authority`` is the caller-declared path (ADR-0067) and is not
+    touched. With a known format the authority block must have the ``AuthorityProvenance``
+    payload shape and describe the same lifecycle history, recent manifest, Profile, baseline
+    report and window as the evidence around it (``run_degradation_check`` enforces exactly these
+    bindings before the writer runs), so a reader can never see an authority block that belongs
+    to other evidence. This checks shape and agreement only; it does not re-resolve anything.
+    """
+    if not isinstance(evidence, dict) or not evidence:
+        raise ReportMalformed(path, "degradation_check 1.1.0 evidence must be a non-empty object")
+    if "authority" not in evidence:
+        return
+    authority = evidence["authority"]
+    if not isinstance(authority, dict) or not isinstance(authority.get("format"), str):
+        raise ReportMalformed(
+            path, "degradation_check evidence.authority must be an object with a string format"
+        )
+    if authority["format"] not in DEGRADATION_AUTHORITY_FORMATS:
+        return  # an unknown provenance format: opaque JSON, never read as authority evidence
+
+    def invalid(reason: str) -> ReportMalformed:
+        return ReportMalformed(path, f"degradation_check evidence.authority {reason}")
+
+    lifecycle = authority.get("lifecycle")
+    source = authority.get("source")
+    baseline = authority.get("baseline")
+    metrics = authority.get("metrics")
+    if not (
+        isinstance(lifecycle, dict)
+        and isinstance(source, dict)
+        and isinstance(baseline, dict)
+        and isinstance(metrics, dict)
+    ):
+        raise invalid("lacks a lifecycle / source / baseline / metrics object")
+    head = lifecycle.get("head")
+    if (
+        not isinstance(head, dict)
+        or not isinstance(head.get("record_count"), int)
+        or isinstance(head.get("record_count"), bool)
+        or head["record_count"] < 0
+        or not _is_sha256(head.get("last_record_hash"))
+    ):
+        raise invalid("lifecycle.head is not a (record_count, last_record_hash) identity")
+    if lifecycle.get("anchor") not in _AUTHORITY_ANCHORS:
+        raise invalid("lifecycle.anchor must be present or absent")
+    if not _is_sha256(lifecycle.get("history_hash")) or not isinstance(
+        lifecycle.get("record_hashes"), list
+    ):
+        raise invalid("lifecycle lacks its history_hash / record_hashes")
+    if not isinstance(source.get("dataset_id"), str) or not _is_sha256(
+        source.get("manifest_hash")
+    ):
+        raise invalid("source is not a (dataset_id, manifest_hash) identity")
+    if not all(
+        _is_sha256(baseline.get(field))
+        for field in ("baseline_set_hash", "validation_report_hash", "profile_hash")
+    ):
+        raise invalid("baseline lacks its baseline_set_hash / report / Profile hashes")
+    if not isinstance(metrics.get("registry"), str) or not isinstance(
+        metrics.get("definitions"), list
+    ):
+        raise invalid("metrics lacks its registry / definitions")
+    if not all(
+        isinstance(item, dict) and isinstance(item.get("definition"), str)
+        for item in metrics["definitions"]
+    ):
+        raise invalid("metrics.definitions entries must name their definition")
+    if not all(
+        isinstance(authority.get(field), str) for field in ("as_of", "window_start", "window_end")
+    ):
+        raise invalid("lacks its as_of / window_start / window_end")
+    bindings = (
+        (lifecycle["history_hash"], evidence.get("lifecycle_history_hash"), "lifecycle history"),
+        (
+            authority.get("recent_manifest_hash"),
+            evidence.get("recent_observation_set_hash"),
+            "recent manifest",
+        ),
+        (baseline["profile_hash"], evidence.get("profile_hash"), "Profile"),
+        (
+            baseline["validation_report_hash"],
+            evidence.get("validation_report_hash"),
+            "validation report",
+        ),
+        (authority["window_start"], evidence.get("window_start"), "window start"),
+        (authority["window_end"], evidence.get("window_end"), "window end"),
+    )
+    for bound, declared, what in bindings:
+        if not isinstance(bound, str) or bound != declared:
+            raise invalid(f"describes another {what} than the evidence")
+    try:  # ADR-0098 修订 2 §1: the evaluation time is never before the window end
+        as_of = datetime.fromisoformat(authority["as_of"])
+        window_end = datetime.fromisoformat(authority["window_end"])
+        too_early = as_of < window_end
+    except (TypeError, ValueError):  # unparseable, or naive vs aware
+        raise invalid("as_of / window_end are not comparable UTC times") from None
+    if too_early:
+        raise invalid("as_of is before the window end")
