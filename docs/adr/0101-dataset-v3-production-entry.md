@@ -54,3 +54,16 @@ DQ-9 的**数值**仍 OPEN（ADR-0077），本 ADR 不选择任何数值。
 - [x] 不修改 Validation Constitution / Profile，不选择 DQ-9 数值（H3）
 - [x] Domain 层仍无具体技术依赖
 - [x] Research / Application Plane 边界不变（apps 不 import research）
+
+## 实现记录
+
+（追加记录，不改上文决策。分支 `feature/adr-0101-dataset`，2026-10-02。）
+
+- **D1 / D2 CLI / D3 / §5**（`f642806`）：`infrastructure/dataset/{profile,cli,factory,pinning}.py`、`infrastructure/quality/identity_registry.py`。
+- **D2 worker job**（`88ce67f`）：`apps/worker/dataset_job.py` 只依赖 `apps` / `core` / 标准库；`dataset_build_job(port, request)` 以 `selection_id` 为幂等键提交 `{"selection_id", "request"}`，处理器重新推导 `selection_id`、不符或结果属于其他 selection 即拒绝，端口失败只记录异常类型。端口为 `infrastructure/dataset/job_port.py` 的 `PipelineDatasetJobPort`（严格 JSON 请求文档，携带已钉定的 PIT spec，须为规范 JSON 形式）。仓库不注册；是否声明 `idempotent=` 由部署方决定。`summary_document` 与 CLI 共用（CLI 输出不变）。架构测试（`tests/test_architecture_boundaries.py`）固定入口模块（dataset cli / factory / job_port、worker job、quality report_cli）不导入 `DatasetBuilder` / `ManifestStore` / `PitSelector` / `UniverseBuilder`、不调用 `.select()`、`.build()` 只在 pipeline（或 job 注入的 port）上。
+- **§6 上游入口**（`f0640b3`）：`infrastructure/tools/listing_cli.py`（plan / collect / ingest / derive）、`infrastructure/tools/rest_tail_cli.py`（plan / collect / ingest / normalize / reconcile）、`infrastructure/quality/report_cli.py`（plan / report / verify，限值全部来自 profile，scratch 为 D4 位置）；无子命令时打印计划，只有 `collect` 联网；共用 `infrastructure/tools/cli_support.py`（设置不回显、DSN 脱敏、未知错误只打印异常类型）。各阶段均为既有组件，未重新实现。
+- **§7 / D5 测试迁移**（`73ba79d`）：roadmap #20 e2e 新增 v3 版本 `tests/infrastructure/e2e/test_phase1_first_slice_v3.py`（含 PostgreSQL 变体），经 `open_dataset_pipeline` 构建、从 evidence streams 读回 manifest 声明、重开 catalog 后逐位重放，并把 E4/F4 特征绑定到 v3 manifest。v2 e2e 原样保留为 v2 回放 / 兼容用例。其余 v2 兼容 / 回放用例此前已改用测试侧夹具 `seed_historical_v2`（即本 ADR 所称 `seed_v2_manifest` 的角色，未改名）；全仓检索无测试再对新 selection 调用 `DatasetBuilder.build`（除 DQ-10 / 拒绝断言）。未削弱任何断言，v2 写路径保持禁用。
+- **实现中发现的事实（未在本 ADR 范围内处理）**：
+  1. v3 构建（`DatasetEvidenceBuilder` 的请求检查）仍要求 PIT spec 绑定旧表 `quality.data_quality_reports`；生产 catalog 若只有 v3 报告、旧表无快照，构建被拒。v3 e2e 与既有 v3 测试支撑一样先写旧版报告。
+  2. v3 构建的 Quality join 还需要 listing-history 报告（`ListingHistoryQualityReporterV2`）；其限值（prefix / metadata / hash chunk 等）不在 `DatasetBuildProfile` 中，§6 的 `report_cli` 只覆盖 canonical-partition v3 报告，因此生产侧尚无 listing 质量报告入口。
+- 检查（仅定向运行）：见各 commit 正文；ruff check / format --check 与 mypy（strict）均通过。
