@@ -30,7 +30,6 @@ from core.domain.base import Kind, Ref, canonical_json
 from core.domain.research import ExperimentRun
 from core.domain.specs import OutcomeSpec, StrategySpec
 from infrastructure.plugins import discovery
-from infrastructure.plugins.manifest import PluginKind
 from plugins.backtest import BarBacktester
 from plugins.outcomes import ForwardReturnOutcome
 from research.experiments.run_inputs import RUN_INPUTS_KEY, with_run_inputs
