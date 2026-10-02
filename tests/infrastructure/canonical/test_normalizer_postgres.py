@@ -68,7 +68,10 @@ def test_dual_lineage_normalization_recovery_and_mapping_on_postgres(pg: RestHar
     assert status is PointInTimeStatus.SELECTED and heads == (mapped.revision_id,)
     # Time travel: the snapshot after the archive unit holds exactly its three revisions.
     history = pg.history(c.TRADES.table)
-    archive_rows = pg.rows_at(c.TRADES.table, history[2].snapshot_id)
+    assert len(history) == 2  # One snapshot for each of the archive and REST units.
+    [archive_snapshot] = [snapshot for snapshot in history if archive in (snapshot.batch_id or "")]
+    assert archive_snapshot.added_rows == 3
+    archive_rows = pg.rows_at(c.TRADES.table, archive_snapshot.snapshot_id)
     assert {row["lineage_source_revision_id"] for row in archive_rows} == {archive}
     assert len(archive_rows) == 3
 
