@@ -42,3 +42,16 @@ ADR-0103 让 COMMIT 后的 P7 计划进入研究循环：候选由 `P7PlanSource
 - [x] 不修改 Validation Constitution / Profile / 试验计数规则（H3）
 - [x] Domain 层仍无具体技术依赖
 - [x] 新运行能力默认关闭
+
+## 实现记录（2026-10-02，`feature/adr-0110-p7-restore`，实现 Agent）
+
+按 §1–§6 落地；`core/`、Validation Constitution / Profile、试验计数均未改动，`P7ExecutionSwitch` 仍默认关闭。
+
+- **§1 来源段**（`research/loop/durable.py`）：`_strategy_payload` 对带 `plan_record` 的候选写 `"parent": null` 与 `"provenance": {"origin": "p7", "plan_hash", "round_index"}`（键名取 `provenance`；`round_index` 为写入该检查点的轮次，即准入轮）。其他行不加字段、内容不变。
+- **§2 / §3 重建与准入证明**：`open_state(..., p7_rebuild=None)` 新增可选参数（类型 `P7Rebuild`）。恢复时带 `provenance` 的行走 `_P7Proofs`：校验来源段结构、`plan_hash` 格式、`round_index` 等于本轮、`parent` 为空；在 plan admission 日志中找本轮、本计划且已有 admission checkpoint 的唯一 COMMIT（PREPARE ↔ COMMIT 由日志 reducer 绑定，PREPARE 轮次身份由 `_check_admission_checkpoints` 绑定到审计起始项）；再调用 `p7_rebuild(plan_hash, commit, round_index)`，要求重建候选的 spec 内容哈希、`plan_record.plan_hash`、family 与 risk policy 哈希等于行记录。
+- **重建路径**（`research/loop/p7_admission.py`）：`P7CandidateRebuild` / `p7_rebuild(source, family_id=...)`。准入第 1 步中的编译部分抽成 `_compile`（横截面拒绝、用计划源的开关与白名单编译、策略根及其 Provider）与 `_bind`（计划记录绑定进声明的 ExperimentSpec），准入与恢复共用；恢复还要求 PREPARE 证据（compiler、operators、providers、inputs、outputs、绑定后的 experiment_specs、hypotheses）与重新编译结果逐项相等（`admission_evidence_mismatch`），最后用 `p7_strategy_candidates` 并以该 COMMIT 作为本轮证明。拒绝为 `P7RestoreRefused`（`ValueError`，带 `code`），由 durable 报为该轮检查点不一致。`compose.py` / `dataset_compose.py` 各传一行 `p7_rebuild=p7_rebuild(wiring.p7_plans, family_id=config.family_id)`。
+- **§4 离线核对**：`_verify_round_offline` 对 P7 行只做结构、spec 哈希、`plan_hash` 与已检查点 COMMIT 的核对（不编译、不需要计划源）；docstring 把"计划能编译回该 spec / family / risk policy"列为该路径未证明项。
+- **§5 失败关闭**：缺 `p7_plans`（`p7_rebuild=None`）、计划源未声明该计划（`plan_not_declared`）、证据不一致、开关关闭（`execution_disabled`）、横截面（`cross_sectional_loop_unsupported`）、spec / family / risk 不一致、缺少或未检查点的 COMMIT，一律 `LoopStateInconsistent`。经由组合根时，缺少或改动 `p7_plans` 先被指纹比对拒绝（`p7_plans` 已在指纹中）；`open_state` 层的拒绝由直接调用 `open_state` 的测试覆盖。
+- **§6 测试**：`tests/research/loop/test_p7_restore.py`（14 项）。重启对照：同一进程跑完 3 轮作为不中断基准，并在第 0 轮结束时复制目录；复制目录重开后跑第 1–2 轮，记录哈希相同、状态目录每个文件（锁文件除外）逐字节相同。用同一次运行而非两次独立运行对照，是因为第 0 轮知识假设的 `created_at` 取墙钟（`Hypothesis` 默认值），两次独立运行本就不逐字节相同，与本 ADR 无关。`test_p7_admission.py` 中原先固定 "cannot be rebuilt" 的断言改为重开成功并核对重建候选（该场景按本 ADR 已可合法恢复），拒绝覆盖移到上述专项用例（H4）。
+- **字节不变证明**：非 P7 行与 `LoopRecord` 编码路径未改；`tests/research/loop/test_loop_e2e.py` 的 `PINNED_RECORD_HASHES` / `PINNED_FINGERPRINT_HASH` 与全部持久化循环测试未改动且通过（未重钉任何值）。
+- **检查（实际运行，内存上限 3G 下）**：`pytest tests/research/loop` 292 passed；`pytest tests/research/hypotheses tests/test_architecture_boundaries.py tests/test_docs_consistency.py` 266 passed；`ruff check` / `ruff format --check`（改动路径）通过；全项目 `mypy` 883 个源文件无问题。全量测试未运行。
