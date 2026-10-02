@@ -3,7 +3,7 @@
   "description": "一个表 snapshot 的中立元数据。\n\n- `parent_snapshot_id` 必须显式给出，`null` 表示该表的首个 snapshot；不得等于自身；\n- `batch_id` 与 `batch_fingerprint` 同时给出或同时为空（非 batch 产生的 snapshot，\n  例如未来的 maintenance）；\n- `added_rows <= total_rows`；\n- `committed_at` 是 catalog 记录的提交时间，只作审计。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

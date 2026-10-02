@@ -27,7 +27,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -59,7 +59,7 @@
       "description": "交给 Strategy / Risk Provider 的一条信号观察：某个 Feature / State / Event 在某标的上的值。\n\n- `signal`：只能是 `feature` / `state` / `event` 引用（Outcome 永不作为输入，C-L2）；\n- `event_time`：信号所描述的时刻；`available_time >= event_time` 是它可被使用的最早时刻；\n- `value`：`None` 表示上游显式\"不可计算\"，不得被填补。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -125,7 +125,7 @@
   "description": "一次目标仓位计算请求。\n\n- `strategy`（`kind=strategy`）+ `spec_hash`：Provider 声明支持的 `StrategySpec`；\n- `params`：本次试验的参数点；Provider 必须拒绝不在该规格 `param_search_space` 内的参数\n  （参数空间是 trial count 的来源，C-T1）；\n- `instruments`：非空、唯一、升序；`decision_times`：非空、严格升序；\n- `signals`：按 `(available_time, signal, instrument, event_time)` 规范排序且不重复；每条的\n  `instrument` 属于 `instruments`，`knowledge_time <= knowledge_cutoff`。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

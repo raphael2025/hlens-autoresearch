@@ -15,7 +15,7 @@
   "description": "以 venue 原生稳定产品 ID 标识的 episode：`(venue, instrument_type, venue_product_id)`。\n\nsymbol 改名仍属同一 episode（symbol 不在键内，由各 revision 的 `instrument.symbol` 记录变化）。\n`instrument_type` 在键内：venue 的产品 ID 命名空间可能按市场类型区分。\n\n`basis` 是来源声明：产品 ID 的字符串值可以恰好等于某时刻的 symbol，契约不从字符串相等推断冒充。\n\n**诚实边界**：来源是否真的提供了稳定 ID、该 ID 是否真的跨改名不变，属未来 Collector / Registry /\n质量证据，契约层无法证明。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

@@ -22,7 +22,7 @@
   "description": "一条版本化过滤规则的声明形状（流动性、数据质量等；ADR-0024 §5）。\n\n指标是一份 FeatureSpec，以 `feature_name + feature_version + feature_hash` 绑定（不用 `Ref`）；\nFeatureSpec 的输入白名单排除 Outcome（ADR-0012），因此\"最终成交量\"这类前视标签不能成为指标。\n`threshold` 的数值由 spec 的作者在新版本中给出，本契约**不选择、不暗含任何数值**；它只要求有限\n数（`Contract` 全局拒绝 NaN / ±Inf）。\n\n**诚实边界**：指标的实际解析与计算、FeatureSpec 是否已登记、哈希是否匹配，属批次 F 与 Registry。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

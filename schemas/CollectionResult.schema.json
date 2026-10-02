@@ -5,7 +5,7 @@
       "description": "一个已发布对象及其最小来源证据。\n\n- `ref`：经 `StorageAdapter` 发布的不可变对象引用；\n- `symbol` 与 UTC 半开区间 `[coverage_start, coverage_end)`：该对象覆盖的范围；\n- `source_uri`、`retrieved_at`：从哪里、何时取得（`retrieved_at` 属知识轴证据，\n  不是 `available_time`）；\n- `source_sha256`：来源声明的校验和；给出时必须等于 `ref.sha256`；\n- `source_metadata`：原样保留的来源元数据（例如 HTTP `etag`），键为小写 token，\n  凭据形状的键被拒绝。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -78,7 +78,7 @@
       "description": "一次有界、可重放的获取请求。\n\n`request_id` 是调用方给出的稳定身份；`symbols` 非空、去重、规范排序；覆盖区间为 UTC 半开区间。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -133,7 +133,7 @@
       "description": "某个 symbol 在 UTC 半开区间内没有获取到对象的显式记录；`detail` 为非空证据描述。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -185,7 +185,7 @@
       "description": "已发布不可变对象的引用：逻辑 key + 持久 URI + SHA-256 + 字节数。\n\nURI 由实现生成（ADR-0021：业务代码不拼接绝对路径）。`ContentBlobRef` 仍是通用内容引用；\n本类型额外要求 key 与长度，供 Raw 记录与 `open_read` 核对。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -226,7 +226,7 @@
       "description": "版本化来源绑定：`source_id` + SemVer（标识符格式与 03-data.md §7.3 一致）。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -254,7 +254,7 @@
   "description": "一次 `collect` 的结果：原请求 + collector 身份 + 对象 + 显式缺口。\n\n`objects` 与 `gaps` 必须显式给出（可为空）。不变量：\n\n- `objects` 按 `ref.key` 规范排序且 key 唯一；`gaps` 按 `(symbol, coverage_start)` 规范排序；\n- 每个对象 / 缺口的 symbol 属于请求，区间落在请求区间内；\n- 对每个 symbol：缺口之间、缺口与对象之间不重叠，对象与缺口的并集恰好等于请求区间\n  （同一 symbol 的多个对象可以覆盖同一区间，例如归档与其校验和文件）。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"
