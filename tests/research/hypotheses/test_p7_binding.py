@@ -319,3 +319,16 @@ def test_bind_experiment_adds_the_record_and_every_output_and_changes_the_hash()
         bind_experiment(bound, record)
     with pytest.raises(P7PlanRecordError, match="exact ExperimentSpec"):
         bind_experiment(hypothesis, record)  # type: ignore[arg-type]
+
+
+def test_run_inputs_strategy_params_strip_the_p7_plan_record() -> None:
+    """The run-inputs helper used by P11 authority / evolution strips the P7 record too."""
+    from research.experiments import run_inputs
+
+    assert run_inputs.P7_PLAN_PARAM_KEY == P7_PLAN_KEY
+    params: dict[str, str | int | float | bool] = {
+        "lookback": 5,
+        P7_PLAN_KEY: "{}",
+        run_inputs.RUN_INPUTS_KEY: "{}",
+    }
+    assert run_inputs.strategy_params(params) == {"lookback": 5}
