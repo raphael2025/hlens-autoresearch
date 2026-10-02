@@ -10,6 +10,9 @@
   applied per decision time with ``PortfolioState.equity`` / ``peak_equity`` from the realized
   equity path (``RealizedEquityPath``, ``realized_portfolio_state``); nothing later than the
   decision time is read.
+- ``reference``: ``ReferenceBacktester`` — a second, independent ``next_bar_open`` implementation
+  (ADR-0106; the Phase 14 migration target). Not a production default; it refuses execution models,
+  carry-over and the risk loop.
 """
 
 from plugins.backtest.bar import (
@@ -26,6 +29,11 @@ from plugins.backtest.execution import (
     FundingCharge,
     UnfilledRemainder,
 )
+from plugins.backtest.reference import (
+    REFERENCE_MONEY_QUANTUM,
+    ReferenceBacktester,
+    ReferenceScopeError,
+)
 from plugins.backtest.risk_loop import (
     RealizedEquityPath,
     RiskLoop,
@@ -38,6 +46,7 @@ __all__ = [
     "EXECUTION_VERSION",
     "IMPACT_MODEL",
     "MONEY_QUANTUM",
+    "REFERENCE_MONEY_QUANTUM",
     "BarBacktester",
     "ExecutionModel",
     "ExecutionReport",
@@ -45,6 +54,8 @@ __all__ = [
     "FundingCharge",
     "RealizedEquityPath",
     "RiskLoop",
+    "ReferenceBacktester",
+    "ReferenceScopeError",
     "RiskLoopRun",
     "UnfilledRemainder",
     "realized_portfolio_state",

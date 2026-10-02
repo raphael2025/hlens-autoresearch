@@ -38,6 +38,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
+from core.contracts.strategy import BacktestProvider
 from core.contracts.synthetic import PlantedEffect
 from core.domain.research import Verdict
 from infrastructure.migration import GoldenRecord, record_golden, save_golden
@@ -75,8 +76,23 @@ def _decimal(value: float) -> Decimal:
     return exact
 
 
-def evaluate(seed: int = SEED, effects: tuple[PlantedEffect, ...] = EFFECTS) -> StrategyEvaluation:
-    """The frozen pipeline: market → TSMOM → BarBacktester → G0 – G4 validation."""
+def evaluate(
+    seed: int = SEED,
+    effects: tuple[PlantedEffect, ...] = EFFECTS,
+    backtester: BacktestProvider | None = None,
+    *,
+    declare_backtester: bool = False,
+) -> StrategyEvaluation:
+    """The frozen pipeline: market → TSMOM → backtester → G0 – G4 validation.
+
+    ``backtester=None`` (the default) is ``BarBacktester()`` and builds exactly the frozen setup.
+    A migration drill injects another ``BacktestProvider`` (ADR-0106), used for the trials and the
+    evaluation; ``declare_backtester=True`` also declares it to the validator
+    (``ValidatorSetup.backtester``), which makes G0 add its structural ``G0.execution_model`` gate
+    and lets the ADR-0060 benchmark re-run under it (undeclared, the validator re-runs a plain
+    ``BarBacktester()`` and reports the benchmark items as not reproduced).
+    """
+    engine: BacktestProvider = BarBacktester() if backtester is None else backtester
     market = RandomWalkMarket().generate(
         gf.BASE_SPEC.model_copy(update={"seed": seed, "effects": effects})
     )
@@ -87,7 +103,7 @@ def evaluate(seed: int = SEED, effects: tuple[PlantedEffect, ...] = EFFECTS) -> 
         outcome_provider=ForwardReturnOutcome((gf.LABEL_SPEC,)),
         manifest_content_hash="7" * 64,
         instrument=gf.SYMBOL,
-        trials=CandidateTrialRunner(candidate, inputs, BarBacktester()),
+        trials=CandidateTrialRunner(candidate, inputs, engine),
         chosen_params=gf.CHOSEN,
         seed=11,
         robustness=gf.TEST_ONLY_PARAMS,
@@ -95,12 +111,13 @@ def evaluate(seed: int = SEED, effects: tuple[PlantedEffect, ...] = EFFECTS) -> 
         bar_volume={(gf.SYMBOL, bar.interval_start): bar.volume for bar in market.bars},
         declared_instruments=(gf.SYMBOL,),
         market_benchmark=True,  # ADR-0060 enforced, as in the lab detector this run mirrors
+        backtester=engine if declare_backtester else None,
     )
     with tempfile.TemporaryDirectory() as scratch:  # the failure registry is not an output
         return evaluate_strategy(
             candidate,
             inputs,
-            backtester=BarBacktester(),
+            backtester=engine,
             registry=FailureRegistry(Path(scratch) / "failures.jsonl"),
             validator=PipelineBacktestValidator(setup),
         )

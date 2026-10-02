@@ -48,3 +48,13 @@ ADR-0047 的迁移框架（golden、diff、rollback evidence、conformance）已
 - [x] 不修改 Validation Constitution / Profile / 成本模型（H1–H3）
 - [x] Domain 层仍无具体技术依赖
 - [x] Research / Application Plane 边界不变
+
+## 修订 1（2026-10-02，PM）：比较基线须与目标同样声明给验证器
+
+实现发现：把目标引擎声明给验证器（`ValidatorSetup.backtester`，ADR-0060 基准才能在目标上重跑）会让 G0 增加结构门 `G0.execution_model`（3 个输出，`report.gates` 37 → 38）。这不是引擎差异，而是"声明 / 未声明"两种验证配置的差异。决定：
+
+1. 迁移比较的基线是**同样声明**给验证器的源引擎运行（`evaluate(backtester=BarBacktester(), declare_backtester=True)`），即同配置对比；排除项仍只有 `backtest.result_hash`，容差仍为 0，不扩大排除集、不放宽容差。
+2. 同配置源基线与已提交 golden 的差异必须恰为上述结构门输出（外加可能过期的 `result_hash`），所有经济输出与 37 个基线门的取值 / 判定逐位相等——以此把迁移结论连回已提交 golden。
+3. 与未声明基线的比较保留为显式反例测试（差异恰为结构门输出），不删除。
+
+实现记录：`plugins/backtest/reference.py`（`ReferenceBacktester`）、`infrastructure/migration/target.py`（`MigrationTarget` / `MigrationReport`）、golden 实验可注入 backtester（默认值与已提交哈希不变）、`tests/infrastructure/migration/test_{backtest,event_bus}_migration.py`、`test_migration_target.py`、`tests/plugins/backtest/test_reference_backtester.py`。迁移报告在同配置基线下 `passed`、回滚 `RESTORED`。
