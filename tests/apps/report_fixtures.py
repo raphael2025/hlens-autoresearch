@@ -5,14 +5,15 @@ README.md``; pinned by ``tests/research/reports/test_console_fixture_writers.py`
 well-formed report of its kind named by its own identity. Tests under ``tests/apps`` (which must
 not import ``research/``) read them to get valid payloads to serve or to tamper with.
 
-Each kind has one latest committed fixture (contract 2.5.0). Kinds whose report changed with a
+Each kind has one latest committed fixture (contract 2.6.0). Kinds whose report changed with a
 contract bump also keep **legacy readable** fixtures (paper deviation additionally keeps its
 pre-ADR-0104 scope-only reports, ``LEGACY_ADR_0104``): the files committed before 2.1.0
 (``LEGACY_2_0_0``, three kinds), before 2.2.0 (``LEGACY_2_1_0``, ADR-0055, six kinds), before
-2.4.0 (``LEGACY_2_2_0``, ADR-0088, six kinds), and before 2.5.0 (``LEGACY_2_4_0``, ADR-0094,
-six kinds), kept so the API and console prove they read earlier reports. A kind may also have named
-**variant** fixtures (``VARIANTS``): further current reports of a distinct state the console must
-show, e.g. an insufficient-evidence degradation check.
+2.4.0 (``LEGACY_2_2_0``, ADR-0088, six kinds), before 2.5.0 (``LEGACY_2_4_0``, ADR-0094,
+six kinds), and before 2.6.0 (``LEGACY_2_5_0``, ADR-0109, six kinds), kept so the API and
+console prove they read earlier reports. A kind may also have named **variant** fixtures
+(``VARIANTS``): further current reports of a distinct state the console must show, e.g. an
+insufficient-evidence degradation check.
 """
 
 from __future__ import annotations
@@ -99,6 +100,20 @@ LEGACY_2_4_0: Final[dict[ReportKind, str]] = {
     ReportKind.PAPER_DEVIATION: "9b9977939e96efbe019543812f3dfe44fc1dfd8307545888aa85a0bc3cb9f431",
 }
 
+#: The legacy readable 2.5.0 fixture ids retained when ADR-0109 advanced the current contract.
+LEGACY_2_5_0: Final[dict[ReportKind, str]] = {
+    ReportKind.VALIDATION_REPORT: (
+        "94a4ba99e5f171599f1740db2fd8f31d525afa3fb926bf994be62b637ef29af5"
+    ),
+    ReportKind.STATE_STRATEGY_MATRIX: (
+        "2e5e2acb4b7d3dac55e657e353a77f7be4bf40ae1a75339e7c47cc5535007b9b"
+    ),
+    ReportKind.ROUTER_PAPER_RUN: "cab124e6a115efcc637989528190ad70d36bd9b771abeba89b2522f49e2c883c",
+    ReportKind.GATE_CALIBRATION: "72b8b845712de9f100887c80bb6709ec4ce0331d8dded928af623e8ee9479fb6",
+    ReportKind.ROUTER_STOP: "18769565b5e8c9670d8bc0915e4edf00ddf1fa3b45bac7626f4d3b51dac709aa",
+    ReportKind.PAPER_DEVIATION: "c952540590d89532d0a58ce06300b9f868220f2750a4a19449677716438a209a",
+}
+
 # ADR-0081 requires both original descriptive 1.0.0 paper-deviation reports to remain readable.
 # The generation registry pins one report per contract generation; these ids retain both
 # original descriptive 1.0.0 reports alongside those generation pins.
@@ -129,6 +144,7 @@ LEGACY: Final[dict[str, dict[ReportKind, str]]] = {
     "2.1.0": LEGACY_2_1_0,
     "2.2.0": LEGACY_2_2_0,
     "2.4.0": LEGACY_2_4_0,
+    "2.5.0": LEGACY_2_5_0,
 }
 
 

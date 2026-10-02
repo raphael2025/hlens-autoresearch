@@ -12,7 +12,7 @@ import {
 } from "./routerPaperRun.ts";
 
 // apps/web/fixtures/router_paper_run/: the run of tests/research/router/test_paper.py, current
-// 2.5.0 and retained 2.4.0 / 2.2.0 / 2.1.0 reports. It has no legacy 2.0.0 file.
+// 2.6.0 and retained 2.5.0 / 2.4.0 / 2.2.0 / 2.1.0 reports. It has no legacy 2.0.0 file.
 const fixtures = fixtureEnvelopes("router_paper_run");
 const [fixture] = fixtures;
 
@@ -23,7 +23,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("every committed fixture parses, named by its run_hash", () => {
-  assert.equal(fixtures.length, 4);
+  assert.equal(fixtures.length, 5);
   for (const envelope of fixtures) {
     const run = payloadOf(envelope.payload);
     assert.equal(run.run_hash, envelope.id);

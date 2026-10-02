@@ -318,7 +318,7 @@ def test_paper_deviation_supported_versions_are_exactly_the_three_generations() 
     assert dto.supported is False and dto.schema_version == "2.2.0"
 
 
-# --- ADR-0094: the default Contract envelope bumped to 2.5.0 (validation_report only) ---------
+# --- ADR-0109: the default Contract envelope bumped to 2.6.0 (validation_report only) ---------
 #
 # validation_report is the one ReportKind whose payload is a direct ``Contract.model_dump()``
 # (research/reports/validation.py); every other kind's schema_version is an independent,
@@ -326,32 +326,33 @@ def test_paper_deviation_supported_versions_are_exactly_the_three_generations() 
 # research/router/deviation.py, research/synthetic_lab/gate_calibration.py), unrelated to
 # core.domain.base.CONTRACT_SCHEMA_VERSION. ADR-0088 is an additive minor (composed strategies,
 # event bar spec, peak equity, synthetic effects, volatility-scaling barrier) that does not touch
-# ValidationReport's own fields, so 2.5.0 is registered with the same required-field shape as
-# 2.3.0 (itself unchanged from 2.2.0, ADR-0077).
+# ValidationReport's own fields; nor do ADR-0094 (2.5.0, PIT conflict evidence) or ADR-0109 (2.6.0,
+# the v3 manifest's legacy Quality binding), so 2.6.0 is registered with the same required-field
+# shape as 2.3.0 (itself unchanged from 2.2.0, ADR-0077).
 
 
 def test_validation_report_baseline_tracks_the_current_contract_envelope() -> None:
-    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.5.0"
-    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"} <= REPORT_DTOS[
+    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.6.0"
+    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"} <= REPORT_DTOS[
         ReportKind.VALIDATION_REPORT
     ].supported_versions
 
 
-def test_validation_report_2_5_0_is_a_known_version_with_the_2_3_0_shape(tmp_path: Path) -> None:
-    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0094); it
+def test_validation_report_2_6_0_is_a_known_version_with_the_2_3_0_shape(tmp_path: Path) -> None:
+    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0109); it
     must be served as a supported DTO, not fall back to raw-JSON "unknown version" display."""
     report = validation_report()
-    assert report.schema_version == "2.5.0"  # core/domain/base.py's new Contract default
+    assert report.schema_version == "2.6.0"  # core/domain/base.py's new Contract default
     payload = report.model_dump(mode="json")
 
     dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
     assert dto.supported is True
-    assert dto.schema_version == "2.5.0"
+    assert dto.schema_version == "2.6.0"
 
     report_id = report.content_hash()
     _write(tmp_path, ReportKind.VALIDATION_REPORT, report_id, payload)
     envelope = ReportStore(tmp_path).get(ReportKind.VALIDATION_REPORT, report_id)
-    assert envelope.payload["schema_version"] == "2.5.0"
+    assert envelope.payload["schema_version"] == "2.6.0"
 
     client = TestClient(create_app(reports_root=tmp_path))
     detail = client.get(f"/reports/validation_report/{report_id}")
@@ -363,7 +364,7 @@ def test_validation_report_2_5_0_is_a_known_version_with_the_2_3_0_shape(tmp_pat
 
 def test_validation_report_2_3_0_legacy_payload_remains_supported(tmp_path: Path) -> None:
     """A pre-ADR-0088 payload persisted with the prior default envelope (2.3.0) must keep
-    resolving as a supported DTO -- registering 2.5.0 must not drop 2.3.0 read access."""
+    resolving as a supported DTO -- registering 2.6.0 must not drop 2.3.0 read access."""
     report = validation_report()
     payload = report.model_dump(mode="json")
     payload["schema_version"] = "2.3.0"
@@ -371,6 +372,16 @@ def test_validation_report_2_3_0_legacy_payload_remains_supported(tmp_path: Path
     dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
     assert dto.supported is True
     assert dto.schema_version == "2.3.0"
+
+
+def test_validation_report_2_5_0_payload_remains_supported() -> None:
+    """A payload persisted at the prior default envelope (2.5.0, ADR-0094) keeps resolving as a
+    supported DTO after ADR-0109 registers 2.6.0."""
+    payload = validation_report().model_dump(mode="json")
+    payload["schema_version"] = "2.5.0"
+    dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
+    assert dto.supported is True
+    assert dto.schema_version == "2.5.0"
 
 
 # --- integration: ReportStore / the API apply the DTO check before identity ---------------------

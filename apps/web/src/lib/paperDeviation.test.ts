@@ -107,7 +107,8 @@ const byVersion = (version: string) =>
 test("the committed fixtures cover every generation: unscoped 1.0.0, scope-only 2.0.0, run-bound 2.1.0", () => {
   assert.equal(byVersion("1.0.0").length, 2);
   assert.equal(byVersion("2.0.0").length, 4);
-  assert.equal(byVersion("2.1.0").length, 4);
+  // one run-bound report per contract generation: 2.1.0, 2.2.0, 2.4.0, 2.5.0 and current 2.6.0
+  assert.equal(byVersion("2.1.0").length, 5);
   for (const [version, kind] of [["1.0.0", "unscoped"], ["2.0.0", "scope_only"], ["2.1.0", "run_bound"]] as const) {
     for (const item of byVersion(version)) {
       assert.equal(bindingKind(payloadOf(item.payload)), kind, `${version} ${item.id}`);

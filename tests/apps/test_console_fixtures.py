@@ -73,7 +73,7 @@ def test_every_fixture_round_trips_through_the_store_and_the_api(kind: ReportKin
 def test_validation_report_fixtures_have_a_verdict() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.VALIDATION_REPORT)
-    assert len(envelopes) == 5  # current 2.5.0 fixture plus readable version history
+    assert len(envelopes) == 6  # current 2.6.0 fixture plus readable version history
     for envelope in envelopes:
         assert envelope.payload["verdict"] in {"PASS", "FAIL", "INCONCLUSIVE"}
         assert isinstance(envelope.payload["gates"], list) and envelope.payload["gates"]
@@ -89,7 +89,7 @@ def test_research_loop_round_fixture_has_a_status() -> None:
 def test_state_strategy_matrix_fixtures_have_cells() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.STATE_STRATEGY_MATRIX)
-    assert len(envelopes) == 5  # current 2.5.0 fixture plus readable version history
+    assert len(envelopes) == 6  # current 2.6.0 fixture plus readable version history
     for envelope in envelopes:
         assert envelope.payload["matrix_hash"] == envelope.id
         assert isinstance(envelope.payload["cells"], list) and envelope.payload["cells"]
@@ -98,7 +98,7 @@ def test_state_strategy_matrix_fixtures_have_cells() -> None:
 def test_router_paper_run_fixtures_have_equity_curves() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.ROUTER_PAPER_RUN)
-    assert len(envelopes) == 4
+    assert len(envelopes) == 5
     for envelope in envelopes:
         assert envelope.payload["run_hash"] == envelope.id
         assert envelope.payload["gross_equity_curve"]
@@ -108,7 +108,7 @@ def test_router_paper_run_fixtures_have_equity_curves() -> None:
 def test_gate_calibration_fixtures_carry_the_evidence_only_disclaimer() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.GATE_CALIBRATION)
-    assert len(envelopes) == 5  # current 2.5.0 fixture plus readable version history
+    assert len(envelopes) == 6  # current 2.6.0 fixture plus readable version history
     for envelope in envelopes:
         assert envelope.payload["disclaimer"] == "evidence only — not a Profile decision"
         candidates = envelope.payload["candidates"]
@@ -163,7 +163,7 @@ def test_a_legacy_fixture_is_still_served(version: str, kind: ReportKind) -> Non
 
 def test_the_latest_committed_validation_report_fixture_has_exact_gate_values() -> None:
     current = fixture(ReportKind.VALIDATION_REPORT).payload
-    assert current["schema_version"] == "2.5.0"
+    assert current["schema_version"] == "2.6.0"
     for payload in (current, legacy_fixture(ReportKind.VALIDATION_REPORT, "2.1.0").payload):
         exact = [gate for gate in payload["gates"] if "value_exact" in gate]
         assert exact and all(isinstance(gate["value_exact"], str) for gate in exact)
@@ -176,7 +176,7 @@ def test_the_latest_committed_validation_report_fixture_has_exact_gate_values() 
 def test_router_stop_fixtures_name_their_reason_and_hash() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.ROUTER_STOP)
-    assert len(envelopes) == 4
+    assert len(envelopes) == 5
     for envelope in envelopes:
         assert envelope.payload["reason"] in {"no_validated_candidate", "all_routes_flat"}
         assert envelope.payload["stop_hash"] == envelope.id
@@ -213,7 +213,7 @@ def test_paper_deviation_fixtures_compare_every_mark() -> None:
     envelopes = store.list(ReportKind.PAPER_DEVIATION)
     # current, both original descriptive reports, versioned history (2.1.0 run-bound and the
     # pre-ADR-0104 scope-only 2.0.0 file of each generation)
-    assert len(envelopes) == 10
+    assert len(envelopes) == 11
     runs = {run.id: run for run in store.list(ReportKind.ROUTER_PAPER_RUN)}
     for envelope in envelopes:
         payload = envelope.payload

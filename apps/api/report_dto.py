@@ -63,8 +63,8 @@ class ReportDTO:
 # validator owns required-field errors so malformed data gets the relevant reason.
 REPORT_DTOS: Final[dict[ReportKind, ReportDTO]] = {
     ReportKind.VALIDATION_REPORT: ReportDTO(
-        "2.5.0",
-        frozenset({"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"}),
+        "2.6.0",
+        frozenset({"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"}),
         ("schema_version", "gates", "verdict"),
     ),
     ReportKind.RESEARCH_LOOP_ROUND: ReportDTO(
