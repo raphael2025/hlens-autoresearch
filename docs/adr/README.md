@@ -107,6 +107,7 @@
 | [0100](0100-complete-remaining-foundation-code.md) | 补完剩余底层代码（Raphael 直接指令） | Accepted（2026-09-30）；P7 执行 Provider、横截面 rank/quantile、P11 指标与默认环境、ADR-0051 政策表、E1 有界化、P12 可选提案；运行开关默认关闭；修订 1：temporal 滞后 / 发生时刻窗口 / 上游哈希绑定（计划格式 1.3.0） |
 | [0101](0101-dataset-v3-production-entry.md) | Dataset v3 生产入口接线 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：显式 JSON `DatasetBuildProfile`（无默认值）、`infrastructure.dataset.cli`、verifier 工厂、公开 identity registry / PIT 钉定、上游入口、v2 测试迁移；不选 DQ-9 数值 |
 | [0102](0102-state-run-entry.md) | State 运行、读回与诊断入口 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：`research.states.run_cli compute`、`infrastructure.state.run_cli show/list`、`research.states.report_cli`；默认零副作用；不接全链路输入 / worker / API |
+| [0103](0103-p7-plan-binding-and-admission-handoff.md) | P7 计划绑定、准入交接与横截面执行接线 | Accepted（2026-10-02；PM，于 phase/1 重新接受；修订 1 对齐既有 cs 执行）：`hlens.p7.plan@1.0.0` 保留键绑定、evidence 交叉核对、拒绝审计、COMMIT→执行交接；开关默认关闭，关闭时逐字节不变 |
 | [0104](0104-paper-deviation-run-binding.md) | 纸面偏差的运行绑定与兼容规则 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：修订 ADR-0079；scope 1.1.0 / payload 2.1.0 运行绑定，cost_model 不同一律拒绝，旧报告只读、标为 scope-only |
 | [0105](0105-p11-operational-completion.md) | P11 运行周边补全与 D-P11-WINDOW | Accepted（2026-10-02；PM，于 phase/1 重新接受）：D-P11-WINDOW = 固定日历；Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator、resolver 测试；修订 ADR-0074 §9 |
 | [0106](0106-reference-backtest-migration-target.md) | P14 迁移目标——参考回测引擎 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：独立 `ReferenceBacktester` 为迁移对象（容差 0，不替换生产默认），EventBus 内存→文件为搭档演练；`MigrationTarget` / `MigrationReport`；关闭 P14-TARGET |
