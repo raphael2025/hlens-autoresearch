@@ -109,6 +109,7 @@
 | [0102](0102-state-run-entry.md) | State 运行、读回与诊断入口 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：`research.states.run_cli compute`、`infrastructure.state.run_cli show/list`、`research.states.report_cli`；默认零副作用；不接全链路输入 / worker / API |
 | [0104](0104-paper-deviation-run-binding.md) | 纸面偏差的运行绑定与兼容规则 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：修订 ADR-0079；scope 1.1.0 / payload 2.1.0 运行绑定，cost_model 不同一律拒绝，旧报告只读、标为 scope-only |
 | [0105](0105-p11-operational-completion.md) | P11 运行周边补全与 D-P11-WINDOW | Accepted（2026-10-02；PM，于 phase/1 重新接受）：D-P11-WINDOW = 固定日历；Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator、resolver 测试；修订 ADR-0074 §9 |
+| [0106](0106-reference-backtest-migration-target.md) | P14 迁移目标——参考回测引擎 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：独立 `ReferenceBacktester` 为迁移对象（容差 0，不替换生产默认），EventBus 内存→文件为搭档演练；`MigrationTarget` / `MigrationReport`；关闭 P14-TARGET |
 | [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | Accepted（2026-10-02；PM 依 Raphael 直接指令）：方案 A，一个逻辑单元 = 一个 snapshot（Canonical 与 Raw 归档元素），infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；未实现；残余"随单元数 K 增长"记为 D-META-AGE |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
