@@ -24,6 +24,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 | `recovery_review.py` | `failed_round_review_packet(DurableState)`：只对最后记录的 failed experiment stage 生成纯内存、hash-bound 证据投影；不打开目录、不触发写路径，不等于恢复操作 |
+| `p7_plan.py` / `p7_admission.py` | ADR-0103 D2 / D3（默认关闭）：`LoopWiring.p7_plans`（可选 `P7PlanSource`，默认 `None`）（声明的计划、`P7ExecutionSwitch`、allowlist；仅在有计划准入日志的持久状态 v4 / v5 / v6 上组合，并进入指纹 `p7_plans`）。每轮在第一次 journal 写入前，hypothesis 阶段对第一个待处理计划执行：纯检查（横截面节点 → `cross_sectional_loop_unsupported`、编译、根策略与 Provider、产生绑定、`validate_complete_experiment_bindings`、`cross_check_admission_evidence`、非 LLM / 本族 / 可运行 / 新身份）→ `plan_admission()` PREPARE → complete → 以 COMMIT 为证明的 `p7_strategy_candidates`；假设作为本轮 trial（origin `p7_plan`，在 `registered` 最前）。纯检查阶段的拒绝不写任何字节、不登记 trial，摘要记 `p7_plan_rejection{plan_hash, code, where}` 与累计 `rejected_plans`。已知限制：准入过 P7 计划的目录重开时被拒绝（P7 候选的重建未定义） |
 | `replacement.py` | 可选的循环内替换提案触发（ADR-0100 第 7 项，默认关闭）：`ReplacementTrigger`（显式 `enabled=True`、`every_rounds`、预登记的独立密封窗口、调用方的 `source` 与 `ProposalLedger`）、`ReplacementInputs`、`ReplacementTriggerStage`（包装 `EvolutionStage`，同名 `evolution`）；见下「循环内替换提案触发」 |
 
 要点：

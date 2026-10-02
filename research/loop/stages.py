@@ -56,7 +56,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from apps.worker.loop import RoundContext, StageResult, StageUsage
 from core.contracts.feature import FeatureProvider
@@ -116,6 +116,9 @@ from research.loop.trials import (
     failure_of,
 )
 from research.validation.splits import midnight_utc
+
+if TYPE_CHECKING:
+    from research.loop.p7_admission import P7RoundAdmission
 
 __all__ = [
     "NOT_REPRODUCIBLE_GATES",
@@ -434,7 +437,16 @@ class HypothesisStage:
     charged for every pending cell. A pending cell is one without a recorded ``TrialOutcome``. If
     a stage fails after registration but before the experiment stage records outcomes, a later
     round can retry those same registered cells idempotently. Completed cells are not run again.
-    The summary's ``batch`` key names the grid and the reviewed allowlist.
+    The summary's ``batch`` key names the grid and the reviewed allowlist. A P7 plan candidate
+    (``StrategyCandidate.plan_record``) is refused as a batch strategy: P7 plans enter only
+    through ``p7`` (ADR-0103 D3).
+
+    ``p7`` (optional; ``None`` changes nothing): ``LoopWiring.p7_plans`` composed over the durable
+    state (``research.loop.p7_admission.P7RoundAdmission``). Before the round's first journal
+    write it admits or rejects the source's pending plan; admitted hypotheses are this round's
+    trials (origin ``p7_plan``, listed first in ``registered``) and the summary gains ``p7_plan``
+    (the COMMIT), ``p7_plan_rejection`` (``{plan_hash, code, where}``) and ``rejected_plans``
+    (every plan rejected so far) — ADR-0103 D2.
 
     ``knowledge_source`` (optional; ``None`` changes nothing): a declared ``KnowledgeProvider`` +
     ``KnowledgeQuery`` searched once per round (``KnowledgeSource.search``). Its items become
@@ -462,6 +474,7 @@ class HypothesisStage:
         llm_content: ContentResolver | None = None,
         batch: HypothesisBatch | None = None,
         knowledge_source: KnowledgeSource | None = None,
+        p7: P7RoundAdmission | None = None,
     ) -> None:
         if (llm is None) != (llm_prompt is None):
             raise ValueError("an LLM source needs both a provider and a prompt")
@@ -491,6 +504,7 @@ class HypothesisStage:
         self._batch = batch
         self._source = knowledge_source
         self._searched: tuple[tuple[str, int], KnowledgeSearch] | None = None
+        self._p7 = p7
 
     def _check_batch(self, batch: HypothesisBatch) -> None:
         """Every cell runs here as declared, or the stage is refused (see class docs)."""
@@ -502,6 +516,8 @@ class HypothesisStage:
             candidate = self._memory.strategies.get(str(spec.ref))
             if candidate is None or candidate.spec.content_hash() != spec.content_hash():
                 raise ValueError(f"the batch strategy {spec.ref} is not in the loop's catalog")
+            if candidate.plan_record is not None:  # ADR-0103 D3: P7 plans only through p7
+                raise ValueError(f"the batch strategy {spec.ref} is a P7 plan candidate")
         for hypothesis in batch.hypotheses:
             point = trial_point(hypothesis)
             candidate = self._memory.strategies.get(f"strategy:{point.strategy}")
@@ -549,13 +565,16 @@ class HypothesisStage:
         retry = self._retry_reevaluations()
         if retry:
             return self._retry_usage(retry)
-        return self._usage(*self._plan(ctx))
+        return self._usage(*self._plan(ctx), p7=0 if self._p7 is None else self._p7.trials())
 
     def run(self, ctx: RoundContext) -> StageResult:
         retry = self._retry_reevaluations()
         if retry:
             return self._run_retry(retry)
         fresh, drafts, again, batch = self._plan(ctx)
+        # ADR-0103 D3: the P7 admission runs before any other journal write of the round
+        p7 = None if self._p7 is None else self._p7.run(ctx.round_index)
+        p7_registered = () if p7 is None else p7.hypotheses
         batch_summary: dict[str, Any] = {}
         batched = batch
         pre_registered: tuple[Hypothesis, ...] = ()
@@ -602,6 +621,17 @@ class HypothesisStage:
                 }
         registered: list[Hypothesis] = []
         llm_calls: dict[str, LlmCall] = {}
+        if p7 is not None and p7.admission is not None:
+            for hypothesis in p7_registered:
+                self._admit(
+                    ctx,
+                    hypothesis,
+                    (
+                        f"hypothesis:{hypothesis.ref}#{hypothesis.content_hash()}",
+                        f"p7_plan:{p7.plan_hash}",
+                        f"plan_admission:{p7.admission.prepare.transaction_id}",
+                    ),
+                )
         search = self._search(ctx)
         searched: set[tuple[str, str]] = set()
         if search is not None:
@@ -657,9 +687,10 @@ class HypothesisStage:
         for hypothesis in again:  # pre-registered as new trials before they run
             if not self._memory.ledger.register_reevaluation(hypothesis, attempt):
                 raise ValueError(f"{hypothesis.ref} was already re-evaluated as {attempt}")
+        listed = (*p7_registered, *registered)
         summary = {
-            "registered": [str(h.ref) for h in registered],
-            "hypothesis_hashes": [h.content_hash() for h in registered],
+            "registered": [str(h.ref) for h in listed],
+            "hypothesis_hashes": [h.content_hash() for h in listed],
             "reevaluations": [str(h.ref) for h in again],
             "reevaluation_attempt": attempt if again else None,
             "family_trials": self._memory.ledger.trials(self._family),
@@ -669,10 +700,19 @@ class HypothesisStage:
         }
         if search is not None:
             summary["knowledge_search"] = {**search.summary(), "registered": from_search}
+        if self._p7 is not None:  # the keys exist only with P7 plans (records unchanged)
+            rejection = None if p7 is None else p7.rejection_summary()
+            summary["p7_plan"] = None if p7 is None else p7.admitted_summary()
+            summary["p7_plan_rejection"] = rejection
+            summary["rejected_plans"] = [
+                *self._p7.rejected(),
+                *([] if rejection is None else [rejection["plan_hash"]]),
+            ]
         return StageResult(
             summary,
-            self._usage(fresh, drafts, again, batch),
+            self._usage(fresh, drafts, again, batch, p7=len(p7_registered)),
             {
+                "p7_registered": p7_registered,
                 "registered": tuple(registered),
                 "reevaluations": tuple((h, attempt) for h in again),
                 "llm_calls": llm_calls,
@@ -728,10 +768,12 @@ class HypothesisStage:
         drafts: tuple[HypothesisDraft, ...],
         again: tuple[Hypothesis, ...],
         batch: tuple[Hypothesis, ...],
+        *,
+        p7: int = 0,
     ) -> StageUsage:
         calls = 0 if self._llm is None else 1
         return StageUsage(
-            trials=len(fresh) + len(drafts) + len(again) + len(batch),
+            trials=len(fresh) + len(drafts) + len(again) + len(batch) + p7,
             llm_cost_units=self._llm_cost * calls,
             compute_seconds=self._compute,
         )
