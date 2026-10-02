@@ -171,8 +171,13 @@ def test_spooled_archive_closes_when_row_commit_aborts(
     original_parse = parse_archive_spooled
     parsed_spools: list[SpooledArchive] = []
 
-    def capture_spool(request: ArchiveParseRequest, storage: Any) -> Any:
-        outcome = original_parse(request, storage)
+    def capture_spool(
+        request: ArchiveParseRequest,
+        storage: Any,
+        *,
+        scratch_directory: Path | None = None,
+    ) -> Any:
+        outcome = original_parse(request, storage, scratch_directory=scratch_directory)
         if isinstance(outcome, SpooledArchive):
             parsed_spools.append(outcome)
         return outcome
