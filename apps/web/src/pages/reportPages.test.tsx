@@ -6,7 +6,14 @@ import { checkSummary, asDegradationCheckPayload, degradationLabel } from "../li
 import { asEventStatisticsPayload, statisticsLabel } from "../lib/eventStatistics.ts";
 import { fixtureEnvelopes } from "../lib/fixtures.test-util.ts";
 import { asCalibrationPayload } from "../lib/gateCalibration.ts";
-import { asPaperDeviationPayload, deviationLabel, summaryRows } from "../lib/paperDeviation.ts";
+import {
+  asPaperDeviationPayload,
+  BINDING_LABELS,
+  bindingKind,
+  deviationLabel,
+  runBindingRows,
+  summaryRows,
+} from "../lib/paperDeviation.ts";
 import { asRetroAuditPayload, retroAuditLabel } from "../lib/retroAudit.ts";
 import { asRouterStopPayload, reasonText, routerStopLabel, strategyRows } from "../lib/routerStop.ts";
 import { asStateDiagnosticsPayload, diagnosticsLabel } from "../lib/stateDiagnostics.ts";
@@ -136,6 +143,8 @@ const CASES: Case[] = [
         "汇总（描述性，无阈值）",
         "逐 mark 偏差",
         report.reference_provider,
+        BINDING_LABELS[bindingKind(report)],
+        ...runBindingRows(report).flatMap((row) => [row.label, row.value]),
         ...summaryRows(report.summary).flatMap((row) => [row.label, row.value]),
         ...report.marks.map((mark) => mark.time),
       ];

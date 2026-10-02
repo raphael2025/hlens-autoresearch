@@ -42,11 +42,12 @@ is excluded from the per-stage growth verdict. Then, in order, each in a new chi
   ``verify_archive_elements``. The verifier retains at most one strict D1 Arrow-batch spool,
   placed under canonical scratch and reused across windows; this stage measures that path, not
   the normalizer's whole proving pass (that is inside ``replay``);
-- ``write_crash`` — ``normalize_unit`` writing the unit through a catalog proxy that raises right
-  after its ``crash_after``-th Canonical commit (half the plan): the write path, then an
-  interrupted write;
-- ``resume`` — ``normalize_unit`` in a new process over that committed prefix: the proving survey,
-  the missing batches' commit + read-back and the close;
+- ``write_crash`` — ``normalize_unit`` writing the unit through a catalog proxy that, ADR-0108,
+  raises once the unit's one commit has verified and staged every data file but before its
+  snapshot is committed: planning, the unit fingerprint and staging, then an interrupted write
+  (nothing committed; the staged files are orphans);
+- ``resume`` — ``normalize_unit`` in a new process after that crash: the proving survey, the whole
+  unit's staging + one-snapshot commit, its once-per-unit read-back and the close;
 - ``replay`` — ``normalize_unit`` again over the complete unit (the proving survey, no commit);
 - ``read_batch`` — a normalizer on a ``PinnedCatalogView`` (what PIT does) proving one committed
   batch with ``verify_unit(..., arrival_seqs={row})``: the middle batch of the batch ids actually
@@ -215,6 +216,7 @@ from infrastructure.tools.capacity_probe import (
     _KNOWLEDGE_NORMALIZE,
     DATA_TYPE,
     SYMBOL,
+    TICKS_PER_SECOND,
     _agg_trade_lines,
     _dataset_pipeline,
     _dataset_pit_spec,
@@ -402,6 +404,21 @@ class _CrashAfter:
             if self.count >= self._limit:
                 raise _ProbeCrash(f"crashed after {self.count} Canonical commits")
         return result
+
+    def commit_unit(self, request: CommitRequest, batches: Any, **kwargs: Any) -> CommitResult:
+        """ADR-0108: die once the unit is fully staged, before its one snapshot is committed."""
+        if request.table != CANONICAL_TRADES.table:
+            return self._inner.commit_unit(request, batches, **kwargs)
+        self.count += 1
+        passes = [0]
+
+        def staged_then_crash() -> Iterator[Any]:
+            passes[0] += 1
+            yield from batches()
+            if passes[0] >= 2:  # the second pass is the staging pass
+                raise _ProbeCrash("crashed after staging the unit, before its commit")
+
+        return self._inner.commit_unit(request, staged_then_crash, **kwargs)
 
 
 class _Clock:
@@ -660,6 +677,69 @@ def _setup(workdir: Path, rows: int, d2_batch: int) -> dict[str, Any]:
         return {"unit": outcome.archive_revision_id}
 
 
+#: Rows of each prefilled unit (ADR-0108 §9(e)): the K axis measures history, not data volume.
+PREFILL_UNIT_ROWS: Final = 2
+
+
+def _prefill(workdir: Path, units: int, microbatch: int, d2_batch: int) -> dict[str, Any]:
+    """Commit ``units`` small archive units before any measured unit (ADR-0108 §9(e)).
+
+    Each prefilled unit is a real ``PREFILL_UNIT_ROWS``-line aggTrades archive of its own earlier
+    UTC day (unit ``k`` covers ``DAY - (k + 1)`` days), ingested by the D2 store and normalized,
+    so the archive, Raw element and Canonical tables carry ``units`` committed units of history
+    (snapshots, manifests and metadata) without sharing the measured unit's partition. Fixture
+    preparation in the parent process; never measured.
+    """
+    started = time.monotonic()
+    with _opened(workdir, create=True) as (adapter, storage):
+        store = RawRevisionStore(
+            adapter, storage, clock=_Clock(_KNOWLEDGE_INGEST), microbatch_rows=d2_batch
+        )
+        normalizer = CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=_Clock(_KNOWLEDGE_NORMALIZE),
+            microbatch_rows=microbatch,
+        )
+        try:
+            for index in range(units):
+                day = PROBE_DAY - timedelta(days=index + 1)
+                day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+                step = (86_400 * TICKS_PER_SECOND) // PREFILL_UNIT_ROWS
+                start_ticks = int(day_start.timestamp()) * TICKS_PER_SECOND
+                lines = [
+                    f"{1_000 + row},50000.00000000,0.01000000,{2_000 + row * 2},"
+                    f"{2_001 + row * 2},{start_ticks + row * step},False,True"
+                    for row in range(PREFILL_UNIT_ROWS)
+                ]
+                collected = _publish_archive(storage, lines, day=day)
+                context = ArchiveContext(
+                    request_id=f"e1-prefill-{index}",
+                    data_type=DATA_TYPE,
+                    collector_id=COLLECTOR_ID,
+                    collector_version=COLLECTOR_VERSION,
+                    source=ARCHIVE_SOURCE,
+                )
+                outcome = store.ingest(collected, context)
+                if not isinstance(outcome, ArchiveIngested):
+                    raise ProbeError(f"prefill archive {index} was not ingested: {outcome!r}")
+                normalizer.normalize_unit(_RAW, outcome.archive_revision_id)
+        finally:
+            normalizer.close()
+        heads = _heads(adapter)
+        snapshots = {
+            table: sum(1 for _ in history_from(adapter, table, head))
+            for table, head in heads.items()
+        }
+    return {
+        "units": units,
+        "unit_rows": PREFILL_UNIT_ROWS,
+        "snapshots": snapshots,
+        "build_seconds": round(time.monotonic() - started, 3),
+    }
+
+
 def _validate_dataset_v3_config(config: Mapping[str, int]) -> dict[str, int]:
     """Validate explicit DQ-9 inputs without choosing or defaulting any parameter."""
     if set(config) != set(DATASET_V3_RULE_KEYS):
@@ -810,9 +890,14 @@ def _middle_committed_batch(adapter: PyIcebergCatalogAdapter, unit: str) -> tupl
     raise ProbeError(f"unit {unit} lost its middle Canonical batch during preparation")
 
 
-def _parse_batch_id(unit: str, batch_id: str) -> tuple[int, int, int]:
-    """(unit rows, chunk, index) of one of the unit's batch ids."""
+def _parse_batch_id(unit: str, batch_id: str) -> tuple[int, int, int | None]:
+    """(unit rows, chunk, index) of one of the unit's batch ids; ``index`` is ``None`` for an
+    ADR-0108 one-snapshot unit commit (``<rows>.<chunk>.unit``)."""
     fields = batch_id[len(_unit_prefix(unit)) :].split(".")
+    if len(fields) == 3 and fields[2] == "unit":
+        if not all(part.isascii() and part.isdigit() for part in fields[:2]):
+            raise ProbeError(f"unexpected Canonical batch id {batch_id!r}")
+        return int(fields[0]), int(fields[1]), None
     if len(fields) != 3 or not all(part.isascii() and part.isdigit() for part in fields):
         raise ProbeError(f"unexpected Canonical batch id {batch_id!r}")
     unit_rows, chunk, index = (int(part) for part in fields)
@@ -962,11 +1047,10 @@ def _stage(
         return verify
 
     if stage == "write_crash":
-        crash_after = _crash_after(rows, microbatch)
         if batches < 2:
             raise ProbeError("write_crash needs a plan of at least two batches (N > M)")
         clock = _Clock(_KNOWLEDGE_NORMALIZE)
-        proxy = _CrashAfter(adapter, crash_after)
+        proxy = _CrashAfter(adapter, _crash_after(rows, microbatch))
         writer = CanonicalNormalizer(
             proxy,
             storage,
@@ -976,15 +1060,18 @@ def _stage(
         )
 
         def write_crash() -> tuple[dict[str, Any], object]:
+            head = _heads(adapter).get(CANONICAL_TRADES.table)
             try:
                 writer.normalize_unit(_RAW, unit)
             except _ProbeCrash:
-                if proxy.count != crash_after:
+                # ADR-0108: one unit commit; the crash comes after it is fully staged and before
+                # its snapshot, so the Canonical head must not have moved.
+                if proxy.count != 1 or _heads(adapter).get(CANONICAL_TRADES.table) != head:
                     raise ProbeError(
-                        f"crashed after {proxy.count} commits, expected {crash_after}"
+                        f"crashed after {proxy.count} unit commits or with a moved head"
                     ) from None
                 return {
-                    "crash_after": crash_after,
+                    "crash": "after staging the unit, before its commit",
                     "batches": batches,
                     "clock_readings": clock.readings,
                 }, writer
@@ -1001,7 +1088,6 @@ def _stage(
             clock=clock,
             microbatch_rows=microbatch,
         )
-        crash_after = _crash_after(rows, microbatch)
 
         def normalize() -> tuple[dict[str, Any], object]:
             out = writer.normalize_unit(_RAW, unit)
@@ -1013,13 +1099,16 @@ def _stage(
                 "replayed": out.replayed,
                 "clock_readings": clock.readings,
             }
-            expected_already = crash_after if stage == "resume" else batches
+            # ADR-0108: the crashed write committed nothing, so resume writes the whole unit.
+            expected_already = 0 if stage == "resume" else batches
             if (
                 out.revision_count != rows
                 or out.batch_count != batches
                 or already != expected_already
                 or out.replayed is not (stage == "replay")
-                or clock.readings != 0
+                # ADR-0108: the crashed write committed nothing, so resume is one fresh write
+                # (one clock reading); a replay reads none.
+                or clock.readings != (1 if stage == "resume" else 0)
             ):
                 raise ProbeError(f"{stage} returned an unexpected result: {facts}")
             return facts, out
@@ -1028,12 +1117,23 @@ def _stage(
 
     if stage == "read_batch":
         committed_count, batch_id, added = _middle_committed_batch(adapter, unit)
-        unit_rows, chunk, index = _parse_batch_id(unit, batch_id)
-        if unit_rows != rows or committed_count != batches:
+        unit_rows, chunk, parsed_index = _parse_batch_id(unit, batch_id)
+        if parsed_index is None:
+            # ADR-0108: one unit snapshot; prove the middle verification window inside it.
+            if unit_rows != rows or committed_count != 1 or added != rows:
+                raise ProbeError(
+                    f"read_batch found unit ({unit_rows} rows, {committed_count} commits, "
+                    f"{added} added), expected ({rows}, 1, {rows})"
+                )
+            index = (batches - 1) // 2
+            added = min(chunk, rows - index * chunk)
+        elif unit_rows != rows or committed_count != batches:
             raise ProbeError(
                 f"read_batch found plan ({unit_rows} rows, {committed_count} batches), "
                 f"expected ({rows}, {batches})"
             )
+        else:
+            index = parsed_index
         sample = _first_scanned_value(
             adapter,
             CANONICAL_TRADES.table,
@@ -1661,9 +1761,16 @@ def run_probe(
     keep_workdirs: bool = False,
     staged_diagnostics: bool = False,
     dataset_v3_config: Mapping[str, int] | None = None,
+    prefill_units: int = 0,
 ) -> dict[str, Any]:
-    """Measure every stage at every N, ``repeats`` times; never raises for a failed child."""
+    """Measure every stage at every N, ``repeats`` times; never raises for a failed child.
+
+    ``prefill_units`` K > 0 (ADR-0108 §9(e)): every measured fixture starts from the same K
+    committed small units, built once (``_prefill``) at a fixed work path and restored there
+    byte for byte before each run (Iceberg metadata records absolute paths)."""
     _validate_sizes(sizes)
+    if isinstance(prefill_units, bool) or not isinstance(prefill_units, int) or prefill_units < 0:
+        raise ProbeError("prefill_units must be an int >= 0")
     if repeats < 1:
         raise ValueError("repeats must be at least 1")
     if not math.isfinite(interval) or interval <= 0:
@@ -1725,6 +1832,7 @@ def run_probe(
             "child_rss_limit_mib": child_rss_limit_mib,
             "fixture": "infrastructure.tools.capacity_probe synthetic aggTrades archive",
             "staged_diagnostics": staged_diagnostics,
+            "prefill_units": prefill_units,
             "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
         },
         "code_line": code_line,
@@ -1738,10 +1846,25 @@ def run_probe(
     results: list[dict[str, Any]] = document["results"]
     rss_limit_kb = child_rss_limit_mib * 1024
     handle = None if samples_out is None else samples_out.open("w", encoding="utf-8")
+    prefill_work: Path | None = None
+    prefill_pristine: Path | None = None
+    if prefill_units:
+        prefill_root = Path(tempfile.mkdtemp(prefix=f"e1-prefill-{prefill_units}-", dir=base))
+        prefill_work = prefill_root / "work"
+        prefill_pristine = prefill_root / "pristine"
+        document["prefill"] = _prefill(
+            prefill_work, prefill_units, config["microbatch"], config["d2_batch"]
+        )
+        shutil.copytree(prefill_work, prefill_pristine, symlinks=True)
     try:
         for repeat in range(repeats):
             for rows in sizes:
-                workdir = Path(tempfile.mkdtemp(prefix=f"e1-main-{rows}-r{repeat}-", dir=base))
+                if prefill_work is not None and prefill_pristine is not None:
+                    shutil.rmtree(prefill_work, ignore_errors=True)
+                    shutil.copytree(prefill_pristine, prefill_work, symlinks=True)
+                    workdir = prefill_work
+                else:
+                    workdir = Path(tempfile.mkdtemp(prefix=f"e1-main-{rows}-r{repeat}-", dir=base))
                 try:
                     if _filesystem(workdir) in _REFUSED_FILESYSTEMS:
                         raise ProbeError(f"work directory {workdir} is on a memory filesystem")
@@ -1995,6 +2118,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Canonical microbatch M (E1-CAP-1 protocol: 256; anything else is diagnostic only)",
     )
     parser.add_argument("--repeats", type=int, default=DEFAULT_REPEATS)
+    parser.add_argument(
+        "--prefill-units",
+        type=int,
+        default=0,
+        help="ADR-0108 9(e): K small committed units of history before every measured unit",
+    )
     parser.add_argument("--d2-batch", type=int, default=DEFAULT_D2_BATCH)
     parser.add_argument(
         "--interval", type=float, default=DEFAULT_INTERVAL_SECONDS, help="RSS sample interval (s)"
@@ -2107,6 +2236,7 @@ def main(argv: list[str] | None = None) -> int:
                 keep_workdirs=args.keep_workdirs,
                 staged_diagnostics=args.staged_diagnostics,
                 dataset_v3_config=dataset_v3_config,
+                prefill_units=args.prefill_units,
             )
     except (ProbeInterrupted, KeyboardInterrupt) as exc:
         document = _interrupted_document(exc, dataset_v3_config)

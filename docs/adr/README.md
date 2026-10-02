@@ -105,7 +105,16 @@
 | [0098](0098-p11-authority-registry-and-resolver.md) | P11 生命周期权威登记处、真实 source 与 metric 解析 | Accepted（2026-09-30；PM）；取代 ADR-0080 的 BLOCKED 部分；实现待验收 |
 | [0099](0099-p7-time-series-rank-quantile.md) | P7 transformation 之 rank / quantile 时间序列语义 | Accepted（2026-09-30；PM）；关闭 ADR-0082 最后 OPEN 项；仅纯 lowering；§5/§6 被 ADR-0100 §1/§2 修订 |
 | [0100](0100-complete-remaining-foundation-code.md) | 补完剩余底层代码（Raphael 直接指令） | Accepted（2026-09-30）；P7 执行 Provider、横截面 rank/quantile、P11 指标与默认环境、ADR-0051 政策表、E1 有界化、P12 可选提案；运行开关默认关闭；修订 1：temporal 滞后 / 发生时刻窗口 / 上游哈希绑定（计划格式 1.3.0） |
-| [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | **Proposed**（2026-10-02）；E1-CAP-1 实测：每微批一个 snapshot、不过期，metadata 随行数线性增长、逐提交 read-back 时间二次增长；推荐按单元一次提交（多文件追加）；待决定 |
+| [0101](0101-dataset-v3-production-entry.md) | Dataset v3 生产入口接线 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：显式 JSON `DatasetBuildProfile`（无默认值）、`infrastructure.dataset.cli`、verifier 工厂、公开 identity registry / PIT 钉定、上游入口、v2 测试迁移；不选 DQ-9 数值；修订 1 第 2 条（listing 质量报告入口、profile 1.1.0 `listing_quality` 段）已实现；修订 1 第 1 条与冻结契约冲突，经修订 2 转入 ADR-0109 |
+| [0102](0102-state-run-entry.md) | State 运行、读回与诊断入口 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：`research.states.run_cli compute`、`infrastructure.state.run_cli show/list`、`research.states.report_cli`；默认零副作用；不接全链路输入 / worker / API |
+| [0103](0103-p7-plan-binding-and-admission-handoff.md) | P7 计划绑定、准入交接与横截面执行接线 | Accepted（2026-10-02；PM，于 phase/1 重新接受；修订 1 对齐既有 cs 执行）：`hlens.p7.plan@1.0.0` 保留键绑定、evidence 交叉核对、拒绝审计、COMMIT→执行交接；开关默认关闭，关闭时逐字节不变 |
+| [0104](0104-paper-deviation-run-binding.md) | 纸面偏差的运行绑定与兼容规则 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：修订 ADR-0079；scope 1.1.0 / payload 2.1.0 运行绑定，cost_model 不同一律拒绝，旧报告只读、标为 scope-only |
+| [0105](0105-p11-operational-completion.md) | P11 运行周边补全与 D-P11-WINDOW | Accepted（2026-10-02；PM，于 phase/1 重新接受）：D-P11-WINDOW = 固定日历；Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator、resolver 测试；修订 ADR-0074 §9 |
+| [0106](0106-reference-backtest-migration-target.md) | P14 迁移目标——参考回测引擎 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：独立 `ReferenceBacktester` 为迁移对象（容差 0，不替换生产默认），EventBus 内存→文件为搭档演练；`MigrationTarget` / `MigrationReport`；关闭 P14-TARGET |
+| [0107](0107-e1-bounded-working-set-round-3.md) | E1 有界工作集第三轮与容量测量范围 | Rejected（2026-10-02；PM）：被 E1-CAP-1 正式协议结果与 ADR-0108 取代；残余 A3（listing_at 重证）/ A11（采集 body 整读）记为风险，需要时另立 ADR |
+| [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | Accepted（2026-10-02；PM 依 Raphael 直接指令）：方案 A，一个逻辑单元 = 一个 snapshot（Canonical 与 Raw 归档元素），infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；已在 phase/1 实现（窄证明的单元内容复核 2026-10-02 补齐）；残余"随单元数 K 增长"记为 D-META-AGE |
+| [0109](0109-v3-manifest-legacy-quality-binding.md) | v3 Dataset manifest 的旧质量表绑定（契约 2.6.0） | Accepted（2026-10-02；PM）：2.6.0+ v3 manifest 不再要求绑定 `quality.data_quality_reports`（有 snapshot 才绑定，同 Raw evidence / 缺口表规则）；关闭 D-V3-LEGACY-BIND；旧版本规则与哈希不变；未实现 |
+| [0110](0110-p7-durable-restore.md) | P7 准入候选的持久化恢复 | Accepted（2026-10-02；PM）：检查点中 P7 来源的策略行带 `origin=p7` / `plan_hash` / `round_index`，恢复经 `P7PlanSource` 重建并以 admission 日志 COMMIT 为证明；未准入 P7 的状态逐字节不变；未实现 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按

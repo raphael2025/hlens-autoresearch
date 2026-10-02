@@ -40,6 +40,12 @@ explicit ADR-0077 resource parameters. Under ``hlens.dataset.pit-selection
    failure in between leaves a batch without a manifest, which no reader may use (ADR-0023 §6);
    a rerun replays the same batch and completes the manifest (F3-R1, cursor review 1).
 
+The v3 ``DatasetEvidenceBuilder`` applies the same request checks with one versioned difference:
+from contract 2.6.0 (ADR-0109) its Quality join reads only ``quality.data_quality_report_manifests``
+(bound, as since 2.5.0), and the legacy ``quality.data_quality_reports`` table is treated like the
+Raw evidence and gap tables -- it must be bound iff it had a snapshot when the build ran (a replay
+is judged at its first build). Manifests recorded before 2.6.0 keep requiring it.
+
 ``verify_manifest`` (the ``ManifestVerifier`` of ``ManifestStore``, G2 RT-4) proves a manifest is
 exactly what a build of its own inputs produced: its dataset snapshot commits the batch
 ``selection_id_for`` those inputs, and ``select`` at the bound snapshots re-derives every member,
@@ -262,6 +268,17 @@ _GAPS: Final = QUALITY_EVIDENCE_GAPS.table
 #: Tables bound whenever they had a snapshot when the build ran (not the listing tables: a
 #: missing listing history is the universe's refusal), with the decision that requires it.
 _BOUND_IF_PRESENT: Final = ((_EVIDENCE, "ADR-0027 §13"), (_GAPS, "ADR-0031"))
+#: From contract 2.6.0 a v3 build no longer requires the legacy report table (ADR-0109): it joins
+#: Quality through ``_QUALITY_MANIFESTS`` only, so the legacy table is treated like the evidence
+#: and gap tables -- bound iff it had a snapshot when the build ran.
+_LEGACY_QUALITY_OPTIONAL_SINCE: Final = (2, 6, 0)
+_BOUND_IF_PRESENT_V3_260: Final = (*_BOUND_IF_PRESENT, (_QUALITY, "ADR-0109"))
+
+
+def _version_core(schema_version: str) -> tuple[int, int, int]:
+    version = parse_semver(schema_version)
+    major, minor, patch = (int(version.group(name)) for name in ("major", "minor", "patch"))
+    return major, minor, patch
 
 
 class DatasetBuildError(Exception):
@@ -1544,7 +1561,9 @@ class DatasetEvidenceBuilder:
             request, dataset_table=None, schema_version=schema_version
         )
         selection_id = self.selection_id(request)
-        _check_unbound_evidence(self._adapter, request.pit, manifested=manifested)
+        _check_unbound_evidence(
+            self._adapter, request.pit, manifested=manifested, schema_version=schema_version
+        )
         return _EvidenceDerivation(
             request,
             canonical,
@@ -1574,7 +1593,6 @@ class DatasetEvidenceBuilder:
         _check_evidence_request(request, dataset_table=chunks.table)
         selection_id = self.selection_id(request)
         recorded = manifests.recorded_version(selection_id)
-        _check_unbound_evidence(self._adapter, request.pit, manifested=recorded is not None)
         scope: AbstractContextManager[object]
         if recorded is None:
             version = contract_version.new_group_version()
@@ -1584,6 +1602,9 @@ class DatasetEvidenceBuilder:
                 recorded, what=f"the evidence manifest of {selection_id}"
             )
             scope = contract_schema_version_scope(version)
+        _check_unbound_evidence(
+            self._adapter, request.pit, manifested=recorded is not None, schema_version=version
+        )
         canonical = _check_evidence_request(
             request, dataset_table=chunks.table, schema_version=version
         )
@@ -1699,22 +1720,17 @@ def _check_evidence_request(
                     "registered"
                 )
     bound = pit.snapshot_bindings
-    # Keep the legacy report table in the PIT identity because the shared dataset contract
-    # requires it; v3 quality evidence is read from the bounded manifest table below.
-    for table in (canonical.table, _QUALITY):
-        if table not in bound:
-            raise DatasetSpecError(f"the PIT spec does not bind {table}")
+    if canonical.table not in bound:
+        raise DatasetSpecError(f"the PIT spec does not bind {canonical.table}")
     if schema_version is not None:
-        version = parse_semver(schema_version)
-        if (
-            tuple(int(version.group(name)) for name in ("major", "minor", "patch"))
-            >= (
-                2,
-                5,
-                0,
-            )
-            and _QUALITY_MANIFESTS not in bound
-        ):
+        core = _version_core(schema_version)
+        # Before 2.6.0 the shared dataset contract keeps the legacy report table in the PIT
+        # identity although 2.5.0 v3 Quality is read from the bounded manifest table; from 2.6.0
+        # (ADR-0109) it is bound iff it had a snapshot (``_check_unbound_evidence``). Without a
+        # version (an id or a pre-check) the versioned check that follows decides.
+        if core < _LEGACY_QUALITY_OPTIONAL_SINCE and _QUALITY not in bound:
+            raise DatasetSpecError(f"the PIT spec does not bind {_QUALITY}")
+        if core >= (2, 5, 0) and _QUALITY_MANIFESTS not in bound:
             raise DatasetSpecError(f"the PIT spec does not bind {_QUALITY_MANIFESTS}")
     check_listing_bindings(pit)
     if dataset_table is not None:
@@ -1735,12 +1751,21 @@ def _head_of(adapter: RevisionCatalog, table: str) -> str | None:
 
 
 def _check_unbound_evidence(
-    adapter: RevisionCatalog, pit: PointInTimeSpec, *, manifested: bool
+    adapter: RevisionCatalog, pit: PointInTimeSpec, *, manifested: bool, schema_version: str
 ) -> None:
-    """v2's ``_check_unbound`` for v3: only a persisted manifest exempts a replay (G2 RT-5)."""
+    """v2's ``_check_unbound`` for v3: only a persisted manifest exempts a replay (G2 RT-5).
+
+    From 2.6.0 the legacy report table joins the bound-if-present tables (ADR-0109); earlier
+    versions require it unconditionally in ``_check_evidence_request``.
+    """
     if manifested:
         return
-    for table, adr in _BOUND_IF_PRESENT:
+    tables = (
+        _BOUND_IF_PRESENT_V3_260
+        if _version_core(schema_version) >= _LEGACY_QUALITY_OPTIONAL_SINCE
+        else _BOUND_IF_PRESENT
+    )
+    for table, adr in tables:
         if table not in pit.snapshot_bindings and _head_of(adapter, table) is not None:
             raise DatasetSpecError(
                 f"{table} has a snapshot but the PIT spec does not bind it ({adr})"

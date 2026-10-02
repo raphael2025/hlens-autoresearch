@@ -87,6 +87,12 @@ scheduled ``as_of``, re-checked against the header on every reopening, and the g
 ``unsealing_budget`` its openings count against, C-S2), so every other
 fingerprint, record and directory stays byte-identical, and a directory opened with a trigger is
 refused when reopened without it, with other windows, or the other way round.
+
+P7 plan admission (ADR-0103 D3): ``LoopWiring.p7_plans`` is ``None`` by default — nothing is
+composed or fingerprinted and every record stays byte-identical. A ``P7PlanSource`` is composed
+only over a durable state with the plan admission journal (``research.loop.p7_admission``); it is
+fingerprinted (``p7_plans``). A ``StrategyCandidate`` carrying a P7 ``plan_record`` in
+``LoopWiring.strategies`` is refused: P7 plans enter only through that admission.
 """
 
 from __future__ import annotations
@@ -141,6 +147,7 @@ from research.loop.durable import (
 )
 from research.loop.llm_content import ContentVerifiedLLM
 from research.loop.memory import ResearchMemory
+from research.loop.p7_admission import P7PlanSource, P7RoundAdmission, p7_rebuild
 from research.loop.replacement import (
     EPOCH_CHECK_KEY,
     ReplacementTrigger,
@@ -245,6 +252,11 @@ class LoopWiring:
     #: the evolution stage also runs the trigger in its due rounds (``research.loop.replacement``);
     #: fingerprinted. ``enabled=False`` composes and fingerprints nothing (the same as ``None``).
     replacement_trigger: ReplacementTrigger | None = None
+    #: ``None`` (the default): no P7 plan is admitted, every record and fingerprint
+    #: byte-identical. A ``P7PlanSource`` (``research.loop.p7_admission``, ADR-0103 D3): the
+    #: hypothesis stage admits (or rejects, audited) one declared plan per round through the
+    #: ADR-0073 PREPARE / COMMIT journal; needs a durable v4 / v5 / v6 state; fingerprinted.
+    p7_plans: P7PlanSource | None = None
 
 
 class LoopSettings(Protocol):
@@ -386,7 +398,13 @@ def compose_loop(
     """
     wiring = config.wiring
     for candidate in wiring.strategies:
+        if candidate.plan_record is not None:  # ADR-0103 D3: no admission bypass
+            raise ValueError(
+                f"{candidate.spec.ref} is a P7 plan candidate: P7 plans enter the loop only "
+                "through LoopWiring.p7_plans (admitted, PREPARE / COMMIT)"
+            )
         memory.add_strategy(candidate)
+    p7 = _p7_admission(config, state)
     components = TrialComponents(
         backtester=wiring.backtester,
         cost_model=wiring.cost_model,
@@ -445,6 +463,7 @@ def compose_loop(
             llm_content=llm.resolver if isinstance(llm, ContentVerifiedLLM) else None,
             batch=wiring.hypothesis_batch,
             knowledge_source=wiring.knowledge_source,
+            p7=p7,
         ),
         *evolution,
         ExperimentStage(
@@ -485,6 +504,19 @@ def compose_loop(
         state.verify_guard(loop.guard)
         state.publish_anchor()  # every check passed: the anchor catches up with the directory
     return loop
+
+
+def _p7_admission(config: LoopSettings, state: DurableState | None) -> P7RoundAdmission | None:
+    """``LoopWiring.p7_plans`` over the durable state (ADR-0103 D3), or ``None`` without one."""
+    source = config.wiring.p7_plans
+    if source is None:
+        return None
+    if state is None:
+        raise ValueError(
+            "LoopWiring.p7_plans needs a durable state directory (state_dir): a P7 plan is "
+            "admitted only through the ADR-0073 PREPARE / COMMIT journal"
+        )
+    return P7RoundAdmission(source, state, loop_id=config.loop_id, family_id=config.family_id)
 
 
 @dataclass(frozen=True)
@@ -685,6 +717,7 @@ def open_synthetic_loop(
         provider=provider,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
+        p7_rebuild=p7_rebuild(wiring.p7_plans, family_id=config.family_id),  # ADR-0110
         state_version=(
             RETRY_STATE_VERSION
             if enable_failed_round_retry
@@ -900,8 +933,9 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
     The opt-in ``ConditionalPlan`` appears only when set (``conditional``: its payload), so every
     fingerprint of a configuration without one stays exactly as it was; so does the opt-in
     ``HypothesisBatch`` (``hypothesis_batch``: its payload) and the opt-in ``KnowledgeSource``
-    (``knowledge_source``: provider identity and query hash), and an enabled
-    ``ReplacementTrigger`` (``replacement_trigger``: its payload, module docs)."""
+    (``knowledge_source``: provider identity and query hash), an enabled
+    ``ReplacementTrigger`` (``replacement_trigger``: its payload, module docs) and a
+    ``P7PlanSource`` (``p7_plans``: its declared plans, switch and allowlist hash)."""
     wiring = config.wiring
     opt_in: dict[str, Any] = (
         {} if wiring.conditional is None else {"conditional": wiring.conditional.payload()}
@@ -910,6 +944,8 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
         opt_in["hypothesis_batch"] = wiring.hypothesis_batch.payload()
     if wiring.knowledge_source is not None:
         opt_in["knowledge_source"] = wiring.knowledge_source.payload()
+    if wiring.p7_plans is not None:  # ADR-0103 D3
+        opt_in["p7_plans"] = wiring.p7_plans.payload()
     trigger = _enabled_trigger(config)
     if trigger is not None:  # ADR-0100 item 7: the windows' pre-registration is in the header
         opt_in["replacement_trigger"] = {

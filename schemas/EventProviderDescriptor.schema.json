@@ -3,7 +3,7 @@
   "description": "EventProvider 的身份与能力声明（05-plugin.md §3：EventProvider 必须确定性）。\n\n`supported_events`：非空，`event:name@semver` → 该 `EventSpec` 的内容哈希。事件定义的参数\n（阈值、窗口、上游事件）属于规格内容，因而由哈希绑定。实例生命周期内不变。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

@@ -46,6 +46,8 @@ from typing import Any, Final
 from core.domain.base import canonical_json
 
 __all__ = [
+    "P7_PLAN_PARAM_KEY",
+    "RESERVED_PARAM_KEYS",
     "RUN_INPUTS_FORMAT",
     "RUN_INPUTS_KEY",
     "STATE_LABELLER_FORMAT",
@@ -63,6 +65,11 @@ RUN_INPUTS_FORMAT: Final = "hlens.p11.inputs@1.0.0"
 #: The ``repro.params`` key that carries it (the format id itself: namespaced, never a strategy
 #: parameter name).
 RUN_INPUTS_KEY: Final = RUN_INPUTS_FORMAT
+#: The other reserved ``repro.params`` record: ADR-0103's ``hlens.p7.plan@1.0.0`` (its owner,
+#: ``research.hypotheses.p7_binding.P7_PLAN_KEY``, is not imported here; a test pins equality).
+P7_PLAN_PARAM_KEY: Final = "hlens.p7.plan@1.0.0"
+#: Every reserved record key ``strategy_params`` strips.
+RESERVED_PARAM_KEYS: Final = frozenset({RUN_INPUTS_KEY, P7_PLAN_PARAM_KEY})
 #: Identity of the research loop's state labeller (``state_labeller_identity``).
 STATE_LABELLER_FORMAT: Final = "hlens.loop.state-labeller@1.0.0"
 #: The label the loop's validator ``state_of`` returns for a decision time without a computable
@@ -271,8 +278,9 @@ def with_run_inputs(params: Mapping[str, RunParam], inputs: RunInputs) -> dict[s
 
 
 def strategy_params(params: Mapping[str, RunParam]) -> dict[str, RunParam]:
-    """The strategy's own parameters: ``params`` without the run inputs record."""
-    return {key: value for key, value in params.items() if key != RUN_INPUTS_KEY}
+    """The strategy's own parameters: ``params`` without the reserved records (run inputs and
+    the ADR-0103 P7 plan record)."""
+    return {key: value for key, value in params.items() if key not in RESERVED_PARAM_KEYS}
 
 
 def recorded_run_inputs(params: Mapping[str, RunParam]) -> RunInputs | None:

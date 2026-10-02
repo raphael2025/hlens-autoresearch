@@ -211,7 +211,114 @@ def test_paper_deviation_1_0_0_legacy_is_supported_without_scope_fields() -> Non
     assert dto.schema_version == "1.0.0"
 
 
-# --- ADR-0094: the default Contract envelope bumped to 2.5.0 (validation_report only) ---------
+# --- paper_deviation 2.1.0 run binding (ADR-0104) ---------------------------------------------
+
+
+def _run_binding(**overrides: Any) -> dict[str, Any]:
+    binding: dict[str, Any] = {
+        "router_spec_hash": "1" * 64,
+        "router_strategy_spec_hash": "2" * 64,
+        "experiment_hash": "3" * 64,
+        "bars_hash": "4" * 64,
+        "window_start": "2024-01-01T00:00:00+00:00",
+        "window_end": "2024-01-01T00:07:00+00:00",
+        "cost_model_hash": "5" * 64,
+        "reference_request_hash": "6" * 64,
+    }
+    binding.update(overrides)
+    return binding
+
+
+def _bound_scope(binding: Any = None) -> dict[str, Any]:
+    """A scope 1.1.0 whose ``scope_hash`` covers the run binding (as the writer's does)."""
+    return _scope(
+        scope_schema_version="1.1.0", run_binding=_run_binding() if binding is None else binding
+    )
+
+
+def _bound_payload(**overrides: Any) -> Payload:
+    return _deviation_payload(
+        schema_version="2.1.0",
+        declared_scope=_bound_scope(),
+        reference_request_hash="6" * 64,
+        **overrides,
+    )
+
+
+def test_paper_deviation_2_1_0_well_formed_run_binding_is_supported() -> None:
+    dto = decode_report_payload(ReportKind.PAPER_DEVIATION, _bound_payload())
+    assert dto.supported is True and dto.schema_version == "2.1.0"
+
+
+def test_paper_deviation_2_1_0_requires_the_scope_bound_fields() -> None:
+    payload = _bound_payload()
+    del payload["marks"]
+    with pytest.raises(ReportMalformed, match="2.1.0 payload lacks scope-bound DTO fields"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        None,  # run_binding missing: scope 1.1.0 must carry one
+        "not-a-mapping",
+        {k: v for k, v in _run_binding().items() if k != "bars_hash"},
+        {**_run_binding(), "surprise": "1"},
+        _run_binding(experiment_hash="not-hex"),
+        _run_binding(cost_model_hash="0" * 63),
+        _run_binding(router_spec_hash=1),
+        _run_binding(window_start="yesterday"),
+        _run_binding(window_start="2025-01-01T00:00:00+00:00"),  # after window_end
+        _run_binding(reference_request_hash="7" * 64),  # not the payload's reference_request_hash
+    ],
+)
+def test_paper_deviation_2_1_0_malformed_run_binding_is_rejected(binding: Any) -> None:
+    scope = _bound_scope(binding)
+    if binding is None:
+        del scope["run_binding"]
+        scope["scope_hash"] = content_hash({k: v for k, v in scope.items() if k != "scope_hash"})
+    payload = _bound_payload()
+    payload["declared_scope"] = scope
+    with pytest.raises(ReportMalformed, match="2.1.0 declared_scope is invalid"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_2_1_0_scope_version_must_be_1_1_0() -> None:
+    for version in ("1.0.0", "2.0.0", "1.2.0"):
+        scope = _bound_scope()
+        scope["scope_schema_version"] = version
+        scope["scope_hash"] = content_hash({k: v for k, v in scope.items() if k != "scope_hash"})
+        payload = _bound_payload()
+        payload["declared_scope"] = scope
+        with pytest.raises(ReportMalformed, match="declared_scope is invalid"):
+            decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_2_1_0_scope_hash_covers_the_run_binding() -> None:
+    scope = _bound_scope()
+    scope["run_binding"]["bars_hash"] = "9" * 64  # edited after the scope hash was computed
+    payload = _bound_payload()
+    payload["declared_scope"] = scope
+    with pytest.raises(ReportMalformed, match="2.1.0 scope_hash does not match declared_scope"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_2_0_0_scope_cannot_carry_a_run_binding() -> None:
+    scope = _scope(run_binding=_run_binding())
+    payload = _deviation_payload(declared_scope=scope)  # schema 2.0.0, scope 1.0.0
+    with pytest.raises(ReportMalformed, match="2.0.0 declared_scope is invalid"):
+        decode_report_payload(ReportKind.PAPER_DEVIATION, payload, path=Path("<test>"))
+
+
+def test_paper_deviation_supported_versions_are_exactly_the_three_generations() -> None:
+    spec = REPORT_DTOS[ReportKind.PAPER_DEVIATION]
+    assert spec.supported_versions == {"1.0.0", "2.0.0", "2.1.0"} and spec.baseline == "2.1.0"
+    future = _deviation_payload(schema_version="2.2.0")
+    dto = decode_report_payload(ReportKind.PAPER_DEVIATION, future)
+    assert dto.supported is False and dto.schema_version == "2.2.0"
+
+
+# --- ADR-0109: the default Contract envelope bumped to 2.6.0 (validation_report only) ---------
 #
 # validation_report is the one ReportKind whose payload is a direct ``Contract.model_dump()``
 # (research/reports/validation.py); every other kind's schema_version is an independent,
@@ -219,32 +326,33 @@ def test_paper_deviation_1_0_0_legacy_is_supported_without_scope_fields() -> Non
 # research/router/deviation.py, research/synthetic_lab/gate_calibration.py), unrelated to
 # core.domain.base.CONTRACT_SCHEMA_VERSION. ADR-0088 is an additive minor (composed strategies,
 # event bar spec, peak equity, synthetic effects, volatility-scaling barrier) that does not touch
-# ValidationReport's own fields, so 2.5.0 is registered with the same required-field shape as
-# 2.3.0 (itself unchanged from 2.2.0, ADR-0077).
+# ValidationReport's own fields; nor do ADR-0094 (2.5.0, PIT conflict evidence) or ADR-0109 (2.6.0,
+# the v3 manifest's legacy Quality binding), so 2.6.0 is registered with the same required-field
+# shape as 2.3.0 (itself unchanged from 2.2.0, ADR-0077).
 
 
 def test_validation_report_baseline_tracks_the_current_contract_envelope() -> None:
-    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.5.0"
-    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"} <= REPORT_DTOS[
+    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.6.0"
+    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"} <= REPORT_DTOS[
         ReportKind.VALIDATION_REPORT
     ].supported_versions
 
 
-def test_validation_report_2_5_0_is_a_known_version_with_the_2_3_0_shape(tmp_path: Path) -> None:
-    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0094); it
+def test_validation_report_2_6_0_is_a_known_version_with_the_2_3_0_shape(tmp_path: Path) -> None:
+    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0109); it
     must be served as a supported DTO, not fall back to raw-JSON "unknown version" display."""
     report = validation_report()
-    assert report.schema_version == "2.5.0"  # core/domain/base.py's new Contract default
+    assert report.schema_version == "2.6.0"  # core/domain/base.py's new Contract default
     payload = report.model_dump(mode="json")
 
     dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
     assert dto.supported is True
-    assert dto.schema_version == "2.5.0"
+    assert dto.schema_version == "2.6.0"
 
     report_id = report.content_hash()
     _write(tmp_path, ReportKind.VALIDATION_REPORT, report_id, payload)
     envelope = ReportStore(tmp_path).get(ReportKind.VALIDATION_REPORT, report_id)
-    assert envelope.payload["schema_version"] == "2.5.0"
+    assert envelope.payload["schema_version"] == "2.6.0"
 
     client = TestClient(create_app(reports_root=tmp_path))
     detail = client.get(f"/reports/validation_report/{report_id}")
@@ -256,7 +364,7 @@ def test_validation_report_2_5_0_is_a_known_version_with_the_2_3_0_shape(tmp_pat
 
 def test_validation_report_2_3_0_legacy_payload_remains_supported(tmp_path: Path) -> None:
     """A pre-ADR-0088 payload persisted with the prior default envelope (2.3.0) must keep
-    resolving as a supported DTO -- registering 2.5.0 must not drop 2.3.0 read access."""
+    resolving as a supported DTO -- registering 2.6.0 must not drop 2.3.0 read access."""
     report = validation_report()
     payload = report.model_dump(mode="json")
     payload["schema_version"] = "2.3.0"
@@ -264,6 +372,16 @@ def test_validation_report_2_3_0_legacy_payload_remains_supported(tmp_path: Path
     dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
     assert dto.supported is True
     assert dto.schema_version == "2.3.0"
+
+
+def test_validation_report_2_5_0_payload_remains_supported() -> None:
+    """A payload persisted at the prior default envelope (2.5.0, ADR-0094) keeps resolving as a
+    supported DTO after ADR-0109 registers 2.6.0."""
+    payload = validation_report().model_dump(mode="json")
+    payload["schema_version"] = "2.5.0"
+    dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
+    assert dto.supported is True
+    assert dto.schema_version == "2.5.0"
 
 
 # --- integration: ReportStore / the API apply the DTO check before identity ---------------------

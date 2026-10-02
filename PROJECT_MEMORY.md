@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 2026-10-01 恢复点：代码基线为 `main@b5f80fe`，与 `origin/main` 同步；PR #17–#19 均已合入，远端无开放 PR。当前 `phase/1@4c2356c` 有未合入的 P0.5、P1 DQ-10、P7-CS-EXEC 与 E1 archive-spool reuse 工作。候选 Phase 1 infrastructure 选择集 2298 passed / 88 skipped；DQ-10 专项 35 passed；P7 专项 105 passed；E1 parser / verifier / normalizer 定向集 216 passed。候选 full-shape probe 在 100k verify_archive 为 78.207 秒，500k 同阶段超过 15 分钟、读取约 17.7 GB 后中断；这揭示逐窗口 Raw 重扫成本，不构成容量 PASS / FAIL。main 的正式探针在 10k 全阶段与 100k verify_archive 后中断；完整 W1、E1-CAP-1 / DQ-9 未完成，Phase 1 未验收。候选结果不计主线完成。代码队列见 `docs/plans/2026-09-28-remaining-code-gaps.md`，模块视图见 `docs/plans/2026-09-28-module-foundation-completion.md`，进度见 `PROJECT_STATUS.md`。
+> 恢复点（2026-10-02）：`phase/1@1536a409` = 第三轮收口（ADR-0101 ~ 0106、0108 ~ 0110），全仓门禁全绿（10570 passed / 148 skipped）；`main@d9ddd67` 待经 PR 合入；E1-CAP-1 待在 `main` 上重跑。代码队列见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -12,13 +12,13 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启、未验收，E1-CAP-1（完整进程 32 MiB 容量门）仍阻断。main 正式矩阵曾启动但中断，不能作为 PASS / FAIL；全仓门禁从未在当前代码上运行
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启、未验收，E1-CAP-1（完整进程 32 MiB 容量门）仍阻断：数值 PASS 但 metadata 随批次数线性增长，ADR-0108 已实现，待在 `main` 上重跑
 - 决策权：CLAUDE.md §0 同时包含 2026-09-28 Claude Code PM 授权与 2026-09-30 早段 Codex PM 段落（`fc9f643`），互相冲突；Raphael 于 2026-09-30 在 Claude Code 主会话指令 Claude Code 接管、「你自己决定一切」，本轮据此执行；CLAUDE.md 自身修改被环境安全检查拦截，冲突留待 Raphael 本地删除 §0 Codex 段落（见 `PROJECT_STATUS.md` §6 D-AUTH-CONFLICT）。实盘操作始终需 Raphael 亲自批准；H3 / H4 / H6 不受任何授权改变
 
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
-- 契约版本自已发布的 `2.0.0` 向前兼容演进：2.1.0（ADR-0052）→ 2.2.0（ADR-0055）→ 2.3.0（ADR-0077）→ 2.4.0（ADR-0088）→ 当前 **2.5.0**（ADR-0094 PIT v3；ADR-0100 未改契约版本）；破坏性变化须升 major 并走 ADR。持久化对象按记录版本重放；当前版本新建对象的信封与哈希随 minor 变化属预期
+- 契约版本自已发布的 `2.0.0` 向前兼容演进：2.1.0（ADR-0052）→ 2.2.0（ADR-0055）→ 2.3.0（ADR-0077）→ 2.4.0（ADR-0088）→ 2.5.0（ADR-0094 PIT v3）→ 当前 **2.6.0**（ADR-0109：v3 manifest 旧质量表有 snapshot 才绑定）；破坏性变化须升 major 并走 ADR。持久化对象按记录版本重放；当前版本新建对象的信封与哈希随 minor 变化属预期
 - current Schema **148 份**，与 `CONTRACT_MODELS` 一一对应；legacy v1 35 份（`schemas/v1/`）只读；v1 与 v2 哈希不可比较，读取 v1 不赋予任何登记 / 晋升资格
 - 研究 Provider Protocol 0 个是 ADR-0017 的决定；Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector），可复用 suite 在 `tests/contract_suites/`
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
@@ -41,10 +41,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
-- Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛未证明；main 正式矩阵已部分运行后中断。旧候选分支的容量数值不能外推为 `main` 的结果
+- Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛。`main@50d6bb6` 正式矩阵数值 PASS，但 Iceberg metadata 随批次数线性增长，不满足关闭标准；修复方案 ADR-0108 已实现（2026-10-02），待在 `main` 上重跑
 - 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写，全仓测试门禁于 2026-10-01 首次全绿；未逐 Phase 验收
-- Next Milestone：在与 `main` 一致的提交上测量 E1-CAP-1 → Phase 1 验收。四项已批准代码缺口已于 2026-10-01 收口（`docs/plans/2026-09-28-remaining-code-gaps.md`）
-- 仍开放：E1-CAP-1 完整容量结论未得、DQ-9 未定；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
+- Next Milestone：`phase/1` 合入 `main` → 在 `main` 上重跑 E1-CAP-1（含预填充历史场景）→ Phase 1 验收
+- 仍开放：E1-CAP-1 未关闭、DQ-9 未定、D-META-AGE（单元级提交后 metadata 仍随历史单元数增长）；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
 
 ## 5. Active Decisions
 
@@ -84,6 +84,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0094：PIT v3 完整冲突 heads 写有界 evidence stream（契约 2.5.0）；v2 与 2.3 / 2.4 replay 不变
 - ADR-0097：PIT bounded graph 用调用级 SQLite scratch index
 - D-NET：可下载 BTCUSDT / ETHUSDT 各 1 ~ 3 天官方公共归档，只写本机、不入仓库
+- ADR-0108：Raw 归档元素与 Canonical 写入为一个逻辑单元一个 Iceberg snapshot（infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；snapshot 不过期）；残余随单元数增长记为 D-META-AGE
 - D-E1-CANONICAL-SCRATCH：Canonical 位置索引用 `Settings.canonical_scratch_uri`（默认 `data/scratch`），不回退 `TMPDIR`
 
 **Phase 0.5 / 2 ~ 14 与 apps**
@@ -105,8 +106,13 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0091：登记处完整性审计严格只读；Failure Registry 不提供历史防篡改证明
 - ADR-0095：生产 Worker 由部署方显式受信 Runtime Factory 组合
 - ADR-0096：TrialLedger 完全相同的登记作只读幂等确认，不增加 trial
-- ADR-0100（2026-09-30，Raphael 直接指令）：P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` Provider、P11 指标闭集与默认环境、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案；修订 1 细化 1.3.0 时间事件。`main@b5f80fe` 的横截面 Provider 尚未接 compiler；本地 `phase/1@47446f4` 有专用根 Provider 候选，输出不能直接进入单序列组合器 / Research Loop。
-- D-P11-WINDOW（ADR-0049 遗留）开放；D-STATE-INC 暂缓（ADR-0035）
+- ADR-0100（2026-09-30，Raphael 直接指令）：P7 执行 Provider + allowlist 编译器（默认关）、横截面 `rank_cs` / `quantile_cs` Provider、P11 指标闭集与默认环境、ADR-0051 政策 1.1.0、E1 有界化、P12 可选循环内替换提案；修订 1 细化 1.3.0 时间事件。横截面 Provider 已在显式 pinned universe 下编译为专用根 Provider（2026-10-01），输出不进入单序列组合器 / Research Loop。
+- ADR-0101：Dataset v3 生产入口（显式 JSON `DatasetBuildProfile`、CLI / worker job / verifier 工厂、上游与质量报告入口，含 listing 报告）；修订 2 把"旧质量表有 snapshot 才绑定"转入 ADR-0109
+- ADR-0102 / 0104 / 0106：State run / show / list 入口；paper deviation 绑定运行（修订 ADR-0079）；P14 迁移目标 = 独立参考回测引擎（关闭 P14-TARGET）
+- ADR-0103 / 0110：P7 计划绑定（`hlens.p7.plan@1.0.0`）、PREPARE 证据、拒绝审计、COMMIT → 循环交接；准入候选经 `P7PlanSource` + COMMIT 证明在持久化恢复中重建；开关仍默认关
+- ADR-0105：P11 运维收口（Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator）；D-P11-WINDOW = 固定日历
+- ADR-0107 Rejected（被 ADR-0108 取代）；ADR-0109：契约 2.6.0，v3 manifest 的旧质量表"有 snapshot 才绑定"（关闭 D-V3-LEGACY-BIND）
+- D-STATE-INC 暂缓（ADR-0035）
 
 ## 6. Active Constraints
 
@@ -122,7 +128,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 7. Current Known Risks
 
-- Canonical 每微批一个 Iceberg snapshot 且不过期：metadata 与 manifest 数随数据量线性增长，提交 / 扫描成本无界（ADR-0108 Proposed，推荐按单元一次提交）
+- Iceberg snapshot 不过期：ADR-0108 已实现，metadata 不再随行数增长，但仍随历史单元数线性增长（D-META-AGE），PyIceberg `load_table` 物化全部 snapshot，生产规模回填前须另行决定
 - pypi.org 索引域名在本机被阻断（files.pythonhosted.org 可达）：离线安装用 uv.lock 精确版本
 - WSL 内存约 15 GiB；Docker 未安装；外部数据盘未挂载；warehouse 无异地副本；CI 未配置
 - 官方资料不能证明任何历史 revision 的公开时刻：`binance.spot.publication@1.0.0` 一律 `available_time = ingest_time` + 证据缺口，未绑定 ADR-0032 假设时早于本机 ingest 的历史不可用；归档替换一律 competing heads
@@ -152,4 +158,5 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Phase 0 基线：tag `phase-0-complete`
 - `main` ← `phase/1` 经 PR #20 / #21 整合（2026-10-01）：四项代码缺口与 E1 Canonical 窗口复用收口；全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过）。见 `docs/reviews/2026-10-01-w1-gate-repair.md`
 - 历史契约固定值的核对方式：`tests/contract_version_support.py::at_contract_version` 在新解释器里按记录时的契约版本重建；只有证明差异仅来自契约信封或已接受 ADR 的有意变化时才可重钉
-- E1-CAP-1：`main@50d6bb6` 正式矩阵数值 PASS（2026-10-02），但 Iceberg 元数据随批次数线性增长，未关闭；下一步决定 ADR-0108，再重跑（含预填充历史）
+- `phase/1@1536a409`（2026-10-02）：第三轮收口，全仓门禁全绿（四段运行，10570 passed / 148 skipped / 0 failed；ruff、format、mypy 通过）
+- E1-CAP-1：`main@50d6bb6` 正式矩阵数值 PASS（2026-10-02），但 Iceberg 元数据随批次数线性增长，未关闭；ADR-0108 已实现，待在 `main` 上重跑（含预填充历史）。记录见 `docs/reviews/2026-10-02-e1-cap1-main-50d6bb6.md`

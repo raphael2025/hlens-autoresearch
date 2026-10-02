@@ -9,7 +9,9 @@
 
 from research.router.deviation import (
     DeviationError,
+    DeviationRefusal,
     PaperDeviation,
+    RunBinding,
     paper_deviation,
     validate_scope_bound_payload,
 )
@@ -47,7 +49,9 @@ __all__ = [
     "EligibilityCheck",
     "EligibilityEvidence",
     "EligibilityRefusal",
+    "DeviationRefusal",
     "PaperDeviation",
+    "RunBinding",
     "ReportResolver",
     "ReportUnreadable",
     "RouterEligibilityRefused",

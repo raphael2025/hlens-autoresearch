@@ -374,6 +374,13 @@ class _Recording:
     def get_snapshot(self, table: str, snapshot_id: str) -> SnapshotInfo:
         return self._inner.get_snapshot(table, snapshot_id)  # an id: immutable
 
+    def commit_layout(self, table: str, snapshot_id: str) -> Any:
+        # ADR-0108 added explicit snapshot-layout reads to pinned PIT verification.
+        layout = getattr(self._inner, "commit_layout", None)
+        if not callable(layout):
+            raise AssertionError("the underlying catalog cannot read commit layouts")
+        return layout(table, snapshot_id)
+
     def scan_columns(
         self,
         table: str,

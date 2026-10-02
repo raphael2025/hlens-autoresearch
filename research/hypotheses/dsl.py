@@ -82,7 +82,15 @@ def temporal(
 def transformation(
     name: str, family_id: str, source: Ref, transform: str, minimum_effect: str
 ) -> Hypothesis:
-    allowed = {"standardize", "rank", "quantile", "difference", "smooth"}
+    allowed = {
+        "standardize",
+        "rank",
+        "quantile",
+        "difference",
+        "smooth",
+        "rank_cs",
+        "quantile_cs",
+    }
     if transform not in allowed:
         raise ValueError(f"unknown transformation {transform!r}")
     return _hypothesis(
@@ -115,7 +123,8 @@ def negation(name: str, family_id: str, strategy: Ref, minimum_effect: str) -> H
     return _hypothesis(
         name,
         family_id,
-        f"the inverse of {strategy} loses what {strategy} gains (a control, not a candidate)",
+        f"the inverse of {strategy} loses what {strategy} gains "
+        "(a candidate strategy, not a validation negative control)",
         (strategy,),
         "opposite",
         minimum_effect,

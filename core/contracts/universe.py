@@ -67,6 +67,7 @@ from core.domain.specs import ADR_0088_VERSION, DatasetRef, Instrument, Instrume
 __all__ = [
     "ADR_0077_VERSION",
     "ADR_0094_VERSION",
+    "ADR_0109_VERSION",
     "DATASET_CHUNK_INDEX_MAX",
     "DATASET_EVIDENCE_FORMAT",
     "DATASET_EVIDENCE_KEY_PATTERN",
@@ -806,6 +807,8 @@ class ResearchDatasetManifest(Contract):
 #: 本节全部模型的引入版本（ADR-0077 DQ-1 = A）；2.0.0 ~ 2.2.0 信封中出现即拒绝（ADR-0052 §4）。
 ADR_0077_VERSION: Final = "2.3.0"
 ADR_0094_VERSION: Final = "2.5.0"
+#: 自此版本起 evidence manifest 不再要求绑定旧质量表（ADR-0109）。
+ADR_0109_VERSION: Final = "2.6.0"
 #: evidence stream 的对象格式（ADR-0077 §2 / §3）。
 DATASET_EVIDENCE_FORMAT: Final = "hlens.dataset.evidence-jsonl@1.0.0"
 #: evidence 对象键只由内容 SHA-256 决定（ADR-0077 §3.4，DQ-6 = a）。
@@ -1056,8 +1059,11 @@ class ResearchDatasetEvidenceManifest(Contract):
     与选中行数、窗口天数无关：
 
     - `dataset` / `point_in_time` / `universe_spec`：规则同 v2——`dataset` 为 `research_dataset`
-      的 `namespace.table` 且不在上游绑定中，上游必须含 `canonical.instrument_listings` 与
-      `quality.data_quality_reports`；`dataset.snapshot_id` 是最后一个 chunk 的 snapshot；
+      的 `namespace.table` 且不在上游绑定中；上游必须含 `canonical.instrument_listings`，记录版本
+      < 2.6.0 时还必须含 `quality.data_quality_reports`（2.5.0 起另须含
+      `quality.data_quality_report_manifests`），记录版本 ≥ 2.6.0（ADR-0109）时必须含
+      `quality.data_quality_report_manifests`、不再要求旧表（出现时仍是合法绑定）；
+      `dataset.snapshot_id` 是最后一个 chunk 的 snapshot；
     - `rule`：dataset 规则绑定；`data_type`：显式记录的数据类型；`selection_id`：可作 chunk
       batch id 的前缀；
     - `row_count` / `chunk_rows` / `chunk_count`：空选择被拒绝，
@@ -1100,9 +1106,9 @@ class ResearchDatasetEvidenceManifest(Contract):
     @model_validator(mode="after")
     def _manifest_invariants(self) -> ResearchDatasetEvidenceManifest:
         version = parse_semver(self.schema_version)
-        expects_pit_conflicts = tuple(
-            int(version.group(name)) for name in ("major", "minor", "patch")
-        ) >= (2, 5, 0)
+        recorded = tuple(int(version.group(name)) for name in ("major", "minor", "patch"))
+        expects_pit_conflicts = recorded >= (2, 5, 0)
+        legacy_quality_optional = recorded >= (2, 6, 0)
         has_pit_conflicts = any(ref.stream is EvidenceStream.PIT_CONFLICTS for ref in self.evidence)
         if has_pit_conflicts != expects_pit_conflicts:
             raise ValueError("2.5.0+ manifest 必须含 pit_conflicts；旧版本不得回填该 stream")
@@ -1113,7 +1119,13 @@ class ResearchDatasetEvidenceManifest(Contract):
             raise ValueError("dataset.table 必须是 Iceberg namespace.table")
         if self.dataset.table in upstream:
             raise ValueError("dataset 自身的表不得同时作为上游 snapshot 绑定")
-        for required in (LISTINGS_TABLE, QUALITY_REPORTS_TABLE):
+        if legacy_quality_optional:
+            # ADR-0109：2.6.0+ 的质量证据只来自 report manifests；旧表只在构建时有 snapshot
+            # 才绑定（由 infrastructure 判定），模型不再要求。
+            required_tables: tuple[str, ...] = (LISTINGS_TABLE, QUALITY_REPORT_MANIFESTS_TABLE)
+        else:
+            required_tables = (LISTINGS_TABLE, QUALITY_REPORTS_TABLE)
+        for required in required_tables:
             if required not in upstream:
                 raise ValueError(f"上游 snapshot 绑定必须包含 {required}")
         if expects_pit_conflicts and QUALITY_REPORT_MANIFESTS_TABLE not in upstream:

@@ -42,12 +42,14 @@ catalog's ``StreamingEvidenceVerifier`` (``evidence_verifier``; without it such 
 is refused by the store). The composition is unchanged: a round's source identity is its declared
 manifest content hashes, which the fingerprint and the recorded-ingest check already bind, so a
 state directory's fingerprint and records do not depend on the manifest form. Nothing here resolves
-ACTIVE strategies, source authority or metrics (ADR-0080 BLOCKED), schedules rounds or reaches the
-ADR-0074 operator (synthetic-only).
+ACTIVE strategies, source authority or metrics (ADR-0080 BLOCKED) or schedules rounds. The bounded
+Dataset-sourced operator (``research.loop.dataset_operator``, ADR-0105 §5, amending ADR-0074 §9)
+opens this composition with an ``operator_identity`` (state v5).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -76,8 +78,15 @@ from research.loop.dataset_source import (
     DatasetIngestStage,
     DatasetRound,
 )
-from research.loop.durable import FileAnchor, LoopStateInconsistent, StateAnchor, open_state
+from research.loop.durable import (
+    OPERATOR_STATE_VERSION,
+    FileAnchor,
+    LoopStateInconsistent,
+    StateAnchor,
+    open_state,
+)
 from research.loop.memory import ResearchMemory
+from research.loop.p7_admission import p7_rebuild
 
 __all__ = [
     "DatasetLoopConfig",
@@ -184,13 +193,22 @@ def open_dataset_loop(
     llm: LLMProvider | None = None,
     anchor: StateAnchor | Path | None = None,
     bus_anchor: Path | None = None,
+    operator_identity: str | None = None,
 ) -> DurableLoop:
     """The dataset-backed loop over ``state_dir`` (``open_synthetic_loop``'s contract).
 
     Besides every cross-check of ``research.loop.durable``, each recorded ingest must name the
     manifests ``config.rounds`` declares for its round. ``bus`` omitted: the composition's own
     ``FileEventBus(state_dir / "bus")``, cross-checked against the audit (``compose_durable``).
+    ``operator_identity`` (ADR-0105 §5, the Dataset-sourced operator only): as in
+    ``open_synthetic_loop`` — a canonical lowercase SHA-256 that selects operator state v5 and is
+    bound into the fingerprint; omitted, the ordinary v4 path is unchanged.
     """
+    if operator_identity is not None and (
+        not isinstance(operator_identity, str)
+        or re.fullmatch(r"[0-9a-f]{64}", operator_identity) is None
+    ):
+        raise ValueError("operator_identity must be a canonical lowercase SHA-256 hash")
     if bus is not None and bus_anchor is not None:  # before anything under state_dir is touched
         raise ValueError(
             "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
@@ -199,15 +217,29 @@ def open_dataset_loop(
     wiring = config.wiring
     state = open_state(
         state_dir,
-        fingerprint={**dataset_loop_fingerprint(config), **llm_content_fingerprint(llm)},
+        fingerprint={
+            **dataset_loop_fingerprint(config),
+            **llm_content_fingerprint(llm),
+            **({} if operator_identity is None else {"operator_identity": operator_identity}),
+        },
         strategies=wiring.strategies,
         provider=None,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
+        p7_rebuild=p7_rebuild(wiring.p7_plans, family_id=config.family_id),  # ADR-0110
+        **({} if operator_identity is None else {"state_version": OPERATOR_STATE_VERSION}),
     )
     for record in state.audit.records:
         _check_recorded_ingest(state.root, config, record)
-    return compose_durable(config, state, _ingest(config, catalog), bus, llm, bus_anchor)
+    return compose_durable(
+        config,
+        state,
+        _ingest(config, catalog),
+        bus,
+        llm,
+        bus_anchor,
+        operator_identity=operator_identity,
+    )
 
 
 def _check_recorded_ingest(root: Path, config: DatasetLoopConfig, record: LoopRecord) -> None:

@@ -63,8 +63,8 @@ class ReportDTO:
 # validator owns required-field errors so malformed data gets the relevant reason.
 REPORT_DTOS: Final[dict[ReportKind, ReportDTO]] = {
     ReportKind.VALIDATION_REPORT: ReportDTO(
-        "2.5.0",
-        frozenset({"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"}),
+        "2.6.0",
+        frozenset({"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"}),
         ("schema_version", "gates", "verdict"),
     ),
     ReportKind.RESEARCH_LOOP_ROUND: ReportDTO(
@@ -88,8 +88,10 @@ REPORT_DTOS: Final[dict[ReportKind, ReportDTO]] = {
     ReportKind.EVENT_STATISTICS: ReportDTO(
         "1.0.0", frozenset({"1.0.0"}), ("schema_version", "report_hash", "statistics")
     ),
+    # 1.0.0: descriptive, no scope; 2.0.0: scope-only (ADR-0079); 2.1.0: scope plus run binding
+    # (ADR-0104). The two older versions stay readable and are never upgraded or backfilled.
     ReportKind.PAPER_DEVIATION: ReportDTO(
-        "2.0.0", frozenset({"1.0.0", "2.0.0"}), ("kind", "deviation_hash")
+        "2.1.0", frozenset({"1.0.0", "2.0.0", "2.1.0"}), ("kind", "deviation_hash")
     ),
     ReportKind.DEGRADATION_CHECK: ReportDTO(
         "1.1.0", frozenset({"1.0.0", "1.1.0"}), ("schema_version", "check_hash", "metrics")
@@ -98,6 +100,77 @@ REPORT_DTOS: Final[dict[ReportKind, ReportDTO]] = {
         "1.1.0", frozenset({"1.0.0", "1.1.0"}), ("schema_version", "report_hash", "kind")
     ),
 }
+
+
+# paper_deviation payload version -> its declared-scope version (ADR-0079, ADR-0104).
+_DEVIATION_SCOPE_VERSIONS: Final = {"2.0.0": "1.0.0", "2.1.0": "1.1.0"}
+_RUN_BINDING_HASHES: Final = (
+    "router_spec_hash",
+    "router_strategy_spec_hash",
+    "experiment_hash",
+    "bars_hash",
+    "cost_model_hash",
+    "reference_request_hash",
+)
+
+
+def _valid_run_binding(binding: Any, payload: dict[str, Any]) -> bool:
+    """Shape of a scope 1.1.0 ``run_binding`` (ADR-0104 §1); the DTO does not re-derive it."""
+    if not isinstance(binding, dict) or set(binding) != {
+        *_RUN_BINDING_HASHES,
+        "window_start",
+        "window_end",
+    }:
+        return False
+    if any(
+        not isinstance(binding[field], str) or _SHA256.fullmatch(binding[field]) is None
+        for field in _RUN_BINDING_HASHES
+    ):
+        return False
+    try:
+        start = datetime.fromisoformat(binding["window_start"])
+        end = datetime.fromisoformat(binding["window_end"])
+        ordered = start <= end
+    except (TypeError, ValueError):
+        return False
+    return ordered and binding["reference_request_hash"] == payload.get("reference_request_hash")
+
+
+def _check_deviation_scope(payload: dict[str, Any], version: str, source_path: Path) -> None:
+    """The scope-bound DTO rules of paper_deviation 2.0.0 (scope 1.0.0) and 2.1.0 (scope 1.1.0)."""
+    if not all(field in payload for field in ("declared_scope", "summary", "marks")):
+        raise ReportMalformed(
+            source_path, f"paper_deviation {version} payload lacks scope-bound DTO fields"
+        )
+    scope = payload["declared_scope"]
+    scope_fields = (
+        "validation_profile",
+        "validation_profile_hash",
+        "validation_report_hash",
+        "venue",
+        "symbol",
+        "timeframe",
+        "research_class",
+    )
+    if (
+        not isinstance(scope, dict)
+        or scope.get("scope_schema_version") != _DEVIATION_SCOPE_VERSIONS[version]
+        or any(not isinstance(scope.get(field), str) for field in scope_fields)
+        or not isinstance(scope.get("scope_hash"), str)
+        or any(
+            _SHA256.fullmatch(scope[field]) is None
+            for field in ("validation_profile_hash", "validation_report_hash")
+            if isinstance(scope.get(field), str)
+        )
+        or ("run_binding" in scope) != (version == "2.1.0")
+        or (version == "2.1.0" and not _valid_run_binding(scope["run_binding"], payload))
+    ):
+        raise ReportMalformed(source_path, f"paper_deviation {version} declared_scope is invalid")
+    scope_body = {key: value for key, value in scope.items() if key != "scope_hash"}
+    if scope.get("scope_hash") != content_hash(scope_body):
+        raise ReportMalformed(
+            source_path, f"paper_deviation {version} scope_hash does not match declared_scope"
+        )
 
 
 def decode_report_payload(
@@ -127,40 +200,8 @@ def decode_report_payload(
     if kind is ReportKind.PAPER_DEVIATION:
         if payload.get("kind") != kind.value:
             raise ReportMalformed(source_path, "paper_deviation kind does not match report kind")
-        if version == "2.0.0":
-            if not all(field in payload for field in ("declared_scope", "summary", "marks")):
-                raise ReportMalformed(
-                    source_path, "paper_deviation 2.0.0 payload lacks scope-bound DTO fields"
-                )
-            scope = payload["declared_scope"]
-            scope_fields = (
-                "validation_profile",
-                "validation_profile_hash",
-                "validation_report_hash",
-                "venue",
-                "symbol",
-                "timeframe",
-                "research_class",
-            )
-            if (
-                not isinstance(scope, dict)
-                or scope.get("scope_schema_version") != "1.0.0"
-                or any(not isinstance(scope.get(field), str) for field in scope_fields)
-                or not isinstance(scope.get("scope_hash"), str)
-                or any(
-                    _SHA256.fullmatch(scope[field]) is None
-                    for field in ("validation_profile_hash", "validation_report_hash")
-                    if isinstance(scope.get(field), str)
-                )
-            ):
-                raise ReportMalformed(
-                    source_path, "paper_deviation 2.0.0 declared_scope is invalid"
-                )
-            scope_body = {key: value for key, value in scope.items() if key != "scope_hash"}
-            if scope.get("scope_hash") != content_hash(scope_body):
-                raise ReportMalformed(
-                    source_path, "paper_deviation 2.0.0 scope_hash does not match declared_scope"
-                )
+        if version in _DEVIATION_SCOPE_VERSIONS:
+            _check_deviation_scope(payload, version, source_path)
     if kind is ReportKind.DEGRADATION_CHECK and version == "1.1.0" and "evidence" in payload:
         _check_degradation_evidence(source_path, payload["evidence"])
     return ReportPayloadDTO(kind, version, payload, supported=True)

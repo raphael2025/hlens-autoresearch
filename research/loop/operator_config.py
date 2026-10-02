@@ -137,7 +137,10 @@ __all__ = [
     "ProviderIdentity",
     "StrategyEntry",
     "WiringValues",
+    "compile_wiring",
+    "cross_check_bindings",
     "load_operator_config",
+    "wiring_identity",
 ]
 
 #: The one supported configuration schema (ADR-0074 §2.1); any other value is refused.
@@ -429,43 +432,13 @@ class OperatorConfig:
         for role in PROVIDER_ROLES:
             if getattr(providers, role) is None:
                 raise OperatorConfigError(f"no {role} was injected")
-        w = self.wiring
-        try:
-            strategies = tuple(
-                StrategyCandidate(
-                    spec=entry.spec,
-                    strategy=providers.strategy_provider,
-                    hypothesis_family_id=entry.hypothesis_family_id,
-                )
-                for entry in w.strategies
-            )
-        except ValueError as exc:
-            raise OperatorConfigError(f"a strategy cannot be wired: {exc}") from exc
-        wiring = LoopWiring(
+        wiring = compile_wiring(
+            self.wiring,
             feature_provider=providers.feature_provider,
-            feature_spec=w.feature_spec,
-            feature_chunk_bars=w.feature_chunk_bars,
             state_provider=providers.state_provider,
-            state_spec=w.state_spec,
-            decision_step=w.decision_step,
-            decision_warmup=w.decision_warmup,
-            strategies=strategies,
+            strategy_provider=providers.strategy_provider,
             backtester=providers.backtester,
-            cost_model=w.cost_model,
-            initial_equity=w.initial_equity,
             outcome_provider=providers.outcome_provider,
-            label_spec=w.label_spec,
-            robustness=w.robustness,
-            profile_selection=w.profile_selection,
-            declared_research_class=w.declared_research_class,
-            code_commit=w.code_commit,
-            environment_lock=w.environment_lock,
-            evolution=None,
-            oos_unseal=None,
-            sealed_decision_step=None,
-            conditional=None,
-            hypothesis_batch=None,
-            knowledge_source=None,
         )
         v = self.loop
         loop_config = SyntheticLoopConfig(
@@ -497,6 +470,57 @@ class OperatorConfig:
             operator_identity=self.operator_identity,
             paths=self.paths,
         )
+
+
+def compile_wiring(
+    w: WiringValues,
+    *,
+    feature_provider: FeatureProvider,
+    state_provider: StateProvider,
+    strategy_provider: StrategyProvider,
+    backtester: BacktestProvider,
+    outcome_provider: OutcomeProvider,
+) -> LoopWiring:
+    """The one ``LoopWiring`` of verified wiring values and allowlist-verified providers (every
+    ``DISABLED_WIRING_FIELDS`` mode ``None``). Shared by ``OperatorConfig.build`` and the
+    Dataset-sourced operator configuration (ADR-0105 §5)."""
+    try:
+        strategies = tuple(
+            StrategyCandidate(
+                spec=entry.spec,
+                strategy=strategy_provider,
+                hypothesis_family_id=entry.hypothesis_family_id,
+            )
+            for entry in w.strategies
+        )
+    except ValueError as exc:
+        raise OperatorConfigError(f"a strategy cannot be wired: {exc}") from exc
+    return LoopWiring(
+        feature_provider=feature_provider,
+        feature_spec=w.feature_spec,
+        feature_chunk_bars=w.feature_chunk_bars,
+        state_provider=state_provider,
+        state_spec=w.state_spec,
+        decision_step=w.decision_step,
+        decision_warmup=w.decision_warmup,
+        strategies=strategies,
+        backtester=backtester,
+        cost_model=w.cost_model,
+        initial_equity=w.initial_equity,
+        outcome_provider=outcome_provider,
+        label_spec=w.label_spec,
+        robustness=w.robustness,
+        profile_selection=w.profile_selection,
+        declared_research_class=w.declared_research_class,
+        code_commit=w.code_commit,
+        environment_lock=w.environment_lock,
+        evolution=None,
+        oos_unseal=None,
+        sealed_decision_step=None,
+        conditional=None,
+        hypothesis_batch=None,
+        knowledge_source=None,
+    )
 
 
 # ---- entry point ----------------------------------------------------------------------------
@@ -1014,6 +1038,12 @@ def _loop_values(table: dict[str, Any], base: Path) -> LoopValues:
 def _cross_check(values: LoopValues, wiring: WiringValues) -> None:
     """The outcome, Profile / ProfileSelection / ProfileSelectionRule, cost model and strategy
     family bindings (ADR-0074 §2.6 / §2.8 / §3.2; module docs, **Cross-checks**)."""
+    cross_check_bindings(values.profile, values.family_id, wiring)
+
+
+def cross_check_bindings(profile: ValidationProfile, family_id: str, wiring: WiringValues) -> None:
+    """``_cross_check`` over the Profile and the family id alone (shared with the Dataset-sourced
+    operator configuration, ADR-0105 §5): the Profile must be FROZEN, among the other bindings."""
     label_spec = wiring.label_spec
     outcome = wiring.outcome_spec
     if label_spec.outcome.target_identity() != outcome.ref.target_identity():
@@ -1031,7 +1061,6 @@ def _cross_check(values: LoopValues, wiring: WiringValues) -> None:
             "every v1 StrategySpec must use exactly the allowlisted bar-log-return signal"
         )
 
-    profile = values.profile
     selection = wiring.profile_selection
     rule = wiring.profile_selection_rule
     if profile.status is not ProfileStatus.FROZEN:
@@ -1078,7 +1107,7 @@ def _cross_check(values: LoopValues, wiring: WiringValues) -> None:
             f"{wiring.cost_model.ref}"
         )
     for index, strategy_entry in enumerate(wiring.strategies):
-        if strategy_entry.hypothesis_family_id != values.family_id:
+        if strategy_entry.hypothesis_family_id != family_id:
             raise OperatorConfigError(
                 f"[loop.wiring] strategies[{index}] hypothesis_family_id is not [loop] family_id"
             )
@@ -1155,7 +1184,6 @@ def _operator_identity(
     providers: tuple[ProviderIdentity, ...], values: LoopValues, wiring: WiringValues
 ) -> str:
     """SHA-256 of the ADR-0074 §5 semantic configuration; no path and no ``--rounds``."""
-    robustness = wiring.robustness
     payload = {
         "format": _IDENTITY_FORMAT,
         "schema_version": CONFIG_SCHEMA_VERSION,
@@ -1188,33 +1216,41 @@ def _operator_identity(
             "llm_prompt": None,
             "llm_cost_units_per_call": exact_decimal_text(values.llm_cost_units_per_call),
         },
-        "wiring": {
-            "feature_spec": wiring.feature_spec.content_hash(),
-            "feature_chunk_bars": wiring.feature_chunk_bars,
-            "state_spec": wiring.state_spec.content_hash(),
-            "decision_step_microseconds": _microseconds(wiring.decision_step),
-            "decision_warmup_microseconds": _microseconds(wiring.decision_warmup),
-            "strategies": [
-                {
-                    "spec": entry.spec.content_hash(),
-                    "hypothesis_family_id": entry.hypothesis_family_id,
-                }
-                for entry in wiring.strategies
-            ],
-            "cost_model": wiring.cost_model.content_hash(),
-            "initial_equity": exact_decimal_text(wiring.initial_equity),
-            "label_spec": wiring.label_spec.content_hash(),
-            "outcome_spec": wiring.outcome_spec.content_hash(),
-            "robustness": {
-                "cscv_partitions": robustness.cscv_partitions,
-                **{key: _float_text(getattr(robustness, key)) for key in _ROBUSTNESS_FLOAT_KEYS},
-            },
-            "profile_selection": wiring.profile_selection.content_hash(),
-            "profile_selection_rule": wiring.profile_selection_rule.content_hash(),
-            "declared_research_class": wiring.declared_research_class,
-            "code_commit": wiring.code_commit,
-            "environment_lock": wiring.environment_lock,
-            "disabled": list(DISABLED_WIRING_FIELDS),
-        },
+        "wiring": wiring_identity(wiring),
     }
     return content_hash(payload)
+
+
+def wiring_identity(wiring: WiringValues) -> dict[str, Any]:
+    """The ``wiring`` part of the operator identity payload (ADR-0074 §5): every wiring value or
+    content hash and the explicit disables. Shared with the Dataset-sourced operator (ADR-0105
+    §5)."""
+    robustness = wiring.robustness
+    return {
+        "feature_spec": wiring.feature_spec.content_hash(),
+        "feature_chunk_bars": wiring.feature_chunk_bars,
+        "state_spec": wiring.state_spec.content_hash(),
+        "decision_step_microseconds": _microseconds(wiring.decision_step),
+        "decision_warmup_microseconds": _microseconds(wiring.decision_warmup),
+        "strategies": [
+            {
+                "spec": entry.spec.content_hash(),
+                "hypothesis_family_id": entry.hypothesis_family_id,
+            }
+            for entry in wiring.strategies
+        ],
+        "cost_model": wiring.cost_model.content_hash(),
+        "initial_equity": exact_decimal_text(wiring.initial_equity),
+        "label_spec": wiring.label_spec.content_hash(),
+        "outcome_spec": wiring.outcome_spec.content_hash(),
+        "robustness": {
+            "cscv_partitions": robustness.cscv_partitions,
+            **{key: _float_text(getattr(robustness, key)) for key in _ROBUSTNESS_FLOAT_KEYS},
+        },
+        "profile_selection": wiring.profile_selection.content_hash(),
+        "profile_selection_rule": wiring.profile_selection_rule.content_hash(),
+        "declared_research_class": wiring.declared_research_class,
+        "code_commit": wiring.code_commit,
+        "environment_lock": wiring.environment_lock,
+        "disabled": list(DISABLED_WIRING_FIELDS),
+    }

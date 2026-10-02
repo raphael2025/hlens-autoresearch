@@ -22,7 +22,8 @@ from tests.test_adr_0077_evidence_manifest import evidence, stream_ref, v3
 
 
 def test_contract_250_registers_only_the_new_pit_conflict_models_and_value() -> None:
-    assert CONTRACT_SCHEMA_VERSION == ADR_0094_VERSION == "2.5.0"
+    assert ADR_0094_VERSION == "2.5.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"  # ADR-0109 raised the current minor
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
         "2.0.0",
         "2.1.0",
@@ -30,6 +31,7 @@ def test_contract_250_registers_only_the_new_pit_conflict_models_and_value() -> 
         "2.3.0",
         "2.4.0",
         "2.5.0",
+        "2.6.0",
     )
     assert PitConflictHeadEvidence._MODEL_SINCE == "2.5.0"
     assert PitConflictEvidenceResult._MODEL_SINCE == "2.5.0"

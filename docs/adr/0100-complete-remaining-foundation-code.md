@@ -21,6 +21,7 @@
 在此之内，以下全部实现：
 
 1. **P7 算子执行**：为 ADR-0082 / 0088 / 0099 已定义语义的全部算子提供执行 Provider（feature transformation、interaction、temporal event、conditioned / ensemble / negated strategy），严格按已接受语义实现。只使用 `available_time ≤ t` 的数据，缺值时传播缺失。`compile_plan` 通过显式注册的 Provider allowlist 编译计划；`TypedPlan.runnable` 仅在调用方显式启用（配置开关，默认关闭）且计划全部节点都有已注册 Provider 时为 True。试验计数与 admission 规则不变。
+   > 勘误（[ADR-0103](0103-p7-plan-binding-and-admission-handoff.md) §7，2026-10-02）：运行就绪由 `CompiledPlan.runnable` 表达；`TypedPlan.runnable` 保持 `False`（它在计划 payload 与哈希中，`typed_plan_audit` 依赖它）。
 2. **横截面 rank / quantile**：新增 `rank_cs` / `quantile_cs` transform。统计总体为显式 universe 快照（钉定的 Universe / Dataset 引用）在同一 bar 时刻的全部成员；时间对齐按 bar 的 `interval_end`；缺值成员不计入总体；平局取平均秩。需要的契约字段以 additive 方式加入（契约 minor 版本升级）。
 3. **P11 监控指标扩展**：闭集中加入所有能以“与基线相同的 validation 函数、相同参数，作用于近期窗口数据”计算的 metric；需要 Profile 固定窗口或参数族重跑的 metric，在近期窗口内按同一函数、同一参数重算，并在 metric definition 中记录窗口口径。任何无法做到同源同参的 metric 仍拒绝。**不发明新公式。**
 4. **P11 默认运行环境**：提供基于 `Settings` 的默认 `AuthorityEnvironment` factory（Iceberg DatasetCatalog、插件注册表中的 BacktestProvider、按基线 StrategySpec 组装的决策管线），可以通过 `--authority-environment` 指定。

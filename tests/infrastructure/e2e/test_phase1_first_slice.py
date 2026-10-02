@@ -12,6 +12,10 @@ below: every reusable wrapper in the existing support modules (``World.trades`` 
 need the same building blocks (``revision_support.archive``, ``rest_support.queue_*_chain`` /
 ``*_request``, ``RestHarness.collect`` / ``store``) called with an explicit symbol instead.
 
+Since ADR-0101 §7 the roadmap #20 acceptance walk runs on the v3 production entry in
+``test_phase1_first_slice_v3.py``; the v2 walk here is kept, unchanged, as the v2 replay /
+compatibility case (its first dataset is seeded as a pre-DQ-10 one by ``seed_historical_v2``).
+
 Two tests:
 
 - ``test_phase1_first_slice_archive_to_representation``: the full walk (1-6 in the roadmap #20

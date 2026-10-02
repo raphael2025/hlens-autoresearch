@@ -5,7 +5,7 @@
       "description": "固定数据快照上的参考信号 / 仓位序列，用于 Equivalence Gate。\n\n两个 `*_hash` 是被引用内容的 `ContentHash`（ADR-0015 §D-21.1）；\n`dataset_snapshot_id` 与两个 `*_uri` **不**收紧：前者的格式由外部系统（Iceberg）决定，\n后者取决于尚未决定的存储方案（D-01、D-02），按名字里有 `id` / `uri` 就套哈希类型\n只会得到错误的契约（ADR-0015 §D-21.3）。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -51,7 +51,7 @@
       "description": "可交易标的。跨 venue 的符号必须规范化映射。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -123,7 +123,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -155,7 +155,7 @@
   "description": "不可变、内容寻址的策略结论打包（ADR-0005 §2）。\n\n任何参数、依赖或代码变化 = 新 Artifact = 需重新验证。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

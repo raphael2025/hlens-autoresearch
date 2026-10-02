@@ -5,7 +5,7 @@
       "description": "回测成本模型 v1：按成交名义额收取的费率 + 相对参考价的不利滑点率（均为 `[0, 1)` 小数）。\n\n买入成交价 = `open × (1 + slippage_rate)`，卖出 = `open × (1 − slippage_rate)`；\n费用 = `|quantity| × fill_price × fee_rate`。`ref` 是其 `cost_model:name@version` 引用\n（进入复现元组的 `cost_model_ref`）。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -49,7 +49,7 @@
       "description": "一根价格 bar：`[interval_start, interval_end)`，`available_time >= interval_end`。\n\n`volume`（ADR-0054 §4，可选）：该 bar 的成交数量（`>= 0`）。它是 bar 收盘后才知道的量，\n只被模拟器用来界定\"这根 bar 市场能承载多少\"，**从不**进入策略或风控的决策输入\n（`StrategyRequest` / `RiskRequest` 不含 `PriceBar`），因此不构成 C-L1 泄漏。为 `None` 时\n从载荷中省略：既有 `PriceBar` 与 `BacktestRequest` 的内容哈希逐位不变。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -131,7 +131,7 @@
       "description": "一个决策时刻、一个标的的目标仓位。\n\n- `target_weight`：带符号的目标权重（名义敞口 / 组合权益；`1` = 满仓多头，`-1` = 满仓空头）；\n- `inputs_used` / `latest_input_available_time`：计算它实际使用的观察条数与其中最晚的\n  `available_time`；为 0 当且仅当后者为空，此时目标只能是 `0`（没有信息就不持仓，不填补）。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -184,7 +184,7 @@
   "description": "一次回测请求。\n\n- `bars`：非空，按 `(interval_start, instrument)` 唯一升序；同一标的的 bar 不重叠；\n- `targets`：按 `(decision_time, instrument)` 唯一升序，每个标的都必须有 bar；\n- `initial_equity > 0`，初始全部为现金、无持仓。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

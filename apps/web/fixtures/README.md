@@ -18,8 +18,8 @@ fixture builder, delete the stale file under the affected `<kind>/` first.
 
 ## Current fixtures
 
-One per kind. The contract-bound current fixture set is generated at 2.5.0, and the 2.4.0 outputs
-remain as readable history; `retro_audit` has its own report schema version (1.1.0):
+One per kind. The contract-bound current fixture set is generated at 2.6.0, and the 2.5.0 / 2.4.0
+outputs remain as readable history; `retro_audit` has its own report schema version (1.1.0):
 
 - `validation_report/`: `write_validation_report` over the `_validation_report()` builder of
   `tests/research/reports/test_writers.py` plus one exact gate (`value_exact` / `threshold_exact`,
@@ -107,7 +107,8 @@ to the versioned reports listed above.
 
 ## Legacy readable fixtures (contract 2.2.0)
 
-The current contract advanced from 2.2.0 to 2.4.0 in ADR-0088 and to 2.5.0 in ADR-0094. The six
+The current contract advanced from 2.2.0 to 2.4.0 in ADR-0088, to 2.5.0 in ADR-0094 and to 2.6.0 in
+ADR-0109. The six
 contract-bound report kinds retain their 2.2.0 files and ids as readable history:
 
 | kind | legacy 2.2.0 file |
@@ -125,7 +126,7 @@ They are reproduced by `regenerate_legacy("2.2.0")` from the same report builder
 ## Legacy readable fixtures (contract 2.4.0)
 
 These six reports were the latest fixture generation before ADR-0094. They remain alongside the
-current 2.5.0 files and are pinned by id in `tests/apps/report_fixtures.py` (`LEGACY_2_4_0`):
+later files and are pinned by id in `tests/apps/report_fixtures.py` (`LEGACY_2_4_0`):
 
 | kind | legacy 2.4.0 file |
 |---|---|
@@ -138,6 +139,23 @@ current 2.5.0 files and are pinned by id in `tests/apps/report_fixtures.py` (`LE
 
 They are reproduced by `regenerate_legacy("2.4.0")` from the same report builders under
 `contract_schema_version_scope("2.4.0")`.
+
+## Legacy readable fixtures (contract 2.5.0)
+
+These six reports were the latest fixture generation before ADR-0109. They remain alongside the
+current 2.6.0 files and are pinned by id in `tests/apps/report_fixtures.py` (`LEGACY_2_5_0`):
+
+| kind | legacy 2.5.0 file |
+|---|---|
+| `validation_report/` | `94a4ba99e5f171599f1740db2fd8f31d525afa3fb926bf994be62b637ef29af5.json` |
+| `state_strategy_matrix/` | `2e5e2acb4b7d3dac55e657e353a77f7be4bf40ae1a75339e7c47cc5535007b9b.json` |
+| `router_paper_run/` | `cab124e6a115efcc637989528190ad70d36bd9b771abeba89b2522f49e2c883c.json` |
+| `gate_calibration/` | `72b8b845712de9f100887c80bb6709ec4ce0331d8dded928af623e8ee9479fb6.json` |
+| `router_stop/` | `18769565b5e8c9670d8bc0915e4edf00ddf1fa3b45bac7626f4d3b51dac709aa.json` |
+| `paper_deviation/` | `c952540590d89532d0a58ce06300b9f868220f2750a4a19449677716438a209a.json` |
+
+They are reproduced byte for byte by `regenerate_legacy("2.5.0")` from the same report builders
+under `contract_schema_version_scope("2.5.0")`.
 
 `tests/apps/test_console_fixtures.py` loads every fixture here through `apps.api`'s `ReportStore`
 (and the `/reports/...` HTTP endpoints) and fails if any `ReportKind` has no fixture file, so this

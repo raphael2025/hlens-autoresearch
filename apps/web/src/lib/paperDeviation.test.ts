@@ -3,10 +3,13 @@ import { test } from "node:test";
 import { clone, fixtureEnvelopes } from "./fixtures.test-util.ts";
 import {
   asPaperDeviationPayload,
+  BINDING_LABELS,
+  bindingKind,
   chartSeries,
   decimalText,
   deviationLabel,
   percent,
+  runBindingRows,
   summaryRows,
 } from "./paperDeviation.ts";
 
@@ -94,4 +97,77 @@ test("a payload that is not a paper deviation is not parsed as one", () => {
   assert.equal(asPaperDeviationPayload(noSummary), null);
   const [run] = fixtureEnvelopes("router_paper_run");
   assert.equal(asPaperDeviationPayload(run.payload), null);
+});
+
+// --- ADR-0104: scope-only (legacy) vs run-bound reports ----------------------------------------
+
+const byVersion = (version: string) =>
+  fixtureEnvelopes("paper_deviation").filter((item) => item.payload.schema_version === version);
+
+test("the committed fixtures cover every generation: unscoped 1.0.0, scope-only 2.0.0, run-bound 2.1.0", () => {
+  assert.equal(byVersion("1.0.0").length, 2);
+  assert.equal(byVersion("2.0.0").length, 4);
+  // one run-bound report per contract generation: 2.1.0, 2.2.0, 2.4.0, 2.5.0 and current 2.6.0
+  assert.equal(byVersion("2.1.0").length, 5);
+  for (const [version, kind] of [["1.0.0", "unscoped"], ["2.0.0", "scope_only"], ["2.1.0", "run_bound"]] as const) {
+    for (const item of byVersion(version)) {
+      assert.equal(bindingKind(payloadOf(item.payload)), kind, `${version} ${item.id}`);
+    }
+  }
+});
+
+test("a run-bound report shows its binding rows; the other generations show none", () => {
+  for (const item of byVersion("2.1.0")) {
+    const report = payloadOf(item.payload);
+    const rows = runBindingRows(report);
+    assert.deepEqual(
+      rows.map((row) => row.label),
+      ["router_spec_hash", "router_strategy_spec_hash", "experiment_hash", "bars_hash", "window",
+        "cost_model_hash", "reference_request_hash"],
+    );
+    const binding = report.declared_scope?.run_binding;
+    assert.ok(binding !== undefined);
+    assert.equal(rows.find((row) => row.label === "reference_request_hash")?.value, report.reference_request_hash);
+    assert.equal(rows.find((row) => row.label === "window")?.value, `${binding.window_start} → ${binding.window_end}`);
+  }
+  for (const item of [...byVersion("2.0.0"), ...byVersion("1.0.0")]) {
+    assert.deepEqual(runBindingRows(payloadOf(item.payload)), []);
+  }
+});
+
+test("the three generations are labelled apart, and scope-only is never presented as run-bound", () => {
+  assert.equal(new Set(Object.values(BINDING_LABELS)).size, 3);
+  assert.match(BINDING_LABELS.scope_only, /scope-only/);
+  assert.match(BINDING_LABELS.scope_only, /不可作为可比证据/);
+  assert.match(BINDING_LABELS.run_bound, /带运行绑定/);
+});
+
+test("a 2.1.0 payload without a (well-formed) run binding is not parsed as a deviation", () => {
+  const [current] = byVersion("2.1.0");
+  const good = clone(current.payload);
+  assert.ok(asPaperDeviationPayload(good) !== null);
+  const dropped = clone(current.payload);
+  delete (dropped.declared_scope as Record<string, unknown>).run_binding;
+  assert.equal(asPaperDeviationPayload(dropped), null);
+  const badHash = clone(current.payload);
+  ((badHash.declared_scope as Record<string, unknown>).run_binding as Record<string, unknown>).bars_hash = "x";
+  assert.equal(asPaperDeviationPayload(badHash), null);
+  const otherRequest = clone(current.payload);
+  otherRequest.reference_request_hash = "0".repeat(64);
+  assert.equal(asPaperDeviationPayload(otherRequest), null);
+  const backwards = clone(current.payload);
+  const binding = (backwards.declared_scope as Record<string, unknown>).run_binding as Record<string, unknown>;
+  [binding.window_start, binding.window_end] = [binding.window_end, binding.window_start];
+  assert.equal(asPaperDeviationPayload(backwards), null);
+  const wrongScope = clone(current.payload);
+  (wrongScope.declared_scope as Record<string, unknown>).scope_schema_version = "1.0.0";
+  assert.equal(asPaperDeviationPayload(wrongScope), null);
+});
+
+test("a scope-only 2.0.0 payload stays readable and cannot carry a run binding", () => {
+  const [legacy] = byVersion("2.0.0");
+  assert.ok(asPaperDeviationPayload(clone(legacy.payload)) !== null);
+  const smuggled = clone(legacy.payload);
+  (smuggled.declared_scope as Record<string, unknown>).run_binding = {};
+  assert.equal(asPaperDeviationPayload(smuggled), null);
 });

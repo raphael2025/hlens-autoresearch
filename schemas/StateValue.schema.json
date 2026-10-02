@@ -3,7 +3,7 @@
   "description": "一个评估时刻的状态。\n\n- `state`：必填；`None` 表示显式\"不可计算\"（历史不足等），不填补；\n- `inputs_used`：识别该状态实际使用的 Feature 值个数；为 0 当且仅当 `latest_input_time` 为空，\n  且此时 `state` 必须为 `None`；\n- `latest_input_time`：所用 Feature 值中最大的 `evaluation_time`，不晚于 `evaluation_time`。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

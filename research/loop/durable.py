@@ -58,7 +58,8 @@ round's record **before** the audit records it. The checkpoint line holds
    (ingest market and spec hash, the state summary, every experiment row = its trial's summary,
    every validation report row, every offspring row), trial / validation / hypothesis / report
    records reproduce their content hashes, and every catalog strategy the delta names rebuilds
-   from its parent;
+   from its parent — or, a P7-admitted one (ADR-0110: its row's ``provenance``), from
+   ``LoopWiring.p7_plans`` under its plan's checkpointed COMMIT of that round;
 6. audit ↔ ledgers: every hypothesis the audit registered or re-evaluated is in the trial ledger
    (the re-evaluation under its attempt), and so is every conditional cell hypothesis an
    experiment row registered (opt-in ``ConditionalPlan``; under the row's attempt) or a
@@ -357,6 +358,7 @@ __all__ = [
     "FileAnchor",
     "LoopStateInconsistent",
     "MemoryCheckpoint",
+    "P7Rebuild",
     "PlanAdmissionLease",
     "RetryAdmissionReceipt",
     "StateAnchor",
@@ -450,6 +452,14 @@ _DELTA_KEYS: Final = frozenset(
     }
 )
 _UNSEALED: Final = frozenset({"unsealed", CONSUMED_WITHOUT_RESULT})
+#: ADR-0110 §1: the ``provenance`` of a delta strategy row a P7 admission added (no other row has
+#: the field, so a directory without P7 admissions keeps its bytes).
+P7_ORIGIN: Final = "p7"
+_P7_PROVENANCE_KEYS: Final = frozenset({"origin", "plan_hash", "round_index"})
+_SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
+#: ADR-0110 §2: rebuilds a P7-admitted catalog entry from ``LoopWiring.p7_plans`` (``plan_hash``,
+#: the plan's COMMIT in the round, ``round_index``); ``research.loop.p7_admission.p7_rebuild``.
+type P7Rebuild = Callable[[str, CommittedAdmission, int], StrategyCandidate]
 
 
 class LoopStateInconsistent(RuntimeError):
@@ -963,9 +973,9 @@ def _first_bar(piece: ResearchPiece) -> int:
     return next(i for i, bar in enumerate(piece.market.bars) if bar.interval_start == start)
 
 
-def _strategy_payload(candidate: StrategyCandidate) -> dict[str, Any]:
+def _strategy_payload(candidate: StrategyCandidate, round_index: int) -> dict[str, Any]:
     spec = candidate.spec
-    return {
+    payload: dict[str, Any] = {
         "spec": spec.model_dump(mode="json"),
         "spec_hash": spec.content_hash(),
         "parent": str(spec.lineage[-1]) if spec.lineage else None,
@@ -974,9 +984,18 @@ def _strategy_payload(candidate: StrategyCandidate) -> dict[str, Any]:
         if candidate.risk_policy is None
         else candidate.risk_policy.content_hash(),
     }
+    record = candidate.plan_record
+    if record is not None:  # ADR-0110 §1: admitted this round; never an evolution offspring
+        payload["parent"] = None
+        payload["provenance"] = {
+            "origin": P7_ORIGIN,
+            "plan_hash": record.plan_hash,
+            "round_index": round_index,
+        }
+    return payload
 
 
-def _delta(memory: ResearchMemory, marks: _Marks) -> Any:
+def _delta(memory: ResearchMemory, marks: _Marks, round_index: int) -> Any:
     now = _Marks.of(memory)
     if any(getattr(now, f.name) < getattr(marks, f.name) for f in fields(_Marks)):
         raise ValueError("research memory shrank: it is append-only")
@@ -1003,7 +1022,7 @@ def _delta(memory: ResearchMemory, marks: _Marks) -> Any:
                 for piece in memory.research_data[marks.research_data :]
             ],
             "strategies": [
-                _strategy_payload(candidate)
+                _strategy_payload(candidate, round_index)
                 for candidate in list(memory.strategies.values())[marks.strategies :]
             ],
             "trials": [_trial_payload(o) for o in memory.trials[marks.trials :]],
@@ -1193,7 +1212,7 @@ class MemoryCheckpoint:
                     "round_index": record.round_index,
                     "record_hash": record.record_hash,
                     "heads": heads(memory, self._admission, self._retry),
-                    "delta": _delta(memory, self._marks),
+                    "delta": _delta(memory, self._marks, record.round_index),
                 },
             )
             self._marks = _Marks.of(memory)
@@ -2184,6 +2203,7 @@ def open_state(
     provider_for: Callable[[StrategySpec], Any] | None,
     anchor: StateAnchor | None = None,
     state_version: int = STATE_VERSION,
+    p7_rebuild: P7Rebuild | None = None,
 ) -> DurableState:
     """Open (or create) a loop state directory and restore the research memory from it.
 
@@ -2194,8 +2214,10 @@ def open_state(
     offspring spec
     (the evolution plan's; ``None`` without evolution); ``anchor``: the optional external anchor
     (module docs; a ``FileAnchor`` must lie outside ``state_dir``); ``state_version`` selects the
-    format for a new directory (defaults to v4). Existing v3 directories are always reopened in
-    their v3 format and never migrated. Raises
+    format for a new directory (defaults to v4); ``p7_rebuild`` rebuilds a P7-admitted catalog
+    entry from ``LoopWiring.p7_plans`` (ADR-0110; ``None``: a delta row with a P7 ``provenance``
+    is refused). Existing v3 directories are always reopened in their v3 format and never
+    migrated. Raises
     ``LoopStateInconsistent`` when the files disagree with each other, the configuration or the
     anchor (see module docs) — v4 plan admission reducer and recovery refusals included —,
     ``JournalCorrupted`` when one file is itself corrupt. A v4 admission tail is recovered only
@@ -2235,6 +2257,7 @@ def open_state(
             anchored,
             state_version,
             lock,
+            p7_rebuild,
         )
     except BaseException:
         lock.release()
@@ -2255,6 +2278,7 @@ def _open_locked(
     anchored: StateHead | None,
     requested_state_version: int,
     state_lock: StateLock,
+    p7_rebuild: P7Rebuild | None = None,
 ) -> DurableState:
     """``open_state`` once the directory's single-writer lock is held (see ``open_state``)."""
     audit = LoopAuditLog(root / AUDIT_FILE)
@@ -2460,6 +2484,7 @@ def _open_locked(
     # never resumed) verifies the rounds without any Provider; see ``_verify_round_offline``.
     # ADR-0083: so does a reopening that recovers an unfinished failed-round retry.
     recovering = _admission_recovery_path(audit, admission, marks) or retry_tail is not None
+    p7 = _P7Proofs(admission, marks, p7_rebuild)
     if recovering:
         view = _AuditView.of(memory)
         for record, checkpoint in zip(audit.records, checkpoints, strict=True):
@@ -2469,10 +2494,11 @@ def _open_locked(
                 checkpoint["delta"],
                 ingests=provider is not None,
                 evolves=provider_for is not None,
+                p7=p7,
             )
     else:
         for record, checkpoint in zip(audit.records, checkpoints, strict=True):
-            _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
+            _restore_round(memory, record, checkpoint["delta"], provider, provider_for, p7)
     state.checkpoint.reset_marks()
     if admission is not None:
         _replay_guard(memory, audit, expected["loop_id"])
@@ -3487,6 +3513,7 @@ def _restore_round(
     delta: Any,
     provider: SyntheticMarketProvider | None,
     provider_for: Callable[[StrategySpec], Any] | None,
+    p7: _P7Proofs,
 ) -> None:
     """Re-apply one round's delta, checking it against the audit record (cross-check 5)."""
     index = record.round_index
@@ -3494,7 +3521,7 @@ def _restore_round(
         if set(delta) != _DELTA_KEYS:
             raise ValueError("the delta has other fields")
         _restore_markets(memory, record, delta, provider)
-        _restore_strategies(memory, delta["strategies"], provider_for)
+        _restore_strategies(memory, delta["strategies"], provider_for, p7, index)
         _restore_trials(memory, record, delta)
         _check_stage_rows(record, delta)
     except (ArithmeticError, KeyError, LookupError, TypeError, ValueError) as exc:
@@ -3547,7 +3574,13 @@ class _AuditView:
 
 
 def _verify_round_offline(
-    view: _AuditView, record: LoopRecord, delta: Any, *, ingests: bool, evolves: bool
+    view: _AuditView,
+    record: LoopRecord,
+    delta: Any,
+    *,
+    ingests: bool,
+    evolves: bool,
+    p7: _P7Proofs,
 ) -> None:
     """Cross-check 5 without any Provider, for a reopening that may recover an admission.
 
@@ -3558,11 +3591,14 @@ def _verify_round_offline(
     market hash, a single market per ingest); research pieces naming a restored market and the
     accumulated piece count; offspring specs (hash, parent in the catalog or an earlier round,
     inherited family / risk policy, no catalog ref with other content, an evolution plan
-    configured); trial rows (catalog strategy and hash, hypothesis / experiment / run content
-    hashes, reason and cutoff) equal to the audit's experiment rows; validation rows (an earlier
-    trial, report hashes, reason) equal to the audit's reports; the experiment / state / offspring
-    rows. Only regeneration proves the rest — that a market spec regenerates its ``market_hash``
-    and ``spec_hash`` and that a piece's bars rebuild — and stays unproven on this path.
+    configured); P7-admitted catalog rows (ADR-0110 §4: their ``provenance`` structure, spec hash,
+    ``plan_hash`` and the plan's checkpointed COMMIT of that round); trial rows (catalog strategy
+    and hash, hypothesis / experiment / run content hashes, reason and cutoff) equal to the
+    audit's experiment rows; validation rows (an earlier trial, report hashes, reason) equal to
+    the audit's reports; the experiment / state / offspring rows. Only regeneration proves the
+    rest — that a market spec regenerates its ``market_hash`` and ``spec_hash``, that a piece's
+    bars rebuild, and that a P7 row's plan compiles (through ``LoopWiring.p7_plans``) back to its
+    spec, family and risk policy — and stays unproven on this path.
     """
     index = record.round_index
     try:
@@ -3601,6 +3637,17 @@ def _verify_round_offline(
             spec = StrategySpec.model_validate(row["spec"])
             if spec.content_hash() != row["spec_hash"]:
                 raise ValueError(f"{spec.ref} does not reproduce its spec hash")
+            if "provenance" in row:  # ADR-0110 §4: structure, plan hash and COMMIT only
+                p7.proof(spec, row, index)
+                known = view.strategies.get(str(spec.ref))
+                if known is not None and known[0] != row["spec_hash"]:
+                    raise ValueError(f"{spec.ref} is already in the catalog with other content")
+                view.strategies[str(spec.ref)] = (
+                    row["spec_hash"],
+                    row["hypothesis_family_id"],
+                    row["risk_policy_hash"],
+                )
+                continue
             parent = view.strategies.get(str(row["parent"]))
             if not evolves or parent is None:
                 raise ValueError(f"{spec.ref} cannot be rebuilt: no evolution plan or no parent")
@@ -3681,15 +3728,99 @@ def _restore_markets(
         raise ValueError("the accumulated research pieces differ from the audit")
 
 
+class _P7Proofs:
+    """ADR-0110 §2 / §3: a P7-admitted delta strategy row is proven by its plan's checkpointed
+    COMMIT in the row's round and rebuilt only through ``LoopWiring.p7_plans`` (``rebuild``)."""
+
+    def __init__(
+        self,
+        admission: PlanAdmissionJournal | None,
+        marks: Sequence[tuple[str, JournalEntry]],
+        rebuild: P7Rebuild | None,
+    ) -> None:
+        self._admission = admission
+        self._checkpointed = {
+            mark.payload["transaction_id"] for _, mark in marks if mark.type == PLAN_ADMISSION
+        }
+        self._rebuild = rebuild
+
+    def proof(
+        self, spec: StrategySpec, row: Mapping[str, Any], round_index: int
+    ) -> CommittedAdmission:
+        """The COMMIT of the row's plan in ``round_index`` (with its consistent PREPARE)."""
+        provenance = row["provenance"]
+        if (
+            not isinstance(provenance, Mapping)
+            or set(provenance) != _P7_PROVENANCE_KEYS
+            or provenance["origin"] != P7_ORIGIN
+        ):
+            raise ValueError(f"{spec.ref} has a malformed P7 provenance")
+        plan_hash, admitted = provenance["plan_hash"], provenance["round_index"]
+        if not isinstance(plan_hash, str) or _SHA256.fullmatch(plan_hash) is None:
+            raise ValueError(f"{spec.ref} names no P7 plan hash")
+        if type(admitted) is not int or admitted != round_index:
+            raise ValueError(f"{spec.ref} was not admitted in round {round_index}")
+        if row["parent"] is not None:
+            raise ValueError(f"{spec.ref} is a P7 plan candidate with an evolution parent")
+        if self._admission is None:
+            raise ValueError(f"{spec.ref} is a P7 plan candidate without a plan admission journal")
+        found = [
+            item
+            for item in self._admission.committed
+            if item.prepare.round.round_index == round_index
+            and item.prepare.plan.content_hash == plan_hash
+        ]
+        if len(found) != 1 or found[0].prepare.transaction_id not in self._checkpointed:
+            raise ValueError(
+                f"{spec.ref} cannot be rebuilt: the plan admission journal holds no checkpointed "
+                f"COMMIT of plan {plan_hash} in round {round_index}"
+            )
+        # The reducer bound the COMMIT to its exact PREPARE and the PREPARE's plan evidence to
+        # its content hash; ``_check_admission_checkpoints`` bound both to the round's start.
+        return found[0]
+
+    def rebuild(
+        self, spec: StrategySpec, row: Mapping[str, Any], round_index: int
+    ) -> StrategyCandidate:
+        """The row's candidate, rebuilt as its admission built it and checked against the row."""
+        if self._rebuild is None:
+            raise ValueError(
+                f"{spec.ref} cannot be rebuilt: it is a P7 plan candidate and LoopWiring.p7_plans "
+                "is not configured"
+            )
+        committed = self.proof(spec, row, round_index)
+        plan_hash = row["provenance"]["plan_hash"]
+        candidate = self._rebuild(plan_hash, committed, round_index)
+        record = candidate.plan_record
+        risk = candidate.risk_policy
+        if (
+            candidate.spec.content_hash() != row["spec_hash"]
+            or record is None
+            or record.plan_hash != plan_hash
+        ):
+            raise ValueError(f"{spec.ref} does not rebuild from plan {plan_hash} to its spec hash")
+        if (candidate.hypothesis_family_id, None if risk is None else risk.content_hash()) != (
+            row["hypothesis_family_id"],
+            row["risk_policy_hash"],
+        ):
+            raise ValueError(f"{spec.ref} does not rebuild with its family and risk policy")
+        return candidate
+
+
 def _restore_strategies(
     memory: ResearchMemory,
     rows: Sequence[Mapping[str, Any]],
     provider_for: Callable[[StrategySpec], Any] | None,
+    p7: _P7Proofs,
+    round_index: int,
 ) -> None:
     for row in rows:
         spec = StrategySpec.model_validate(row["spec"])
         if spec.content_hash() != row["spec_hash"]:
             raise ValueError(f"{spec.ref} does not reproduce its spec hash")
+        if "provenance" in row:  # ADR-0110: a P7-admitted candidate, never an offspring
+            memory.add_strategy(p7.rebuild(spec, row, round_index))
+            continue
         parent = memory.strategies.get(str(row["parent"]))
         if provider_for is None or parent is None:
             raise ValueError(f"{spec.ref} cannot be rebuilt: no evolution plan or no parent")

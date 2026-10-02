@@ -29,12 +29,14 @@ inject any PyIceberg ``Catalog`` (for example a temporary SQLite ``SqlCatalog``)
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self
 from urllib.parse import urlparse
@@ -131,10 +133,12 @@ __all__ = [
     "SUMMARY_FINGERPRINT_RULE",
     "CatalogIntegrityError",
     "CatalogUnavailable",
+    "CommitLayout",
     "DefinitionEvolutionError",
     "EvolutionOutcome",
     "PartitionEvolutionResult",
     "PyIcebergCatalogAdapter",
+    "commit_layout_of",
     "connect_postgres_catalog",
     "open_postgres_catalog_adapter",
 ]
@@ -143,6 +147,12 @@ SUMMARY_BATCH_ID: Final = "hlens.batch.id"
 SUMMARY_BATCH_FINGERPRINT: Final = "hlens.batch.fingerprint"
 SUMMARY_BATCH_ROW_COUNT: Final = "hlens.batch.row-count"
 SUMMARY_FINGERPRINT_RULE: Final = "hlens.batch.fingerprint-rule"
+#: ADR-0108: the commit layout of a snapshot that appends a whole logical unit at once, and the
+#: microbatch (window) size the unit was processed and verified in. Snapshots without the layout
+#: key are the original one-snapshot-per-batch layout.
+SUMMARY_COMMIT_LAYOUT: Final = "hlens.commit.layout"
+SUMMARY_WINDOW_ROWS: Final = "hlens.commit.window-rows"
+UNIT_COMMIT_LAYOUT: Final = "hlens.unit-commit@1.0.0"
 _ADDED_RECORDS: Final = "added-records"
 _TOTAL_RECORDS: Final = "total-records"
 
@@ -644,6 +654,38 @@ def _listed_position(snapshots: Sequence[Snapshot], snapshot_id: object) -> int 
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CommitLayout:
+    """How one snapshot was committed (ADR-0108), read from its summary.
+
+    ``unit`` is ``False`` for the original one-snapshot-per-batch layout (no layout keys) and
+    ``True`` for a staged unit commit (``UNIT_COMMIT_LAYOUT``), whose ``window_rows`` is the
+    microbatch size the unit was processed in.
+    """
+
+    unit: bool
+    window_rows: int | None
+
+
+def commit_layout_of(name: str, snapshot: Snapshot) -> CommitLayout:
+    """The ``CommitLayout`` of one PyIceberg snapshot; any other layout fails closed."""
+    summary = snapshot.summary
+    extra = {} if summary is None else summary.additional_properties
+    layout = extra.get(SUMMARY_COMMIT_LAYOUT)
+    window = extra.get(SUMMARY_WINDOW_ROWS)
+    if layout is None and window is None:
+        return CommitLayout(unit=False, window_rows=None)
+    if (
+        layout != UNIT_COMMIT_LAYOUT
+        or not isinstance(window, str)
+        or _SNAPSHOT_ID_RE.fullmatch(window) is None
+    ):
+        raise CatalogIntegrityError(
+            f"snapshot {snapshot.snapshot_id} of {name} records an unknown commit layout"
+        )
+    return CommitLayout(unit=True, window_rows=int(window))
+
+
 class PyIcebergCatalogAdapter:
     """``CatalogAdapter[pyarrow.Table]`` over a PyIceberg ``Catalog``."""
 
@@ -734,6 +776,24 @@ class PyIcebergCatalogAdapter:
             if snapshot is None:
                 raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
             return self._snapshot_info(name, snapshot)
+
+    def commit_layout(self, table: str, snapshot_id: str) -> CommitLayout:
+        """The ADR-0108 commit layout of one snapshot (infrastructure only, like ``history``).
+
+        Resolved like ``get_snapshot`` (unknown or malformed id: ``SnapshotNotFound``).
+        """
+        name = validate_table_name(table)
+        with _backend("commit_layout"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+            snapshot = (
+                iceberg.metadata.snapshot_by_id(int(snapshot_id))
+                if isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)
+                else None
+            )
+            if snapshot is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+            return commit_layout_of(name, snapshot)
 
     def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]:
         """``snapshot_id`` and its ancestors, newest first, from **one** load of the metadata.
@@ -1058,6 +1118,130 @@ class PyIcebergCatalogAdapter:
             ):
                 raise CatalogIntegrityError(f"committed metadata of {name} does not match request")
             return CommitResult(request=request, snapshot=info, outcome=CommitOutcome.COMMITTED)
+
+    def commit_unit(
+        self,
+        request: CommitRequest,
+        batches: Callable[[], Iterable[pa.Table]],
+        *,
+        scratch_directory: Path,
+        window_rows: int,
+    ) -> CommitResult:
+        """Commit one logical unit as **one** snapshot of many staged data files (ADR-0108).
+
+        Infrastructure-only; not part of the frozen ``CatalogAdapter`` protocol. ``request`` is the
+        unit's ``CommitRequest``: its ``batch_fingerprint`` is the registered rule's fingerprint of
+        the logical concatenation of every microbatch ``batches()`` yields, in order, and its
+        ``row_count`` their total. ``batches`` is a factory: it is called twice, and both passes
+        must yield the same content (a non-deterministic source is refused before committing).
+
+        The steps mirror ``commit_batch``: (1) the actual unit is verified (schema, row count, a
+        bounded streaming fingerprint on ``scratch_directory``) before any replay fast path; (2) the
+        batch id is replayed from the persisted history (same content: ``ALREADY_COMMITTED``;
+        other content: ``BatchConflict``); (3) the expected parent is checked; (4) the unit is
+        staged as data files in bounded memory (``unit_commit.StagedUnitWriter``) while its
+        fingerprint is recomputed; (5) every staged file is appended in one fast append whose
+        summary also records ``SUMMARY_COMMIT_LAYOUT`` and ``SUMMARY_WINDOW_ROWS``. A lost race is
+        resolved as ``commit_batch`` resolves it. Staged files of a failed or lost commit are
+        unreferenced orphans.
+        """
+        from infrastructure.catalog.fingerprint import PYARROW_BATCH_FINGERPRINT_RULE_ID
+        from infrastructure.catalog.fingerprint_unit import UnitFingerprint
+        from infrastructure.catalog.unit_commit import StagedUnitWriter
+
+        name = validate_table_name(request.table)
+        request = _revalidated(CommitRequest, request)
+        if isinstance(window_rows, bool) or not isinstance(window_rows, int) or window_rows < 1:
+            raise BatchRejected("window_rows must be a positive int")
+        if not callable(batches):
+            raise BatchRejected("batches must be a factory returning the unit's microbatches")
+        with _backend("commit_unit"):
+            iceberg = self._require(name)
+            registered = self._verified(name, iceberg)[0]
+            if registered.fingerprint_rule.rule_id != PYARROW_BATCH_FINGERPRINT_RULE_ID:
+                raise BatchRejected(
+                    f"{registered.definition_id} is not bound to "
+                    f"{PYARROW_BATCH_FINGERPRINT_RULE_ID}; a unit commit streams that rule's "
+                    "fingerprint"
+                )
+            # Step 1: verify the actual unit before any replay fast path.
+            with UnitFingerprint(registered.arrow_schema, scratch_directory) as unit:
+                for batch in batches():
+                    self._check_unit_batch(registered, batch)
+                    unit.add(batch)
+                self._check_unit_claim(request, unit.rows, unit.hexdigest())
+            # Step 2: idempotency from the persisted snapshot history.
+            replay = self._replay(name, iceberg, request)
+            if replay is not None:
+                return replay
+            # Step 3: optimistic concurrency against the current snapshot.
+            current = iceberg.metadata.current_snapshot_id
+            current_id = None if current is None else str(current)
+            if current_id != request.expected_parent_snapshot_id:
+                raise CommitConflict(
+                    f"table {name} is at snapshot {current_id}, "
+                    f"not {request.expected_parent_snapshot_id}"
+                )
+            # Step 4: stage the unit's data files, re-verifying the content as it is written.
+            tag = hashlib.sha256(
+                f"{name}\0{request.batch_id}\0{request.batch_fingerprint}".encode()
+            ).hexdigest()[:24]
+            writer = StagedUnitWriter(iceberg, tag=tag)
+            try:
+                with UnitFingerprint(registered.arrow_schema, scratch_directory) as again:
+                    for batch in batches():
+                        self._check_unit_batch(registered, batch)
+                        again.add(batch)
+                        writer.add(batch)
+                    if again.rows != request.row_count or again.hexdigest() != (
+                        request.batch_fingerprint
+                    ):
+                        raise BatchRejected(
+                            "the unit's microbatches changed between verification and staging"
+                        )
+                data_files = writer.finish()
+            except BaseException:
+                writer.abort()
+                raise
+            # Step 5: one snapshot appending every staged file.
+            properties = {
+                **self._summary_properties(registered, request),
+                SUMMARY_COMMIT_LAYOUT: UNIT_COMMIT_LAYOUT,
+                SUMMARY_WINDOW_ROWS: str(window_rows),
+            }
+            try:
+                with iceberg.transaction() as transaction:
+                    with transaction._append_snapshot_producer(properties) as producer:
+                        for data_file in data_files:
+                            producer.append_data_file(data_file)
+            except CommitFailedException:
+                return self._after_lost_race(name, request)
+            committed = iceberg.current_snapshot()
+            info = None if committed is None else self._snapshot_info(name, committed)
+            if (
+                info is None
+                or info.batch_id != request.batch_id
+                or info.parent_snapshot_id != request.expected_parent_snapshot_id
+                or info.added_rows != request.row_count
+            ):
+                raise CatalogIntegrityError(f"committed metadata of {name} does not match request")
+            return CommitResult(request=request, snapshot=info, outcome=CommitOutcome.COMMITTED)
+
+    @staticmethod
+    def _check_unit_batch(registered: RegisteredTableDefinition, batch: object) -> None:
+        if not isinstance(batch, pa.Table):
+            raise BatchRejected(f"a microbatch must be a pyarrow.Table, got {type(batch).__name__}")
+        if not batch.schema.equals(registered.arrow_schema, check_metadata=False):
+            raise BatchRejected(f"a microbatch schema does not match {registered.definition_id}")
+
+    @staticmethod
+    def _check_unit_claim(request: CommitRequest, rows: int, fingerprint: str) -> None:
+        if rows != request.row_count:
+            raise BatchRejected(
+                f"the unit has {rows} rows but the request declares {request.row_count}"
+            )
+        if fingerprint != request.batch_fingerprint:
+            raise BatchRejected("unit fingerprint does not match the actual unit content")
 
     # ------------------------------------------------------------------ D2 bounded read
 

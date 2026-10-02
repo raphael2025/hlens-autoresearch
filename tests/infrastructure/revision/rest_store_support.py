@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -32,6 +32,7 @@ from infrastructure.catalog.iceberg_adapter import (
     SUMMARY_BATCH_ID,
     SUMMARY_BATCH_ROW_COUNT,
     SUMMARY_FINGERPRINT_RULE,
+    CommitLayout,
 )
 from infrastructure.collector.binance_rest import CHECKPOINT_PREFIX
 from infrastructure.revision import RawRevisionStore
@@ -98,6 +99,29 @@ class ProxyCatalog:
         if self.before is not None:
             self.before(request)
         result = self.inner.commit_batch(request, batch)
+        self.commits.append(request.batch_id)
+        if self.after is not None:
+            self.after(request, result)
+        return result
+
+    def commit_layout(self, table: str, snapshot_id: str) -> CommitLayout:
+        """ADR-0108: the commit layout of one snapshot, as the real adapter reads it."""
+        return self.inner.commit_layout(table, snapshot_id)
+
+    def commit_unit(
+        self,
+        request: CommitRequest,
+        batches: Callable[[], Iterable[pa.Table]],
+        *,
+        scratch_directory: Path,
+        window_rows: int,
+    ) -> CommitResult:
+        """ADR-0108 one-snapshot unit commit, with the same hooks as ``commit_batch``."""
+        if self.before is not None:
+            self.before(request)
+        result = self.inner.commit_unit(
+            request, batches, scratch_directory=scratch_directory, window_rows=window_rows
+        )
         self.commits.append(request.batch_id)
         if self.after is not None:
             self.after(request, result)

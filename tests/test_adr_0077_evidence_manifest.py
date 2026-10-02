@@ -236,7 +236,7 @@ def valid_instances() -> dict[type[Contract], Contract]:
         DatasetQualityReportRef: report(),
         DatasetChunkProof: proof(),
         ResearchDatasetEvidenceManifest: v3(
-            schema_version="2.5.0", evidence=current_evidence, point_in_time=current_pit
+            schema_version="2.6.0", evidence=current_evidence, point_in_time=current_pit
         ),
     }
 
@@ -253,7 +253,7 @@ def wire(instance: Contract) -> dict[str, Any]:
 
 def test_2_3_shapes_remain_replayable_and_every_minor_stays_published() -> None:
     assert ADR_0077_VERSION == "2.3.0"
-    assert CONTRACT_SCHEMA_VERSION == "2.5.0"  # ADR-0094 raised the current minor
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"  # ADR-0109 raised the current minor
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
         "2.0.0",
         "2.1.0",
@@ -261,6 +261,7 @@ def test_2_3_shapes_remain_replayable_and_every_minor_stays_published() -> None:
         "2.3.0",
         "2.4.0",
         "2.5.0",
+        "2.6.0",
     )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
@@ -301,14 +302,14 @@ def test_the_committed_schemas_of_the_new_models_match_the_contracts(tmp_path: P
         )
         exported = json.loads(written[model.__name__].read_text(encoding="utf-8"))
         assert committed == exported, model.__name__
-        assert committed["properties"]["schema_version"]["default"] == "2.5.0"  # ADR-0094
+        assert committed["properties"]["schema_version"]["default"] == "2.6.0"  # ADR-0109
         assert committed["additionalProperties"] is False
 
 
 @pytest.mark.parametrize("model", NEW_MODELS, ids=lambda m: m.__name__)
 def test_new_objects_carry_the_2_3_0_envelope(model: type[Contract]) -> None:
     instance = valid_instances()[model]
-    assert instance.schema_version == "2.5.0"  # current envelope, separate from introduction
+    assert instance.schema_version == "2.6.0"  # current envelope, separate from introduction
     assert model.model_validate(wire(instance)) == instance
 
 
@@ -754,7 +755,7 @@ def test_a_persisted_2_2_0_v2_manifest_reads_bit_for_bit_with_its_pinned_hash() 
 
 def test_a_v2_manifest_built_now_is_a_2_3_0_object_and_its_twins_keep_their_envelopes() -> None:
     current = manifest()
-    assert current.schema_version == "2.5.0"  # the current envelope (ADR-0094)
+    assert current.schema_version == "2.6.0"  # the current envelope (ADR-0109)
     for old in ("2.0.0", "2.1.0", "2.2.0"):
         twin = at_version(current, old)
         assert twin.schema_version == old

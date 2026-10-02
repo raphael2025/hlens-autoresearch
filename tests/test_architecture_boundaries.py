@@ -142,6 +142,29 @@ def test_apps_do_not_import_research_plane() -> None:
         assert not leaked, f"{path.relative_to(REPO)} 违反 Research/Application 平面边界"
 
 
+def test_lifecycle_writer_cli_is_not_imported_by_loop_operator_or_apps() -> None:
+    """ADR-0105 §2 / ADR-0098 §1：Lifecycle Registry 的写入端 `lifecycle_cli` 只由显式调用方使用；
+    research loop、operator（`research/loop/`）与 apps（含 API）的源码都不得 import 它。
+    静态检查源码（含相对导入、`from infrastructure.registry import lifecycle_cli`）。"""
+    writer = "infrastructure.registry.lifecycle_cli"
+    files = _python_files("research/loop", "apps")
+    assert files, "research/loop 或 apps 不存在"
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        leaked = {
+            module
+            for module in _imported_modules(path)
+            if module == writer or module.startswith(f"{writer}.")
+        }
+        for node in ast.walk(tree):  # `from infrastructure.registry import lifecycle_cli`
+            if isinstance(node, ast.ImportFrom) and node.level == 0:
+                if node.module == "infrastructure.registry" and any(
+                    alias.name == "lifecycle_cli" for alias in node.names
+                ):
+                    leaked.add(f"{node.module}.lifecycle_cli")
+        assert not leaked, f"{path.relative_to(REPO)} 导入了 Lifecycle 写入端：{sorted(leaked)}"
+
+
 #: 网络、交易所与凭据相关的库：执行服务在本构建中只有进程内模拟场所（ADR-0046 红线）。
 FORBIDDEN_IN_EXECUTION = {
     "research",
@@ -195,3 +218,61 @@ def test_plugins_and_infrastructure_do_not_import_research(package: str) -> None
 )
 def test_core_packages_are_importable(package: str) -> None:
     assert (REPO / package / "__init__.py").exists()
+
+
+#: Dataset v3 production entries (ADR-0101 D2): bounded v3 path only.
+DATASET_V3_ENTRY_MODULES = (
+    "infrastructure/dataset/cli.py",
+    "infrastructure/dataset/factory.py",
+    "infrastructure/dataset/job_port.py",
+    "apps/worker/dataset_job.py",
+    "infrastructure/quality/report_cli.py",
+)
+#: The v2 materializing builder / manifest store, the unbounded PIT selector and the
+#: materializing universe builder: never imported by an entry module.
+_V2_OR_UNBOUNDED_NAMES = {"DatasetBuilder", "ManifestStore", "PitSelector", "UniverseBuilder"}
+#: Receivers an entry module may call ``.build(...)`` on: the bounded ``DatasetBuildPipeline``,
+#: or the worker job's injected ``port`` (``PipelineDatasetJobPort``, itself checked here).
+_BOUNDED_BUILD_RECEIVERS = {"pipeline", "_pipeline", "port"}
+
+
+def _receiver_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+
+@pytest.mark.parametrize("module", DATASET_V3_ENTRY_MODULES)
+def test_dataset_v3_entries_never_import_the_v2_or_unbounded_paths(module: str) -> None:
+    """ADR-0101 D2: no v2 ``DatasetBuilder``, ``PitSelector`` or ``UniverseBuilder`` import."""
+    path = REPO / module
+    assert path.exists(), f"{module} 不存在"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imported.update(alias.asname or alias.name for alias in node.names)
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+    leaked = imported & _V2_OR_UNBOUNDED_NAMES
+    assert not leaked, f"{module} 引入了 v2 / 无界路径：{sorted(leaked)}"
+
+
+@pytest.mark.parametrize("module", DATASET_V3_ENTRY_MODULES)
+def test_dataset_v3_entries_call_only_bounded_methods(module: str) -> None:
+    """ADR-0101 D2: no ``.select(...)`` (v2 ``DatasetBuilder.select`` / non-``iter_bounded``
+    ``PitSelector.select``); ``.build(...)`` only on the ``DatasetBuildPipeline`` (never
+    ``DatasetBuilder.build`` / ``UniverseBuilder.build``)."""
+    path = REPO / module
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        where = f"{module}:{node.lineno}"
+        assert node.func.attr != "select", f"{where} 调用了 .select()"
+        if node.func.attr == "build":
+            receiver = _receiver_name(node.func.value)
+            assert receiver in _BOUNDED_BUILD_RECEIVERS, f"{where} 在 {receiver!r} 上调用 .build()"

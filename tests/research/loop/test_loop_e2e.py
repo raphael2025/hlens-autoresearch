@@ -34,6 +34,12 @@ from infrastructure.event_bus import InMemoryEventBus
 from plugins.llm import ScriptedLLMProvider
 from plugins.synthetic import RandomWalkMarket
 from research.evolution import LineageGraph, require_new_version
+from research.experiments.run_inputs import (
+    RUN_INPUTS_KEY,
+    STATE_LABELLER_FORMAT,
+    recorded_run_inputs,
+    strategy_params,
+)
 from research.loop import (
     OosUnsealBudget,
     ResearchMemory,
@@ -362,14 +368,19 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
 #: and that row renders its floats as decimal text (W1 fix: no float in a hashed record). The
 #: 2.2.0 values below held up to ``ca8bd57^`` (verified by bisect, 2026-10-01).
 #: 2.2.0 values (evidence, git history): cd8e1512…, c94401f4…, 9acaa76b…
+#: Re-pinned for contract 2.6.0 (ADR-0109, 2026-10-02): envelope change only; the 2.5.0 values
+#: still hold when the unmodified test runs with every object (imports included) built inside
+#: ``contract_schema_version_scope("2.5.0")`` (verified).
+#: 2.5.0 values (evidence, git history): 6dca257d…, eef9f1d7…, 503116d5…; fingerprint 196485af…
 PINNED_RECORD_HASHES = [
-    "6dca257dbf87f267129f4087dcc95244fd2bc318e90fe3f89d3c40be8626d56c",
-    "eef9f1d7fcae4c5cb7aed3a9a2538270f9b6eb5720a11ffa3b4829f457ff75d6",
-    "503116d5b6037089f127a3929d986de96ab79faf2f081e93cb524e40ae8ba558",
+    "7f82a54ea805788e3fcb791fa39c17d2c99994540773123a5f0f494ff9ba5da4",
+    "9dfd9ed61a33d1c1c8dd819143950d6777024c51a2cd263a9b6867a5cad29c38",
+    "9cd2c06322ac7beec5414709d22a58e420993a90f43e79ae313270e1abfdadff",
 ]
 #: Fingerprint re-pinned for contracts 2.3.0 – 2.5.0: envelope change only — built entirely at
 #: 2.2.0 (scope entered before any import) it is still ``fbbd152b…`` (verified 2026-10-01).
-PINNED_FINGERPRINT_HASH = "196485afb1be414e7c01f781c2b08289849612fcc75e2fb15cdae233654d6c1a"
+#: Re-pinned for 2.6.0 with the record hashes above (was ``196485af…``, verified at 2.5.0).
+PINNED_FINGERPRINT_HASH = "2d3f585449647c9ea715591119a1f9f38fd43b699cd0b837351db7d8a435dd42"
 
 
 def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:
@@ -406,6 +417,47 @@ def test_hashed_records_hold_no_floats(planted: Run, noise: Run) -> None:
     for run in (planted, noise):
         for record in run.records:
             assert list(_floats(record.payload())) == []
+
+
+def test_every_run_with_a_strategy_records_its_run_inputs(planted: Run) -> None:
+    """ADR-0100 修订 2 (tested per ADR-0105 §7): each run records, in its hashed
+    ``repro.params``, exactly the decision grid, equity and validation inputs the round used —
+    the ``hlens.p11.inputs@1.0.0`` record the P11 authority compares — and the experiment row
+    carries the same record (floats as decimal text); the strategy params stay apart."""
+    wiring = fx.wiring()
+    rows = {row["run_id"]: row for row in planted.memory.experiments}
+    checked = 0
+    for trial in planted.memory.trials:
+        params = trial.run.repro.params
+        recorded = recorded_run_inputs(params)
+        if trial.candidate is None:
+            assert recorded is None and RUN_INPUTS_KEY not in params
+            continue
+        assert recorded is not None
+        checked += 1
+        assert (recorded.decision_step, recorded.decision_warmup) == (
+            wiring.decision_step,
+            wiring.decision_warmup,
+        )
+        assert str(recorded.initial_equity) == str(wiring.initial_equity)
+        assert recorded.validation_seed == trial.validation_seed
+        assert recorded.validation_seed in trial.run.repro.seeds
+        assert recorded.control_seeds == loop_trials.VALIDATION_CONTROL_SEEDS
+        assert recorded.cscv_partitions == wiring.robustness.cscv_partitions
+        assert recorded.impact_coefficient == wiring.robustness.impact_coefficient
+        assert recorded.state_labeller is not None
+        assert recorded.state_labeller["format"] == STATE_LABELLER_FORMAT
+        family = planted.memory.ledger.trials(trial.hypothesis.family_id)
+        assert 1 <= recorded.family_trial_count <= family
+        # the record is bound into the run's content hash; the strategy params are apart
+        unrecorded = trial.run.repro.model_copy(update={"params": strategy_params(params)})
+        assert unrecorded.experiment_hash != trial.run.experiment_hash
+        row = rows[trial.run.run_id]
+        assert row["run_inputs"]["execution"] == recorded.execution_payload()
+        assert row["run_inputs"]["format"] == recorded.payload()["format"]
+        assert set(row["params"]) == set(strategy_params(params))
+        assert RUN_INPUTS_KEY not in row["params"]
+    assert checked > 0
 
 
 # ---------------------------------------------------------------------------------------- budget

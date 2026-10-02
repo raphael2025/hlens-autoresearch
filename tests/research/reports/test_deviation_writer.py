@@ -4,6 +4,7 @@ served by ``apps/api`` (which recomputes the hash)."""
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +16,7 @@ from apps.api.store import ReportKind, ReportStore
 from core.domain.base import content_hash
 from research.reports import ReportConflict, write_paper_deviation
 from research.reports.deviation import KIND
+from research.router import PaperDeviation
 from tests.research.router.test_paper_deviation import deviation
 
 
@@ -25,8 +27,12 @@ def test_a_paper_deviation_is_written_under_its_hash_and_served(tmp_path: Path) 
     assert written.path == tmp_path / KIND / f"{report.deviation_hash}.json"
     payload = json.loads(written.path.read_text(encoding="utf-8"))
     assert payload == report.to_payload()
-    assert payload["schema_version"] == "2.0.0"
-    assert payload["declared_scope"]["scope_schema_version"] == "1.0.0"
+    assert payload["schema_version"] == "2.1.0"
+    assert payload["declared_scope"]["scope_schema_version"] == "1.1.0"
+    assert (
+        payload["declared_scope"]["run_binding"]["reference_request_hash"]
+        == (payload["reference_request_hash"])
+    )
     envelope = ReportStore(tmp_path).get(ReportKind.PAPER_DEVIATION, written.id)
     assert envelope.payload == payload
     listing = TestClient(create_app(reports_root=tmp_path)).get("/reports/paper_deviation").json()
@@ -51,6 +57,43 @@ def test_a_report_whose_fields_no_longer_match_its_hash_is_not_written(tmp_path:
     object.__setattr__(report, "router", "tampered@1.0.0")  # bypasses frozen, keeps the hash
     with pytest.raises(ValueError, match="does not match"):
         write_paper_deviation(tmp_path, report)
+    assert not (tmp_path / KIND).exists()
+
+
+def test_only_the_run_bound_2_1_0_payload_is_written(tmp_path: Path) -> None:
+    """ADR-0104: a scope-only (2.0.0 / scope 1.0.0) payload is readable history, never written."""
+
+    class ScopeOnly(PaperDeviation):
+        def to_payload(self) -> dict[str, object]:
+            payload = super().to_payload()
+            scope = {
+                key: value
+                for key, value in cast(dict[str, Any], payload["declared_scope"]).items()
+                if key not in {"run_binding", "scope_hash"}
+            }
+            scope["scope_schema_version"] = "1.0.0"
+            scope["scope_hash"] = content_hash(scope)
+            return {**payload, "schema_version": "2.0.0", "declared_scope": scope}
+
+    report = deviation()
+    legacy = ScopeOnly(**{f.name: getattr(report, f.name) for f in fields(report) if f.init})
+    with pytest.raises(ValueError, match="ADR-0104"):
+        write_paper_deviation(tmp_path, legacy)
+
+    # a current schema whose scope lost its run binding is refused as well
+    class Unbound(PaperDeviation):
+        def to_payload(self) -> dict[str, object]:
+            payload = super().to_payload()
+            scope = {
+                key: value
+                for key, value in cast(dict[str, Any], payload["declared_scope"]).items()
+                if key != "run_binding"
+            }
+            return {**payload, "declared_scope": scope}
+
+    unbound = Unbound(**{f.name: getattr(report, f.name) for f in fields(report) if f.init})
+    with pytest.raises(ValueError, match="ADR-0104"):
+        write_paper_deviation(tmp_path, unbound)
     assert not (tmp_path / KIND).exists()
 
 

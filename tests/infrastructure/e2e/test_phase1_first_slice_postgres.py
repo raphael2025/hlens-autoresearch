@@ -2,7 +2,8 @@
 
 Mirrors ``tests/infrastructure/dataset/test_dataset_postgres.py``: the same small BTCUSDT /
 ETHUSDT fixture as ``test_phase1_first_slice.py``, built on the dedicated PostgreSQL test catalog
-and rebuilt after a simulated process restart. Skips without ``HLENS_TEST_CATALOG_URI``.
+and rebuilt after a simulated process restart. Skips without ``HLENS_TEST_CATALOG_URI``. The v3
+PostgreSQL variant of the walk (ADR-0101 §7) is in ``test_phase1_first_slice_v3.py``.
 """
 
 from __future__ import annotations

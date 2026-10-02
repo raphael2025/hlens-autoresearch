@@ -122,12 +122,15 @@ def test_crash_after_the_archive_commit_is_repaired_by_re_running(
 
 def test_crash_between_microbatches_leaves_only_whole_batches(pg_store: StoreHarness) -> None:
     item = rs.archive(pg_store.storage, rows=ps.agg_rows(ps.US_DAY, count=7))
+    # ADR-0108: only pre-ADR-0108 history can hold a committed prefix; the production store
+    # below completes it along that old per-microbatch path.
     with pytest.raises(_Crash):
         RawRevisionStore(
             _CrashAfter(pg_store.adapter, commits=3),
             pg_store.storage,
             clock=pg_store.clock,
             microbatch_rows=2,
+            _legacy_batch_commits=True,
         ).ingest(item.collected, item.context)
     assert pg_store.total_rows(AGG_TABLE) == 4
 
@@ -262,6 +265,12 @@ class _CrashAfter:
             raise _Crash("simulated crash before the next commit")
         self._left -= 1
         return self._adapter.commit_batch(request, batch)
+
+    def commit_unit(self, request: Any, batches: Any, **kwargs: Any) -> Any:
+        if self._left <= 0:
+            raise _Crash("simulated crash before the next commit")
+        self._left -= 1
+        return self._adapter.commit_unit(request, batches, **kwargs)
 
 
 class _RaceOnce:

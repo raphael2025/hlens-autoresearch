@@ -37,7 +37,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.5.0",
+          "default": "2.6.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -69,7 +69,7 @@
   "description": "一份 `OutcomeSpec` 的可执行标签参数。\n\n- `forward_return`：`exit_close / entry_open - 1`，两个屏障必须为空；\n- `triple_barrier`：上屏障 `entry * (1 + upper_barrier)`、下屏障 `entry * (1 - lower_barrier)`，\n  垂直屏障 = horizon；两个屏障必须给出，`lower_barrier < 1`。\n\n屏障与 horizon 是**标签定义参数**，不是验证阈值。",
   "properties": {
     "schema_version": {
-      "default": "2.5.0",
+      "default": "2.6.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

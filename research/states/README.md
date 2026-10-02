@@ -12,7 +12,10 @@
 |---|---|
 | `core/contracts/state.py` | `StateProvider` Protocol 与 5 个 DTO（`StateInput`、`StateRequest`、`StateValue`、`StateResult`、`StateProviderDescriptor`）；method 参数编码 `state_method` / `parse_state_method` |
 | `infrastructure/state/` | `run_state`（每个评估时刻只把可见输入交给 Provider：`evaluation_time <= t`，训练型再限于 `(t - training_window, t]`）；`state_inputs`（由已回答的 Feature 请求 / 结果构造输入）；`state_table`（Arrow 物化） |
+| `infrastructure/state/` 的存储与入口（ADR-0089 / 0102） | `StateResultStore`（整次运行的本地制品）、`state.states` 物理表与 `StateTable`（尚未在生产 catalog 创建）；只读命令 `python -m infrastructure.state.run_cli`：`show`（按 `result_hash` 读回并核验）、`list` |
 | `plugins/states/` | 首批 Provider：`VolatilityRegimeProvider`、`LiquidityRegimeProvider`（尾随窗口经验分位分桶）、`TrendRangeProvider`（效率比） |
+| `research/states/run_cli.py`（本目录，ADR-0102） | `python -m research.states.run_cli compute`：Provider 以静态 import 从 `plugins.states` 解析（`name@version`），读取 `StateSpec` 与 `FeatureRequest` / `FeatureResult` JSON 对，经 `run_state` 运行；默认只打印摘要，`--store` 写 `StateResultStore`，`--apply-table` 追加到已存在的 `state.states`（不隐式建表） |
+| `research/states/report_cli.py`（本目录，ADR-0102） | `python -m research.states.report_cli`：从 `StateResultStore` 读一次运行，经 `diagnose` 输出 Markdown；给 `--out` 才经 `write_state_diagnostics` 写报告（`--min-run` 必填，无默认值） |
 | `research/states/diagnostics.py`（本目录） | 状态分布、持续时间、转移矩阵、标签闪烁（短 run 占比、切换率）；`render_markdown` 报告；`StateDiagnostics.to_payload()` / `diagnostics_hash` / `from_payload` |
 
 ## 规则

@@ -390,12 +390,12 @@ def _kline_lines(count: int) -> list[str]:
     return lines
 
 
-def _build_archive_bytes(data_type: str, lines: list[str]) -> bytes:
+def _build_archive_bytes(data_type: str, lines: list[str], day: date = DAY) -> bytes:
     """One in-memory ZIP shaped exactly like a daily Binance archive (one CSV member)."""
     content = "".join(f"{line}\n" for line in lines).encode("utf-8")
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(member_filename(data_type, SYMBOL, DAY), content)
+        archive.writestr(member_filename(data_type, SYMBOL, day), content)
     return buffer.getvalue()
 
 
@@ -405,19 +405,21 @@ def _publish_archive(
     *,
     data_type: str = DATA_TYPE,
     retrieved_at: datetime = _RETRIEVED_AT,
+    day: date = DAY,
 ) -> CollectedObject:
     """Build and publish a synthetic archive object (fixture setup, not a measured stage)."""
-    data = _build_archive_bytes(data_type, lines)
+    data = _build_archive_bytes(data_type, lines, day)
     digest = sha256(data).hexdigest()
-    key = archive_object_key(data_type, SYMBOL, DAY, digest)
+    key = archive_object_key(data_type, SYMBOL, day, digest)
     staged = storage.stage(StageRequest(key=key, expected_sha256=digest), [data])
     published = storage.publish(staged)
-    relative = archive_relative_path(data_type, SYMBOL, DAY)
+    relative = archive_relative_path(data_type, SYMBOL, day)
+    day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     return CollectedObject(
         ref=published.ref,
         symbol=SYMBOL,
-        coverage_start=_DAY_START,
-        coverage_end=_DAY_START + timedelta(days=1),
+        coverage_start=day_start,
+        coverage_end=day_start + timedelta(days=1),
         source_uri=f"{ARCHIVE_BASE}/{relative}",
         retrieved_at=retrieved_at,
         source_sha256=digest,

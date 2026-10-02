@@ -108,8 +108,12 @@ def archive_trades(
     request_id: str = "archive-1",
     adapter: Any = None,
     microbatch_rows: int | None = None,
+    legacy: bool = False,
 ) -> IngestOutcome:
-    """Publish one agg_trades archive and ingest it through the real D2 store."""
+    """Publish one agg_trades archive and ingest it through the real D2 store.
+
+    ``legacy``: write the pre-ADR-0108 one-snapshot-per-D2-batch element layout (old history).
+    """
     arc = rs.archive(
         w.h.storage,
         data_type="agg_trades",
@@ -122,6 +126,8 @@ def archive_trades(
     kwargs: dict[str, Any] = {}
     if microbatch_rows is not None:
         kwargs["microbatch_rows"] = microbatch_rows
+    if legacy:
+        kwargs["_legacy_batch_commits"] = True
     store = RawRevisionStore(
         w.h.adapter if adapter is None else adapter,
         w.h.storage,
@@ -168,9 +174,15 @@ def normalize(
     at: datetime,
     adapter: Any = None,
     microbatch_rows: int | None = None,
+    legacy: bool = False,
 ) -> Any:
+    """``legacy``: commit the pre-ADR-0108 one-snapshot-per-microbatch layout (old history)."""
     return c.normalizer(
-        w.h, clock=StepClock(start=at), adapter=adapter, microbatch_rows=microbatch_rows
+        w.h,
+        clock=StepClock(start=at),
+        adapter=adapter,
+        microbatch_rows=microbatch_rows,
+        legacy=legacy,
     ).normalize_unit(raw_table, unit)
 
 

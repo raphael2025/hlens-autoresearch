@@ -112,3 +112,9 @@ Phase 2 → Phase 3 的接缝已接上（不改本 ADR 的裁决，见 ADR-0036 
 
 - Codex 依 Raphael 授权**不批准**按现有描述实现"可选增量评估路径"（`run_state` 的逐时刻调用成本为时刻数 × 可见前缀，规则型无窗口时为二次方，本 ADR 后果中列为调试批次缺口）。理由：因果保证目前由 `run_state` 对每个评估时刻只传入该时刻的可见前缀**结构性**提供；等价哈希与未来扰动测试只能在已测样本上证明结果相同，不足以证明新增路径不会削弱这一结构边界。保留 per-time 路径为唯一路径。只有在具备**真实性能基线**（真实 Research Dataset 规模上的实测耗时 / 内存）并提出**不向 provider 暴露未来数据的逐步协议**之后才重新评估。这是明确**暂缓优化**，**不是**宣称没有性能问题：二次方成本仍是已知限制。
 - 本决定不改本 ADR 的裁决、契约或任何代码；`infrastructure/state` 的逐时刻执行器不变。
+
+## Implementation note（运行 / 读回 / 诊断入口，2026-10-01）
+
+State 的物理表、`StateTable` 与 `StateResultStore` 由 ADR-0089 实现；显式的运行、读回与诊断命令行入口
+（`python -m research.states.run_cli compute`、`python -m infrastructure.state.run_cli` 的 `show` / `list`、`python -m research.states.report_cli`）由 ADR-0102
+实现。本 ADR 的裁决、契约与 `run_state` 的逐时刻结构性截断均不变；训练型规格无 seed 仍在入口处被拒绝。

@@ -85,7 +85,11 @@ __all__ = [
 #: `OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER` 及其两个 `OutcomeLabelSpec` 字段；全部可选、缺省时
 #: 从载荷中省略，2.0.0 ~ 2.3.0 载荷保留自己的信封、哈希逐位不变；当前版本新建对象的信封（与哈希）
 #: 为 2.4.0。2.5.0（minor，ADR-0094）新增 PIT conflict evidence stream 与记录模型。
-CONTRACT_SCHEMA_VERSION = "2.5.0"
+#: 2.6.0（minor，ADR-0109）：记录版本 ≥ 2.6.0 的 `ResearchDatasetEvidenceManifest` 不再要求
+#: 绑定旧质量表 `quality.data_quality_reports`（改为要求 listings 与 report manifests）；其余
+#: 模型的字段、校验、Schema 不变，2.0.0 ~ 2.5.0 载荷保留自己的信封、哈希逐位不变；当前版本
+#: 新建对象的信封（与哈希）为 2.6.0。
+CONTRACT_SCHEMA_VERSION = "2.6.0"
 
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
@@ -99,6 +103,7 @@ PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = (
     "2.3.0",
     "2.4.0",
     "2.5.0",
+    "2.6.0",
 )
 
 # ---------------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ fields, the new model ``FillRemainder`` and the new execution-model literal are 
 
 * a 2.0.0 envelope carrying any of them is refused (an old reader would not know them);
 * objects carrying them are valid from 2.1.0 on: built at 2.1.0 (a replay scope) they are 2.1.0,
-  built by the current code they carry the current envelope (2.5.0 since ADR-0094), and both
+  built by the current code they carry the current envelope (2.6.0 since ADR-0109), and both
   round-trip byte-identically;
 * 2.0.0 objects without them read as recorded (envelope kept, hash unchanged — the golden pins
   are the pre-ADR values), still answer their 2.0.0 requests, and can sit inside 2.1.0 objects.
@@ -95,7 +95,7 @@ def _round_trips(obj: Contract) -> None:
 
 
 # ======================================================================================
-# objects carrying the new content are valid from 2.1.0 on (2.1.0 and the current 2.5.0)
+# objects carrying the new content are valid from 2.1.0 on (2.1.0 and the current 2.6.0)
 # ======================================================================================
 
 #: 2.1.0 introduced the content; ADR-0055 raised the current minor to 2.2.0, ADR-0077 to 2.3.0,
@@ -103,8 +103,8 @@ def _round_trips(obj: Contract) -> None:
 SINCE_2_1_0 = ("2.1.0", CONTRACT_SCHEMA_VERSION)
 
 
-def test_the_content_is_2_1_0_and_the_current_version_is_2_5_0() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
+def test_the_content_is_2_1_0_and_the_current_version_is_2_6_0() -> None:
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"
     assert dict(EventRequest._FIELDS_SINCE) == {"subject": "2.1.0"}
     assert dict(BacktestResult._FIELDS_SINCE)["remainders"] == "2.1.0"
     assert FillRemainder._MODEL_SINCE == "2.1.0"
@@ -144,7 +144,7 @@ def test_the_current_code_builds_the_current_envelope() -> None:
     req, result = _events("BTCUSDT")
     backtester, bt_req, bt_result = _carry()
     for obj in (req, result, backtester.descriptor, bt_req, bt_result):
-        assert obj.schema_version == CONTRACT_SCHEMA_VERSION == "2.5.0"
+        assert obj.schema_version == CONTRACT_SCHEMA_VERSION == "2.6.0"
 
 
 # ======================================================================================

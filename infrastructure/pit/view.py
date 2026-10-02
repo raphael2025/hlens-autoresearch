@@ -15,7 +15,8 @@ Writes are refused.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -29,6 +30,7 @@ from core.contracts.catalog import (
     TableInfo,
     TableNotFound,
 )
+from infrastructure.catalog.iceberg_adapter import CommitLayout, commit_layout_of
 from infrastructure.revision.row_integrity import history_from
 from infrastructure.revision.store import RevisionCatalog
 
@@ -90,6 +92,16 @@ class PinnedCatalogView:
             return
         for snapshot in bounded.iter_history(snapshot_id):
             yield self._snapshot_info(table, snapshot)
+
+    def commit_layout(self, table: str, snapshot_id: str) -> CommitLayout:
+        """An explicit snapshot's ADR-0108 commit layout, whatever the bindings say."""
+        bounded = self._bounded_metadata.get(table)
+        if bounded is not None:
+            return commit_layout_of(table, bounded.require_snapshot(snapshot_id))
+        layout = getattr(self._adapter, "commit_layout", None)
+        if not callable(layout):
+            raise PinnedViewError("the underlying catalog cannot read commit layouts")
+        return cast(CommitLayout, layout(table, snapshot_id))
 
     def pin_bounded_metadata(self, table: str, *, storage: Any, limits: Any) -> Any:
         """Pin the current immutable metadata pointer, selecting this view's exact binding.
@@ -350,6 +362,16 @@ class PinnedCatalogView:
         )
 
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
+        raise PinnedViewError("a pinned catalog view is read-only")
+
+    def commit_unit(
+        self,
+        request: CommitRequest,
+        batches: Callable[[], Iterable[pa.Table]],
+        *,
+        scratch_directory: Path,
+        window_rows: int,
+    ) -> CommitResult:
         raise PinnedViewError("a pinned catalog view is read-only")
 
     def max_int64(

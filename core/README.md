@@ -2,7 +2,7 @@
 
 **冻结层。** Domain 模型、契约、Lifecycle、错误分类、历史 major 只读兼容。仅依赖标准库与 Pydantic。修改需 ADR（CLAUDE.md H1）。
 
-当前契约版本 `CONTRACT_SCHEMA_VERSION = 2.5.0`。已发布版本按 ADR-0052 §4 原信封版本重放；2.5.0 为 ADR-0094 的 additive PIT conflict evidence 扩展。详见 `docs/architecture/02-domain.md` §3.3。模型校验只接受同 major；`1.x` 载荷走 `core/compat/v1.py` 的只读入口。
+当前契约版本 `CONTRACT_SCHEMA_VERSION = 2.6.0`。已发布版本按 ADR-0052 §4 原信封版本重放；2.5.0 为 ADR-0094 的 additive PIT conflict evidence 扩展；2.6.0 为 ADR-0109 的 minor（记录版本 ≥ 2.6.0 的 v3 Dataset manifest 不再要求绑定旧质量表）。详见 `docs/architecture/02-domain.md` §3.3。模型校验只接受同 major；`1.x` 载荷走 `core/compat/v1.py` 的只读入口。
 
 受支持的构造路径只有构造函数、`model_validate` / `model_validate_json` 与
 `model_copy`（带 `update` 时重新走完整校验）。`model_construct()` 不校验，

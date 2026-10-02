@@ -5,6 +5,9 @@
 anything is written the writer recomputes the hash from the payload body: a report whose recorded
 ``deviation_hash`` does not match its own fields is refused (``ValueError``) and nothing is written.
 
+Only the ADR-0104 payload 2.1.0 (declared scope 1.1.0, with the run binding) is written; older 2.0.0
+/ 1.0.0 reports stay readable from the store but are never produced again.
+
 ``apps/api``'s ``ReportStore`` serves it as the ``paper_deviation`` kind (same
 ``<root>/<kind>/<id>.json`` envelope rules; the store recomputes ``deviation_hash`` too).
 Descriptive only: no threshold, no verdict (``research/router/deviation.py`` module docs).
@@ -16,7 +19,12 @@ from pathlib import Path
 
 from core.domain.base import content_hash
 from research.reports.envelope import WrittenReport, write_report_file
-from research.router.deviation import PAYLOAD_KIND, PaperDeviation
+from research.router.deviation import (
+    PAYLOAD_KIND,
+    SCHEMA_VERSION,
+    SCOPE_SCHEMA_VERSION,
+    PaperDeviation,
+)
 
 __all__ = ["KIND", "write_paper_deviation"]
 
@@ -30,10 +38,17 @@ def write_paper_deviation(root: Path, deviation: PaperDeviation) -> WrittenRepor
     if not isinstance(deviation, PaperDeviation):
         raise ValueError("write_paper_deviation needs a PaperDeviation")
     payload = deviation.to_payload()
-    if payload.get("schema_version") != "2.0.0" or not isinstance(
-        payload.get("declared_scope"), dict
+    scope = payload.get("declared_scope")
+    if (
+        payload.get("schema_version") != SCHEMA_VERSION
+        or not isinstance(scope, dict)
+        or scope.get("scope_schema_version") != SCOPE_SCHEMA_VERSION
+        or not isinstance(scope.get("run_binding"), dict)
     ):
-        raise ValueError("paper_deviation writer requires the ADR-0079 schema 2.0.0 DTO")
+        raise ValueError(
+            f"paper_deviation writer requires the ADR-0104 schema {SCHEMA_VERSION} DTO "
+            f"(declared scope {SCOPE_SCHEMA_VERSION} with a run binding)"
+        )
     body = {key: value for key, value in payload.items() if key != "deviation_hash"}
     if payload.get("deviation_hash") != deviation.deviation_hash or (
         content_hash(body) != deviation.deviation_hash

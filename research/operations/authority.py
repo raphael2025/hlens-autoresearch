@@ -915,7 +915,8 @@ def _check_window_scope(
 ) -> None:
     """A definition over the Profile's fixed walk-forward folds / windows needs the observation
     window inside the Profile's research window; outside it the metric would need data outside
-    the window (the research window's), so it is ``metric_undefined``, never a new window rule."""
+    the window (the research window's), so it is ``metric_undefined``, never a new window rule
+    (ADR-0105 D-P11-WINDOW: the message says so; the refusal itself is unchanged)."""
     split = profile.data_split
     start = midnight_utc(split.research_window_start)
     boundary = midnight_utc(split.sealed_oos_boundary)
@@ -926,9 +927,13 @@ def _check_window_scope(
         ):
             raise AuthorityRefused(
                 METRIC_UNDEFINED,
-                f"{definition.definition_ref} ({definition.window_scope}) needs the window inside "
-                f"the Profile's research window [{_utc_text(start)}, {_utc_text(boundary)}); "
-                f"the window [{_utc_text(window.start)}, {_utc_text(window.end)}) is not",
+                f"{definition.definition_ref} ({definition.window_scope}) depends on the Profile's "
+                f"fixed research window and needs the window inside "
+                f"[{_utc_text(start)}, {_utc_text(boundary)}); the window "
+                f"[{_utc_text(window.start)}, {_utc_text(window.end)}) is not. By ADR-0105 "
+                f"(D-P11-WINDOW) a recent window outside the research window supports only "
+                f"metrics that do not depend on it; {item.metric_name!r} stays metric_undefined "
+                f"there and should not be among the Profile's degradation thresholds",
             )
 
 
