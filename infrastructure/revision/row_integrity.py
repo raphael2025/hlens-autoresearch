@@ -29,8 +29,11 @@ Archive (``raw.binance_spot_archives`` + ``raw.binance_spot_agg_trades`` / ``...
 - an element row is rebuilt by the D2 builder from its parser-native fields and that archive
   revision's block base, times and declared unit (the D1 unit rule); its stored UTC times must
   be the parser's conversion of its native ticks inside the archive's coverage; its arrival
-  number is held by it alone; and its row batch ``<archive>.rows.<index>`` — a contiguous
-  prefix of one microbatch plan — must still hold exactly what that snapshot committed.
+  number is held by it alone; and the snapshot that committed it must still hold exactly what
+  it committed: the archive's one element unit ``<archive>.rows-unit.<rows>`` (ADR-0108; its
+  whole-unit fingerprint is re-derived from the current rows, window by window, once per table
+  head) or, for history written before ADR-0108, its row batch ``<archive>.rows.<index>`` — a
+  contiguous prefix of one microbatch plan. An archive with both layouts fails closed.
 
 Bound to immutable sources (D3E-R3, after an independent review reproduced forged rows sitting
 in brand-new batches with their own fingerprints):
@@ -89,7 +92,8 @@ from core.contracts.storage import (
 from core.domain.base import FrozenMapping, canonical_json
 from infrastructure import contract_version
 from infrastructure.catalog.definitions import RegisteredTableDefinition
-from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.catalog.fingerprint_unit import UnitFingerprint
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError, CommitLayout
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
@@ -129,6 +133,8 @@ from infrastructure.revision.rest_availability import (
     decide_rest_availability,
 )
 from infrastructure.revision.store import (
+    MAX_MICROBATCH_ROWS,
+    ROW_UNIT_INFIX,
     ArchiveContext,
     RevisionCatalog,
     RevisionStoreError,
@@ -140,6 +146,7 @@ from infrastructure.revision.store import (
     _row_records,
     _times_from_row,
     identify_archive,
+    parse_row_unit_batch_id,
 )
 
 __all__ = [
@@ -1278,6 +1285,13 @@ class PersistedRowVerifier:
         #: Verified first-delivery collections, most recent last (immutable checkpoints).
         self._collections: dict[tuple[str, str], CommittedCollection] = {}
         self._batch_index: dict[tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory] = {}
+        #: ADR-0108 element units per (table, head, archives): (count, newest snapshot) each.
+        self._unit_index: dict[
+            tuple[str, str | None, tuple[str, ...]], dict[str, tuple[int, SnapshotInfo | None]]
+        ] = {}
+        #: Element units whose whole-unit fingerprint was re-derived at one head:
+        #: (table, head, archive revision, unit snapshot).
+        self._proven_units: dict[tuple[str, str | None, str, str], None] = {}
         #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S).
         self._cache_archives = cache_archives
         self._scratch_directory = scratch_directory
@@ -2244,7 +2258,172 @@ class PersistedRowVerifier:
         definition: RegisteredTableDefinition,
         rows: Mapping[str, Sequence[Mapping[str, Any]]],
     ) -> None:
-        """Each touched row sits in a committed row batch that still holds exactly its content.
+        """Each touched row sits in a committed element commit that still holds exactly it.
+
+        ADR-0108: D2 commits a new archive's rows as **one** unit snapshot; history written
+        before it has one snapshot per microbatch. Both walks summarise the same table head;
+        an archive revision with snapshots of both layouts, or with two units, fails closed.
+        """
+        table = definition.table
+        prefixes = {f"{archive_id}.rows.": archive_id for archive_id in rows}
+        found = self._indexed(table, prefixes)
+        units = self._units(table, found.head, tuple(sorted(rows)))
+        legacy: dict[str, Sequence[Mapping[str, Any]]] = {}
+        for archive_id, members in sorted(rows.items()):
+            count, unit = units[archive_id]
+            if count and found.summaries[f"{archive_id}.rows."].count:
+                raise CatalogIntegrityError(
+                    f"{table}: the rows of archive revision {archive_id} mix the unit and the "
+                    "per-microbatch commit layouts"
+                )
+            if count > 1 or (count == 1 and unit is None):
+                raise CatalogIntegrityError(
+                    f"{table}: archive revision {archive_id} has {count} element units"
+                )
+            if unit is not None:
+                self._verify_unit_rows(definition, archive_id, unit, members, found.head)
+            else:
+                legacy[archive_id] = members
+        if legacy:
+            self._verify_legacy_row_batches(definition, legacy)
+
+    def _units(
+        self, table: str, head: str | None, archive_ids: tuple[str, ...]
+    ) -> dict[str, tuple[int, SnapshotInfo | None]]:
+        """Per archive: how many unit snapshots ``head``'s history holds, and the newest.
+
+        One newest-first walk of exactly ``head`` (the head the per-microbatch summary was
+        taken at), memoised per head; constant state per requested archive.
+        """
+        key = (table, head, archive_ids)
+        found = self._unit_index.get(key)
+        if found is not None:
+            return found
+        wanted = set(archive_ids)
+        counts: dict[str, int] = dict.fromkeys(archive_ids, 0)
+        newest: dict[str, SnapshotInfo | None] = dict.fromkeys(archive_ids)
+        for snapshot in history_from(self._adapter, table, head):
+            batch_id = snapshot.batch_id
+            if batch_id is None or ROW_UNIT_INFIX not in batch_id:
+                continue
+            if batch_id.rpartition(ROW_UNIT_INFIX)[0] not in wanted:
+                continue
+            parsed = parse_row_unit_batch_id(batch_id)
+            assert parsed is not None
+            archive_id = parsed[0]
+            counts[archive_id] += 1
+            if newest[archive_id] is None:
+                newest[archive_id] = snapshot
+        found = {archive_id: (counts[archive_id], newest[archive_id]) for archive_id in archive_ids}
+        if len(self._unit_index) >= _BATCH_INDEX_CACHE:
+            self._unit_index.pop(next(iter(self._unit_index)))
+        self._unit_index[key] = found
+        return found
+
+    def _commit_layout(self, table: str, snapshot_id: str) -> CommitLayout:
+        layout = getattr(self._adapter, "commit_layout", None)
+        if not callable(layout):
+            raise CatalogIntegrityError(
+                f"{table}: the catalog cannot show the commit layout of snapshot {snapshot_id}"
+            )
+        result = layout(table, snapshot_id)
+        if not isinstance(result, CommitLayout):
+            raise CatalogIntegrityError(f"{table}: snapshot {snapshot_id} has no commit layout")
+        return result
+
+    def _verify_unit_rows(
+        self,
+        definition: RegisteredTableDefinition,
+        archive_id: str,
+        unit: SnapshotInfo,
+        rows: Sequence[Mapping[str, Any]],
+        head: str | None,
+    ) -> None:
+        """ADR-0108: the touched rows are lines of the archive's one element unit, and the unit
+        still holds exactly what it committed.
+
+        The unit's id names its row count ``n`` (= its added rows); its summary must record the
+        unit layout and a bounded window ``w``. Every touched row's line must be in ``1 … n``.
+        The whole-unit check is the per-microbatch check at unit granularity: the current rows
+        of lines ``1 … n`` at ``head`` are read window by window (lines ``k*w+1 … k*w+w``, at
+        most ``w`` rows held, sorted as D2 wrote them) and folded into the rule's streaming
+        whole-unit fingerprint, which must equal the committed fingerprint, with ``n`` rows.
+        A head is immutable, so the result is memoised per (table, head, archive, unit).
+        """
+        table = definition.table
+        batch_id = unit.batch_id or ""
+        parsed = parse_row_unit_batch_id(batch_id)
+        if parsed is None or parsed[0] != archive_id:  # pragma: no cover - selected by its id
+            raise CatalogIntegrityError(f"{table}: {batch_id!r} is not a unit of {archive_id}")
+        lines = parsed[1]
+        layout = self._commit_layout(table, unit.snapshot_id)
+        window = layout.window_rows
+        if (
+            not layout.unit
+            or window is None
+            or not 1 <= window <= MAX_MICROBATCH_ROWS
+            or unit.added_rows != lines
+        ):
+            raise CatalogIntegrityError(
+                f"{table}: unit {batch_id} of archive revision {archive_id} is not one "
+                "lawful unit commit"
+            )
+        for row in rows:
+            line = row["archive_line_number"]
+            if not 1 <= line <= lines:
+                raise CatalogIntegrityError(
+                    f"{table}: row {row['revision_id']} (line {line}) "
+                    f"is not committed by any batch of archive revision {archive_id}"
+                )
+        key = (table, head, archive_id, unit.snapshot_id)
+        if key in self._proven_units:
+            return
+        columns = tuple(field.name for field in definition.arrow_schema)
+        scratch = Path(self._scratch_directory or tempfile.gettempdir())
+        with UnitFingerprint(definition.arrow_schema, scratch) as fingerprint:
+            for first in range(1, lines + 1, window):
+                expected = min(window, lines - first + 1)
+                current: list[Mapping[str, Any]] = []
+                with _scan_rows(
+                    self._adapter,
+                    table,
+                    columns=columns,
+                    row_filter=And(
+                        _equals("archive_revision_id", archive_id),
+                        And(
+                            _at_least("archive_line_number", first),
+                            _below("archive_line_number", first + window),
+                        ),
+                    ),
+                    snapshot_id=head,
+                ) as found:
+                    for row in found:
+                        current.append(row)
+                        if len(current) > expected:
+                            break
+                if len(current) != expected:
+                    raise CatalogIntegrityError(
+                        f"batch {batch_id} of {table} was committed with other content"
+                    )
+                current.sort(key=lambda row: (row["archive_line_number"], row["revision_id"]))
+                fingerprint.add(batch(definition, current))
+            if (
+                fingerprint.rows != unit.added_rows
+                or fingerprint.hexdigest() != unit.batch_fingerprint
+            ):
+                raise CatalogIntegrityError(
+                    f"batch {batch_id} of {table} was committed with other content"
+                )
+        if len(self._proven_units) >= _BATCH_INDEX_CACHE:
+            self._proven_units.pop(next(iter(self._proven_units)))
+        self._proven_units[key] = None
+
+    def _verify_legacy_row_batches(
+        self,
+        definition: RegisteredTableDefinition,
+        rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> None:
+        """Pre-ADR-0108 history: each touched row sits in a row batch that still holds it.
 
         D2 commits an archive's parsed rows in order, as batches ``<archive>.rows.<i>`` of one
         plan size ``s`` (lines ``i*s+1 … i*s+s``; only the last may be shorter), so the batches

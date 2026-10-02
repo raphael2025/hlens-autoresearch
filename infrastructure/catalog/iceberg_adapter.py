@@ -133,10 +133,12 @@ __all__ = [
     "SUMMARY_FINGERPRINT_RULE",
     "CatalogIntegrityError",
     "CatalogUnavailable",
+    "CommitLayout",
     "DefinitionEvolutionError",
     "EvolutionOutcome",
     "PartitionEvolutionResult",
     "PyIcebergCatalogAdapter",
+    "commit_layout_of",
     "connect_postgres_catalog",
     "open_postgres_catalog_adapter",
 ]
@@ -652,6 +654,38 @@ def _listed_position(snapshots: Sequence[Snapshot], snapshot_id: object) -> int 
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CommitLayout:
+    """How one snapshot was committed (ADR-0108), read from its summary.
+
+    ``unit`` is ``False`` for the original one-snapshot-per-batch layout (no layout keys) and
+    ``True`` for a staged unit commit (``UNIT_COMMIT_LAYOUT``), whose ``window_rows`` is the
+    microbatch size the unit was processed in.
+    """
+
+    unit: bool
+    window_rows: int | None
+
+
+def commit_layout_of(name: str, snapshot: Snapshot) -> CommitLayout:
+    """The ``CommitLayout`` of one PyIceberg snapshot; any other layout fails closed."""
+    summary = snapshot.summary
+    extra = {} if summary is None else summary.additional_properties
+    layout = extra.get(SUMMARY_COMMIT_LAYOUT)
+    window = extra.get(SUMMARY_WINDOW_ROWS)
+    if layout is None and window is None:
+        return CommitLayout(unit=False, window_rows=None)
+    if (
+        layout != UNIT_COMMIT_LAYOUT
+        or not isinstance(window, str)
+        or _SNAPSHOT_ID_RE.fullmatch(window) is None
+    ):
+        raise CatalogIntegrityError(
+            f"snapshot {snapshot.snapshot_id} of {name} records an unknown commit layout"
+        )
+    return CommitLayout(unit=True, window_rows=int(window))
+
+
 class PyIcebergCatalogAdapter:
     """``CatalogAdapter[pyarrow.Table]`` over a PyIceberg ``Catalog``."""
 
@@ -742,6 +776,24 @@ class PyIcebergCatalogAdapter:
             if snapshot is None:
                 raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
             return self._snapshot_info(name, snapshot)
+
+    def commit_layout(self, table: str, snapshot_id: str) -> CommitLayout:
+        """The ADR-0108 commit layout of one snapshot (infrastructure only, like ``history``).
+
+        Resolved like ``get_snapshot`` (unknown or malformed id: ``SnapshotNotFound``).
+        """
+        name = validate_table_name(table)
+        with _backend("commit_layout"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+            snapshot = (
+                iceberg.metadata.snapshot_by_id(int(snapshot_id))
+                if isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)
+                else None
+            )
+            if snapshot is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+            return commit_layout_of(name, snapshot)
 
     def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]:
         """``snapshot_id`` and its ancestors, newest first, from **one** load of the metadata.

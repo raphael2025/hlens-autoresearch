@@ -5,8 +5,13 @@ append-only revisions (ADR-0023 §4 / §7, 03-data.md §7.1 / §7.4):
 
 1. the archive revision row in ``raw.binance_spot_archives`` — one stable batch, and the
    **allocation of this archive's arrival-sequence block**;
-2. the parsed rows in ``raw.binance_spot_agg_trades`` / ``raw.binance_spot_klines_1m`` — bounded
-   ``pyarrow.Table`` microbatches with stable batch ids, committed in order after the archive row.
+2. the parsed rows in ``raw.binance_spot_agg_trades`` / ``raw.binance_spot_klines_1m`` — built in
+   bounded ``pyarrow.Table`` microbatches and committed after the archive row as **one** snapshot
+   (ADR-0108): one unit batch id per archive revision, the whole-unit fingerprint, the
+   microbatch size recorded as the unit's window. Microbatches bound processing and data-file
+   splitting only. Archives whose rows were committed before ADR-0108 — one snapshot per
+   microbatch, batch ids ``<archive>.rows.<index>`` — stay readable, verifiable and replayable;
+   a crash that left such an archive with a committed prefix is completed along that old path.
 
 Everything else follows from those two steps:
 
@@ -17,8 +22,9 @@ Everything else follows from those two steps:
   the catalog adapter recomputes its fingerprint from the actual batch before answering.
 - **Recovery** — there is no journal. A crash between any two commits is repaired by calling
   ``ingest`` again: the archive row (if committed) yields the block base and the two knowledge-axis
-  times, the immutable object plus the D1 parser yield the rows, and the missing microbatches are
-  the ones the catalog does not already have.
+  times, the immutable object plus the D1 parser yield the rows. The rows of a new archive are
+  either wholly committed (the rerun replays them) or not at all (staged data files of a lost
+  commit are invisible orphans, ADR-0077 semantics; the rerun stages and commits again).
 - **Replacement** — a new checksum at the same official path is a new object, a new revision and a
   new set of parsed rows. Nothing is overwritten or deleted. Unless the *source* proves an order
   (it does not, see ``precedence``), both revisions stay maximal heads and the result reports a
@@ -35,11 +41,13 @@ compare or select revisions.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Protocol, Self
+from pathlib import Path
+from typing import Any, Final, Literal, Protocol, Self
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import BooleanExpression, EqualTo
@@ -68,6 +76,7 @@ from core.contracts.storage import StorageAdapter
 from core.domain.base import contract_schema_version_scope
 from infrastructure import contract_version
 from infrastructure.catalog.definitions import RegisteredTableDefinition
+from infrastructure.catalog.fingerprint_unit import UnitFingerprint
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
@@ -116,6 +125,7 @@ __all__ = [
     "RevisionCatalog",
     "RevisionStoreError",
     "RevisionStoreConflict",
+    "UnitCommitCatalog",
     "scan_rows",
     "scanned_rows",
 ]
@@ -152,6 +162,13 @@ MAX_MICROBATCH_ROWS: Final = 250_000
 _COMMIT_ATTEMPTS: Final = 8
 _DAY: Final = timedelta(days=1)
 _ZERO: Final = timedelta(0)
+#: ADR-0108: the batch-id infix of an archive revision's one-snapshot element unit. It is not
+#: ``.rows.``, so a unit id never parses as a pre-ADR-0108 per-microbatch id.
+ROW_UNIT_INFIX: Final = ".rows-unit."
+_ROW_BATCH_INFIX: Final = ".rows."
+
+#: How an archive revision's element rows are (or are to be) committed.
+type ElementLayout = Literal["unit", "batches"]
 
 
 class RevisionStoreError(Exception):
@@ -315,6 +332,23 @@ class RevisionCatalog(Protocol):
     ) -> int | None: ...
 
 
+class UnitCommitCatalog(Protocol):
+    """ADR-0108: the staged one-snapshot unit commit (``PyIcebergCatalogAdapter.commit_unit``).
+
+    An optional capability on top of ``RevisionCatalog`` (read-only catalogs never need it); the
+    store requires it only to write a new archive revision's element rows.
+    """
+
+    def commit_unit(
+        self,
+        request: CommitRequest,
+        batches: Callable[[], Iterable[pa.Table]],
+        *,
+        scratch_directory: Path,
+        window_rows: int,
+    ) -> CommitResult: ...
+
+
 def _batch_scan_kwargs(
     columns: Sequence[str], row_filter: BooleanExpression | None, snapshot_id: str | None
 ) -> dict[str, Any]:
@@ -417,7 +451,13 @@ class RawRevisionStore:
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
         availability_binding: PolicyBinding = AVAILABILITY_BINDING,
         precedence_binding: PolicyBinding = PRECEDENCE_BINDING,
+        scratch_directory: Path | None = None,
+        _legacy_batch_commits: bool = False,
     ) -> None:
+        """``scratch_directory`` holds a unit's bounded spools while it is committed (default:
+        the system temporary directory). ``_legacy_batch_commits`` is **test only**: it writes
+        new archives in the pre-ADR-0108 one-snapshot-per-microbatch layout so old-history
+        fixtures can be built; production never sets it."""
         if not isinstance(microbatch_rows, int) or isinstance(microbatch_rows, bool):
             raise RevisionStoreError("microbatch_rows must be an int")
         if not 1 <= microbatch_rows <= MAX_MICROBATCH_ROWS:
@@ -428,6 +468,8 @@ class RawRevisionStore:
         self._microbatch_rows = microbatch_rows
         self._availability = availability_binding
         self._precedence = precedence_binding
+        self._scratch_directory = scratch_directory
+        self._legacy_batch_commits = _legacy_batch_commits
 
     # ------------------------------------------------------------------ entry points
 
@@ -488,12 +530,16 @@ class RawRevisionStore:
         self._check_parsed(collected, context, outcome, revision_id)
 
         stored = self._stored_archive_row(revision_id)
+        rows_table = ROW_TABLES[context.data_type]
+        layout: ElementLayout | None
         if stored is None:
-            # A new write group: the archive revision and its rows at the current version.
+            # A new write group: the archive revision and its rows at the current version. No
+            # element row can precede its archive row, so the rows have no layout yet.
             version = contract_version.new_group_version()
             base, times, archive_commit, supersedes = self._append_archive(
                 collected, context, observation_key, revision_id, version
             )
+            layout = None
         else:
             self._verify_stored_archive(stored, collected, context, observation_key)
             # Its rows are written / replayed at the version it was committed with
@@ -514,10 +560,23 @@ class RawRevisionStore:
                 outcome=CommitOutcome.ALREADY_COMMITTED,
                 row_count=1,
             )
+            layout = self._element_layout(rows_table, revision_id)
 
-        row_commits, row_revisions = self._append_rows(
-            outcome, context, revision_id, base, times, version
-        )
+        if layout is None:
+            layout = "batches" if self._legacy_batch_commits else "unit"
+        elif layout == "unit" and self._legacy_batch_commits:
+            raise RevisionStoreConflict(
+                f"the rows of archive revision {revision_id} are committed as one unit; "
+                "per-microbatch commits would mix two layouts"
+            )
+        if layout == "unit":
+            row_commits, row_revisions = self._append_unit(
+                outcome, context, revision_id, base, times, version
+            )
+        else:
+            row_commits, row_revisions = self._append_rows(
+                outcome, context, revision_id, base, times, version
+            )
         heads, competing = self._heads(observation_key)
         gaps = self._gap_summaries(context, row_revisions)
         return ArchiveIngested(
@@ -525,7 +584,7 @@ class RawRevisionStore:
             observation_key=observation_key,
             arrival_seq_base=base,
             archive_commit=archive_commit,
-            rows_table=ROW_TABLES[context.data_type],
+            rows_table=rows_table,
             row_commits=row_commits,
             row_count=outcome.row_count,
             row_revision_count=row_revisions,
@@ -697,6 +756,40 @@ class RawRevisionStore:
         times: ObservationTimes,
         version: str,
     ) -> tuple[tuple[BatchCommit, ...], int]:
+        """Pre-ADR-0108 layout: one snapshot per microbatch ``<archive>.rows.<index>``.
+
+        Only for an archive revision whose rows already started in this layout (completing a
+        committed prefix, or replaying it) and for test fixtures of that old history.
+        """
+        definition = _ROW_DEFINITIONS[context.data_type]
+        commits: list[BatchCommit] = []
+        revisions = 0
+        for index, batch in enumerate(
+            self._row_microbatches(parsed, context, revision_id, base, times, version)
+        ):
+            commits.append(
+                self._commit_rows(
+                    definition,
+                    batch,
+                    batch_id=_row_batch_id(revision_id, index),
+                    row_count=batch.num_rows,
+                )
+            )
+            revisions += batch.num_rows
+        if revisions != parsed.row_count:
+            raise RevisionStoreConflict("row revisions do not account for the parsed rows")
+        return tuple(commits), revisions
+
+    def _row_microbatches(
+        self,
+        parsed: ParsedArchive | SpooledArchive,
+        context: ArchiveContext,
+        revision_id: str,
+        base: int,
+        times: ObservationTimes,
+        version: str,
+    ) -> Iterator[pa.Table]:
+        """The archive's element rows as bounded batches in line order, built and validated."""
         definition = _ROW_DEFINITIONS[context.data_type]
         subject = _ROW_SUBJECTS[context.data_type]
         source_identity = identity.row_source_identity(revision_id)
@@ -708,9 +801,7 @@ class RawRevisionStore:
             )
         else:
             chunks = self._spooled_microbatches(parsed)
-        commits: list[BatchCommit] = []
-        revisions = 0
-        for index, chunk in enumerate(chunks):
+        for chunk in chunks:
             records = _row_records(
                 chunk,
                 data_type=context.data_type,
@@ -727,19 +818,61 @@ class RawRevisionStore:
             # no cycles) are proven on the contracts, not on the Arrow batch. Uniqueness across
             # microbatches follows from the parser's strictly increasing keys within one archive.
             RevisionGraph(revisions=records)
-            batch = _row_batch(definition, records, chunk, context.data_type)
-            commits.append(
-                self._commit_rows(
-                    definition,
-                    batch,
-                    batch_id=_row_batch_id(revision_id, index),
-                    row_count=len(records),
-                )
+            yield _row_batch(definition, records, chunk, context.data_type)
+
+    def _append_unit(
+        self,
+        parsed: ParsedArchive | SpooledArchive,
+        context: ArchiveContext,
+        revision_id: str,
+        base: int,
+        times: ObservationTimes,
+        version: str,
+    ) -> tuple[tuple[BatchCommit, ...], int]:
+        """ADR-0108: every element row of the archive revision in exactly one snapshot.
+
+        One pass builds and validates the microbatches (the costly per-row identity work), feeds
+        them to the whole-unit fingerprint and spools them as an Arrow IPC stream under a scratch
+        directory; ``commit_unit`` then re-reads that spool, one record batch at a time, for its
+        own verification and staging passes. Memory: one microbatch plus fixed buffers; disk:
+        about twice the unit's encoded size, removed on return.
+        """
+        definition = _ROW_DEFINITIONS[context.data_type]
+        schema = definition.arrow_schema
+        if parsed.row_count == 0:  # pragma: no cover - D1 rejects an empty archive
+            return (), 0
+        scratch = Path(self._scratch_directory or tempfile.gettempdir())
+        with tempfile.TemporaryDirectory(prefix="hlens-raw-unit-", dir=str(scratch)) as directory:
+            spool = Path(directory) / "unit.arrows"
+            revisions = 0
+            with UnitFingerprint(schema, Path(directory)) as unit:
+                with pa.OSFile(str(spool), "wb") as sink, pa.ipc.new_stream(sink, schema) as out:
+                    for batch in self._row_microbatches(
+                        parsed, context, revision_id, base, times, version
+                    ):
+                        unit.add(batch)
+                        # One record batch per microbatch: the re-read keeps D2's boundaries.
+                        out.write_table(batch.combine_chunks())
+                        revisions += batch.num_rows
+                fingerprint = unit.hexdigest()
+            if revisions != parsed.row_count or unit.rows != revisions:
+                raise RevisionStoreConflict("row revisions do not account for the parsed rows")
+
+            def batches() -> Iterator[pa.Table]:
+                with pa.OSFile(str(spool), "rb") as source:
+                    reader = pa.ipc.open_stream(source)
+                    for record_batch in reader:
+                        yield pa.Table.from_batches([record_batch])
+
+            commit = self._commit_unit(
+                definition,
+                batches,
+                batch_id=_row_unit_batch_id(revision_id, revisions),
+                fingerprint=fingerprint,
+                row_count=revisions,
+                scratch=Path(directory),
             )
-            revisions += len(records)
-        if revisions != parsed.row_count:
-            raise RevisionStoreConflict("row revisions do not account for the parsed rows")
-        return tuple(commits), revisions
+        return (commit,), revisions
 
     def _spooled_microbatches(self, parsed: SpooledArchive) -> Iterator[pa.Table]:
         """Assemble bounded write batches from the parser's fixed-size record batches."""
@@ -795,6 +928,49 @@ class RawRevisionStore:
             )
         raise RevisionStoreConflict(
             f"batch {batch_id} of {definition.table} lost {_COMMIT_ATTEMPTS} commit races"
+        ) from last_error
+
+    def _commit_unit(
+        self,
+        definition: RegisteredTableDefinition,
+        batches: Callable[[], Iterable[pa.Table]],
+        *,
+        batch_id: str,
+        fingerprint: str,
+        row_count: int,
+        scratch: Path,
+    ) -> BatchCommit:
+        commit_unit = getattr(self._adapter, "commit_unit", None)
+        if not callable(commit_unit):
+            raise RevisionStoreError("the catalog cannot commit an element unit (ADR-0108)")
+        last_error: CommitConflict | None = None
+        for _ in range(_COMMIT_ATTEMPTS):
+            request = CommitRequest(
+                table=definition.table,
+                batch_id=batch_id,
+                batch_fingerprint=fingerprint,
+                row_count=row_count,
+                expected_parent_snapshot_id=self._current_snapshot_id(definition.table),
+            )
+            try:
+                result: CommitResult = commit_unit(
+                    request,
+                    batches,
+                    scratch_directory=scratch,
+                    window_rows=self._microbatch_rows,
+                )
+            except CommitConflict as exc:
+                last_error = exc
+                continue
+            return BatchCommit(
+                table=definition.table,
+                batch_id=batch_id,
+                snapshot_id=result.snapshot.snapshot_id,
+                outcome=result.outcome,
+                row_count=row_count,
+            )
+        raise RevisionStoreConflict(
+            f"unit {batch_id} of {definition.table} lost {_COMMIT_ATTEMPTS} commit races"
         ) from last_error
 
     def _gap_summaries(
@@ -919,49 +1095,79 @@ class RawRevisionStore:
         competing = heads if len(heads) > 1 else ()
         return heads, competing
 
-    def _snapshot_of_batch(self, table: str, batch_id: str) -> str:
-        """The snapshot that carries ``batch_id`` on the main branch (replay bookkeeping)."""
+    def _ancestry(self, table: str) -> Iterator[SnapshotInfo]:
+        """The table head and its ancestors, newest first, fetched lazily.
+
+        A catalog with a ``history`` walk is walked with it (one metadata load); otherwise the
+        parents are fetched one ``get_snapshot`` at a time. Brent's cycle detector uses a
+        checkpoint id plus two counters rather than an O(history) set of visited snapshot ids;
+        a consumer that stops early stops the walk.
+        """
         info = self._adapter.load_table(table)
         if info is None:  # pragma: no cover - the archive row was just read from this table
             raise TableNotFound(f"table {table} does not exist")
         snapshot = info.current_snapshot
-        if snapshot is not None:
-            history = getattr(self._adapter, "history", None)
-            if callable(history):
-                snapshots = history(table, snapshot.snapshot_id)
+        if snapshot is None:
+            return
+        history = getattr(self._adapter, "history", None)
+        if callable(history):
+            yield from history(table, snapshot.snapshot_id)
+            return
+        checkpoint_id: str | None = None
+        power = 1
+        distance = 0
+        while snapshot is not None:
+            if checkpoint_id is None:
+                checkpoint_id = snapshot.snapshot_id
             else:
-                snapshots = None
-            if snapshots is not None:
-                for snapshot in snapshots:
-                    if snapshot.batch_id == batch_id:
-                        return str(snapshot.snapshot_id)
-            else:
-                # Brent's cycle detector uses a checkpoint id plus two counters rather than an
-                # O(history) set of visited snapshot ids. Keep this newest-first walk and stop
-                # immediately when the requested batch is found.
-                checkpoint_id: str | None = None
-                power = 1
+                distance += 1
+            if snapshot.snapshot_id == checkpoint_id and distance > 0:
+                raise CatalogIntegrityError(
+                    f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
+                )
+            yield snapshot
+            if distance == power:
+                checkpoint_id = snapshot.snapshot_id
+                power *= 2
                 distance = 0
-                while snapshot is not None:
-                    if checkpoint_id is None:
-                        checkpoint_id = snapshot.snapshot_id
-                    else:
-                        distance += 1
-                    if snapshot.snapshot_id == checkpoint_id and distance > 0:
-                        raise CatalogIntegrityError(
-                            f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
-                        )
-                    if snapshot.batch_id == batch_id:
-                        return snapshot.snapshot_id
-                    if distance == power:
-                        checkpoint_id = snapshot.snapshot_id
-                        power *= 2
-                        distance = 0
-                    parent = snapshot.parent_snapshot_id
-                    snapshot = None if parent is None else self._adapter.get_snapshot(table, parent)
+            parent = snapshot.parent_snapshot_id
+            snapshot = None if parent is None else self._adapter.get_snapshot(table, parent)
+
+    def _snapshot_of_batch(self, table: str, batch_id: str) -> str:
+        """The snapshot that carries ``batch_id`` on the main branch (replay bookkeeping)."""
+        for snapshot in self._ancestry(table):
+            if snapshot.batch_id == batch_id:
+                return str(snapshot.snapshot_id)
         raise CatalogIntegrityError(
             f"{table} has a row of batch {batch_id} but no snapshot that committed it"
         )
+
+    def _element_layout(self, table: str, revision_id: str) -> ElementLayout | None:
+        """How the rows of a committed archive revision are committed so far (ADR-0108).
+
+        ``"unit"`` (one snapshot), ``"batches"`` (pre-ADR-0108 microbatch snapshots, possibly a
+        prefix) or ``None`` (no row committed yet). One newest-first walk of the history, in
+        constant memory; an archive revision with both layouts fails closed.
+        """
+        unit = batches = False
+        unit_prefix = f"{revision_id}{ROW_UNIT_INFIX}"
+        batch_prefix = f"{revision_id}{_ROW_BATCH_INFIX}"
+        for snapshot in self._ancestry(table):
+            batch_id = snapshot.batch_id
+            if batch_id is None:
+                continue
+            if batch_id.startswith(unit_prefix):
+                unit = True
+            elif batch_id.startswith(batch_prefix):
+                batches = True
+            if unit and batches:
+                raise CatalogIntegrityError(
+                    f"{table}: the rows of archive revision {revision_id} mix the unit and the "
+                    "per-microbatch commit layouts"
+                )
+        if unit:
+            return "unit"
+        return "batches" if batches else None
 
 
 # --------------------------------------------------------------------------- identity
@@ -1177,8 +1383,30 @@ def _archive_batch_id(revision_id: str, base: int) -> str:
 
 
 def _row_batch_id(revision_id: str, index: int) -> str:
-    """Stable id of the ``index``-th row microbatch of one archive revision."""
-    return f"{revision_id}.rows.{index:08d}"
+    """Stable id of the ``index``-th row microbatch of one archive revision (pre-ADR-0108)."""
+    return f"{revision_id}{_ROW_BATCH_INFIX}{index:08d}"
+
+
+def _row_unit_batch_id(revision_id: str, row_count: int) -> str:
+    """Stable id of the one element unit of one archive revision (ADR-0108).
+
+    It names the archive revision and its row count and nothing about the microbatch size, so a
+    rerun with another ``microbatch_rows`` replays the same unit instead of adding a second one.
+    """
+    return f"{revision_id}{ROW_UNIT_INFIX}{row_count}"
+
+
+def parse_row_unit_batch_id(batch_id: str) -> tuple[str, int] | None:
+    """``(archive revision id, row count)`` of a unit batch id; ``None`` for any other id.
+
+    A malformed row count after the unit infix is ``CatalogIntegrityError``.
+    """
+    head, separator, tail = batch_id.rpartition(ROW_UNIT_INFIX)
+    if not separator or not head:
+        return None
+    if not tail.isascii() or not tail.isdigit() or tail != str(int(tail)) or int(tail) < 1:
+        raise CatalogIntegrityError(f"malformed element unit batch id {batch_id!r}")
+    return head, int(tail)
 
 
 def _revision_columns(

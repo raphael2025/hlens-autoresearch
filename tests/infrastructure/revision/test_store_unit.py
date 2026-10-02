@@ -102,7 +102,13 @@ def test_spooled_ingest_obeys_microbatch_boundaries(
 ) -> None:
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=row_count))
 
-    result = _ingested(harness.store(microbatch_rows=2).ingest(item.collected, item.context))
+    # ADR-0108: new archives commit one unit; the per-microbatch layout (old history, prefix
+    # completion) still commits exactly these batch boundaries.
+    result = _ingested(
+        harness.store(microbatch_rows=2, _legacy_batch_commits=True).ingest(
+            item.collected, item.context
+        )
+    )
 
     assert [commit.row_count for commit in result.row_commits] == expected_batch_rows
     assert harness.total_rows(AGG_TABLE) == row_count
@@ -137,7 +143,8 @@ def test_spooled_ingest_rows_match_legacy_parsed_table_path(
         )
         legacy_rows = _logical(legacy.rows(AGG_TABLE, _ROW_COLUMNS))
 
-    assert [commit.row_count for commit in spooled_result.row_commits] == [2, 2, 1]
+    # ADR-0108: one element unit per archive revision, whatever the microbatch size.
+    assert [commit.row_count for commit in spooled_result.row_commits] == [5]
     assert spooled_rows == legacy_rows
 
 
@@ -173,7 +180,14 @@ def test_spooled_archive_closes_when_row_commit_aborts(
     monkeypatch.setattr(store_module, "parse_archive_spooled", capture_spool)
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=4))
     crashing = _CrashAfter(harness.adapter, commits=2)  # archive + first row batch
-    store = RawRevisionStore(crashing, harness.storage, clock=harness.clock, microbatch_rows=2)
+    # Pre-ADR-0108 layout: the only one in which a row commit can abort after a partial prefix.
+    store = RawRevisionStore(
+        crashing,
+        harness.storage,
+        clock=harness.clock,
+        microbatch_rows=2,
+        _legacy_batch_commits=True,
+    )
 
     with pytest.raises(_Crash):
         store.ingest(item.collected, item.context)
@@ -524,7 +538,15 @@ def test_recovery_after_a_crash_between_archive_and_rows(harness: StoreHarness) 
 def test_recovery_after_a_crash_between_two_microbatches(harness: StoreHarness) -> None:
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=6))
     crashing = _CrashAfter(harness.adapter, commits=3)  # archive + two row microbatches
-    store = RawRevisionStore(crashing, harness.storage, clock=harness.clock, microbatch_rows=2)
+    # ADR-0108: only pre-ADR-0108 history can hold a committed prefix; the production store
+    # below completes it along that old per-microbatch path.
+    store = RawRevisionStore(
+        crashing,
+        harness.storage,
+        clock=harness.clock,
+        microbatch_rows=2,
+        _legacy_batch_commits=True,
+    )
     with pytest.raises(_Crash):
         store.ingest(item.collected, item.context)
     partial = harness.total_rows(AGG_TABLE)
@@ -550,10 +572,16 @@ def test_a_crashed_run_and_a_clean_run_agree_row_by_row(
 ) -> None:
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=6))
     crashing = _CrashAfter(harness.adapter, commits=2)
+    # ADR-0108: the crashed run leaves pre-ADR-0108 history (a one-batch prefix); the clean run
+    # below writes one unit. Both layouts must hold the same rows.
     with pytest.raises(_Crash):
-        RawRevisionStore(crashing, harness.storage, clock=rs.StepClock(), microbatch_rows=2).ingest(
-            item.collected, item.context
-        )
+        RawRevisionStore(
+            crashing,
+            harness.storage,
+            clock=rs.StepClock(),
+            microbatch_rows=2,
+            _legacy_batch_commits=True,
+        ).ingest(item.collected, item.context)
     harness.reopen()
     harness.store(microbatch_rows=2).ingest(item.collected, item.context)
     recovered = _logical(harness.rows(AGG_TABLE, _ROW_COLUMNS))
@@ -633,7 +661,12 @@ def test_rejected_parse_writes_nothing(harness: StoreHarness) -> None:
 
 def test_microbatches_are_bounded_and_ordered(harness: StoreHarness) -> None:
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=10))
-    result = _ingested(harness.store(microbatch_rows=3).ingest(item.collected, item.context))
+    # ADR-0108: the per-microbatch layout survives only for old history and its completion.
+    result = _ingested(
+        harness.store(microbatch_rows=3, _legacy_batch_commits=True).ingest(
+            item.collected, item.context
+        )
+    )
 
     assert [commit.row_count for commit in result.row_commits] == [3, 3, 3, 1]
     assert len({commit.batch_id for commit in result.row_commits}) == 4
@@ -780,6 +813,12 @@ class _CrashAfter:
         self._left -= 1
         return self._adapter.commit_batch(request, batch)
 
+    def commit_unit(self, request: Any, batches: Any, **kwargs: Any) -> Any:
+        if self._left <= 0:
+            raise _Crash("simulated crash before the next commit")
+        self._left -= 1
+        return self._adapter.commit_unit(request, batches, **kwargs)
+
 
 def test_sha256_of_the_published_object_is_the_archive_payload_hash(harness: StoreHarness) -> None:
     item = rs.archive(harness.storage)
@@ -797,6 +836,9 @@ class _RecordingAdapter:
     def __init__(self, adapter: Any) -> None:
         self._adapter = adapter
         self.batches: list[tuple[str, int]] = []
+        self.units: list[tuple[str, int]] = []
+        #: The microbatch sizes of every pass ``commit_unit`` makes over a unit's factory.
+        self.unit_passes: list[list[int]] = []
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._adapter, name)
@@ -804,6 +846,18 @@ class _RecordingAdapter:
     def commit_batch(self, request: Any, batch: Any) -> Any:
         self.batches.append((request.table, batch.num_rows))
         return self._adapter.commit_batch(request, batch)
+
+    def commit_unit(self, request: Any, batches: Any, **kwargs: Any) -> Any:
+        self.units.append((request.table, request.row_count))
+
+        def recorded() -> Any:
+            sizes: list[int] = []
+            self.unit_passes.append(sizes)
+            for batch in batches():
+                sizes.append(batch.num_rows)
+                yield batch
+
+        return self._adapter.commit_unit(request, recorded, **kwargs)
 
 
 def test_no_batch_exceeds_the_configured_microbatch_size(harness: StoreHarness) -> None:
@@ -815,9 +869,12 @@ def test_no_batch_exceeds_the_configured_microbatch_size(harness: StoreHarness) 
     store.ingest(first.collected, first.context)
     store.ingest(second.collected, second.context)
 
-    row_batches = [rows for table, rows in recording.batches if table == AGG_TABLE]
-    assert max(row_batches) <= 4
-    assert row_batches == [4, 4, 3, 4, 4, 1]  # per archive, never merged across archives
+    # ADR-0108: one unit commit per archive; the unit still flows as bounded microbatches
+    # (two passes: verification, then staging), never merged across archives.
+    assert [rows for table, rows in recording.batches if table == AGG_TABLE] == []
+    assert [rows for table, rows in recording.units if table == AGG_TABLE] == [11, 9]
+    assert max(size for sizes in recording.unit_passes for size in sizes) <= 4
+    assert recording.unit_passes == [[4, 4, 3], [4, 4, 3], [4, 4, 1], [4, 4, 1]]
     assert [rows for table, rows in recording.batches if table == ARCHIVE_TABLE] == [1, 1]
 
 
