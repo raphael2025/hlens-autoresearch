@@ -203,6 +203,7 @@ DATASET_V3_ENTRY_MODULES = (
     "infrastructure/dataset/factory.py",
     "infrastructure/dataset/job_port.py",
     "apps/worker/dataset_job.py",
+    "infrastructure/quality/report_cli.py",
 )
 #: The v2 materializing builder / manifest store, the unbounded PIT selector and the
 #: materializing universe builder: never imported by an entry module.
