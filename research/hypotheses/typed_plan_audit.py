@@ -157,7 +157,8 @@ class PlanAdmissionEvidence:
     content_hash: str
 
     def __post_init__(self) -> None:
-        normalized = _json_object(self.data, "evidence data")
+        # ``data`` is frozen (nested ``FrozenMapping``): re-plain it before the JSON round trip.
+        normalized = _json_object(_plain(self.data), "evidence data")
         digest = _hash(self.content_hash, "evidence content_hash")
         if content_hash(normalized) != digest:
             raise ValueError("evidence content_hash does not match its data")
