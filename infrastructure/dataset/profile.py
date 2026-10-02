@@ -7,6 +7,11 @@ reads it from one strict JSON file and rejects a missing field, an unknown field
 a non-integer number and anything the downstream limit types reject. ``profile_hash`` is the
 content hash of the profile's canonical document, so it does not depend on key order or spacing.
 
+Schema 1.1.0 (ADR-0101 修订 1 §2, additive) adds the optional ``listing_quality`` section: the
+``ListingHistoryQualityReporterV2`` bounds the partition ``quality`` section does not carry. A
+1.0.x document must not have it; a profile without it serves every command except the listing
+report (which refuses and says why). A profile without the section hashes exactly as before.
+
 Nothing here selects a value, opens a catalog or touches the network.
 """
 
@@ -20,12 +25,14 @@ from pathlib import Path
 from typing import Any, Final
 
 from core.domain.base import SEMVER_PATTERN, content_hash
+from infrastructure.catalog.bounded_metadata import BoundedMetadataError, BoundedMetadataLimits
 from infrastructure.dataset.builder import DatasetEvidenceRule, dataset_evidence_rule
 from infrastructure.pit.selector import PitRunParams
 from infrastructure.quality.report_streams import (
     QualityReportStreamError,
     QualityReportStreamLimits,
 )
+from infrastructure.streaming.content_key_tree import ContentKeyTreeError, KeyTreeParams
 from infrastructure.streaming.runs import RunLimits
 from infrastructure.universe.run_params import UniverseRunParams
 
@@ -33,6 +40,8 @@ __all__ = [
     "PROFILE_SCHEMA_MAJOR",
     "DatasetBuildProfile",
     "DatasetProfileError",
+    "LISTING_QUALITY_SINCE_MINOR",
+    "ListingQualityLimits",
     "QualityLimits",
     "QualityReporterLimits",
     "load_dataset_profile",
@@ -40,6 +49,8 @@ __all__ = [
 
 #: The profile document major this code reads; any other major is rejected (ADR-0101 D1).
 PROFILE_SCHEMA_MAJOR: Final = 1
+#: The first profile minor that may carry ``listing_quality`` (ADR-0101 修订 1 §2).
+LISTING_QUALITY_SINCE_MINOR: Final = 1
 #: A profile is configuration, never data: refuse to read a file larger than this.
 _MAX_PROFILE_BYTES: Final = 1 << 20
 
@@ -112,6 +123,32 @@ class QualityLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ListingQualityLimits:
+    """``ListingHistoryQualityReporterV2`` bounds not in the ``quality`` section (修订 1 §2).
+
+    The run / stream limits, capacity, fanout, run-object and identity bytes, record-byte bounds
+    and retries are shared with ``quality`` (the capacity probe's mapping); these are the rest.
+    """
+
+    metadata_limits: BoundedMetadataLimits
+    max_record_bytes: int
+    prefix_leaf_max_records: int
+    prefix_fanout: int
+    prefix_max_node_bytes: int
+    prefix_max_record_bytes: int
+    row_chunk_capacity: int
+    max_hash_chunk_bytes: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.metadata_limits, BoundedMetadataLimits):
+            raise DatasetProfileError(
+                "listing_quality.metadata_limits must be BoundedMetadataLimits"
+            )
+        for name in _LISTING_FIELDS:
+            _integer(f"listing_quality.{name}", getattr(self, name), _LISTING_MINIMUMS.get(name, 1))
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetBuildProfile:
     """Everything the v3 Dataset pipeline needs from its operator; no value has a default.
 
@@ -126,9 +163,18 @@ class DatasetBuildProfile:
     universe: UniverseRunParams
     quality: QualityLimits
     capacity_evidence: str | None = None
+    listing_quality: ListingQualityLimits | None = None
 
     def __post_init__(self) -> None:
         _check_schema_version(self.schema_version)
+        if self.listing_quality is not None:
+            if not isinstance(self.listing_quality, ListingQualityLimits):
+                raise DatasetProfileError("listing_quality must be ListingQualityLimits")
+            if int(self.schema_version.split(".")[1]) < LISTING_QUALITY_SINCE_MINOR:
+                raise DatasetProfileError(
+                    f"listing_quality needs profile schema_version >= "
+                    f"{PROFILE_SCHEMA_MAJOR}.{LISTING_QUALITY_SINCE_MINOR}.0"
+                )
         if self.capacity_evidence is not None and (
             not isinstance(self.capacity_evidence, str) or not self.capacity_evidence.strip()
         ):
@@ -171,6 +217,19 @@ class DatasetBuildProfile:
         }
         if self.capacity_evidence is not None:
             document["capacity_evidence"] = self.capacity_evidence
+        if self.listing_quality is not None:
+            listing = self.listing_quality
+            metadata = listing.metadata_limits
+            document["listing_quality"] = {
+                "metadata": {
+                    **{name: getattr(metadata, name) for name in _METADATA_FIELDS},
+                    "run_limits": _limits_document(metadata.run_limits),
+                    "key_tree": {
+                        name: getattr(metadata.key_tree_params, name) for name in _KEY_TREE_FIELDS
+                    },
+                },
+                **{name: getattr(listing, name) for name in _LISTING_FIELDS},
+            }
         return document
 
     def profile_hash(self) -> str:
@@ -209,7 +268,30 @@ _REPORTER_FIELDS: Final = (
     "retries",
 )
 _TOP_REQUIRED: Final = frozenset({"schema_version", "rule", "pit", "universe", "quality"})
-_TOP_OPTIONAL: Final = frozenset({"capacity_evidence"})
+_TOP_OPTIONAL: Final = frozenset({"capacity_evidence", "listing_quality"})
+_METADATA_FIELDS: Final = (
+    "max_metadata_bytes",
+    "max_item_bytes",
+    "max_retained_json_bytes",
+    "read_chunk_bytes",
+    "max_small_array_items",
+    "max_map_items",
+    "max_snapshots",
+    "run_capacity",
+    "run_merge_fanout",
+)
+_KEY_TREE_FIELDS: Final = ("page_max_bytes", "leaf_max_records", "fanout")
+_LISTING_FIELDS: Final = (
+    "max_record_bytes",
+    "prefix_leaf_max_records",
+    "prefix_fanout",
+    "prefix_max_node_bytes",
+    "prefix_max_record_bytes",
+    "row_chunk_capacity",
+    "max_hash_chunk_bytes",
+)
+#: The reporter's own minimums (``ListingHistoryQualityReporterV2.__init__``); others are 1.
+_LISTING_MINIMUMS: Final = {"prefix_fanout": 2, "max_hash_chunk_bytes": 16}
 
 
 def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -312,6 +394,37 @@ def _quality(value: object) -> QualityLimits:
     )
 
 
+def _listing_quality(value: object) -> ListingQualityLimits:
+    document = _exact("listing_quality", value, frozenset({"metadata", *_LISTING_FIELDS}))
+    metadata = _exact(
+        "listing_quality.metadata",
+        document["metadata"],
+        frozenset({*_METADATA_FIELDS, "run_limits", "key_tree"}),
+    )
+    numbers = _ints(
+        "listing_quality.metadata",
+        {name: metadata[name] for name in _METADATA_FIELDS},
+        _METADATA_FIELDS,
+    )
+    tree = _ints("listing_quality.metadata.key_tree", metadata["key_tree"], _KEY_TREE_FIELDS)
+    try:
+        limits = BoundedMetadataLimits(
+            **numbers,
+            run_limits=_run_limits("listing_quality.metadata.run_limits", metadata["run_limits"]),
+            key_tree_params=KeyTreeParams(**tree),
+        )
+    except (BoundedMetadataError, ContentKeyTreeError, ValueError) as exc:
+        raise DatasetProfileError(f"listing_quality.metadata: {exc}") from exc
+    return ListingQualityLimits(
+        metadata_limits=limits,
+        **_ints(
+            "listing_quality",
+            {name: document[name] for name in _LISTING_FIELDS},
+            _LISTING_FIELDS,
+        ),
+    )
+
+
 def _read_document(path: Path) -> object:
     try:
         with path.open("rb") as handle:
@@ -349,4 +462,7 @@ def load_dataset_profile(path: str | Path) -> DatasetBuildProfile:
         universe=_universe(document["universe"]),
         quality=_quality(document["quality"]),
         capacity_evidence=evidence,
+        listing_quality=(
+            _listing_quality(document["listing_quality"]) if "listing_quality" in document else None
+        ),
     )

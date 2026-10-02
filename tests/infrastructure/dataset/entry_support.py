@@ -68,8 +68,41 @@ PROFILE_DOCUMENT: Final[dict[str, Any]] = {
 }
 
 
+#: The ADR-0101 修订 1 §2 section (schema 1.1.0+); the values mirror the listing v2 test reporter.
+LISTING_QUALITY_DOCUMENT: Final[dict[str, Any]] = {
+    "metadata": {
+        "max_metadata_bytes": 16 * 1024 * 1024,
+        "max_item_bytes": 256 * 1024,
+        "max_retained_json_bytes": 2 * 1024 * 1024,
+        "read_chunk_bytes": 16 * 1024,
+        "max_small_array_items": 512,
+        "max_map_items": 512,
+        "max_snapshots": 5000,
+        "run_capacity": 64,
+        "run_merge_fanout": 8,
+        "run_limits": {"leaf_max_records": 32, "leaf_max_bytes": 1024 * 1024, "fanout": 8},
+        "key_tree": {"page_max_bytes": 1024 * 1024, "leaf_max_records": 64, "fanout": 8},
+    },
+    "max_record_bytes": 16384,
+    "prefix_leaf_max_records": 64,
+    "prefix_fanout": 2,
+    "prefix_max_node_bytes": 2 * 1024 * 1024,
+    "prefix_max_record_bytes": 16 * 1024,
+    "row_chunk_capacity": 2,
+    "max_hash_chunk_bytes": 64 * 1024,
+}
+
+
 def profile_document() -> dict[str, Any]:
     return copy.deepcopy(PROFILE_DOCUMENT)
+
+
+def listing_profile_document() -> dict[str, Any]:
+    """A schema 1.1.0 profile with the ``listing_quality`` section."""
+    document = profile_document()
+    document["schema_version"] = "1.1.0"
+    document["listing_quality"] = copy.deepcopy(LISTING_QUALITY_DOCUMENT)
+    return document
 
 
 def write_profile(path: Path, document: Any) -> Path:

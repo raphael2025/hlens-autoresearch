@@ -26,6 +26,7 @@ from infrastructure.streaming.runs import RunLimits
 from infrastructure.universe.run_params import UniverseRunParams
 from tests.infrastructure.dataset.entry_support import (
     PROFILE_DOCUMENT,
+    listing_profile_document,
     profile_document,
     write_profile,
 )
@@ -370,3 +371,91 @@ def test_quality_types_validate_their_own_arguments() -> None:
             max_identity_bytes=1,
             reporter=None,  # type: ignore[arg-type]
         )
+
+
+# ----------------------------------------------------------- listing_quality (修订 1 §2)
+
+
+def test_listing_quality_section_loads_and_round_trips(tmp_path: Path) -> None:
+    document = listing_profile_document()
+    profile = _loaded(tmp_path, document)
+    listing = profile.listing_quality
+    assert listing is not None
+    assert listing.metadata_limits.max_snapshots == 5000
+    assert listing.metadata_limits.key_tree_params.page_max_bytes == 1024 * 1024
+    assert listing.metadata_limits.run_limits.leaf_max_records == 32
+    assert listing.prefix_fanout == 2 and listing.max_hash_chunk_bytes == 64 * 1024
+    assert profile.to_document() == document
+    assert profile.profile_hash() == content_hash(document)
+
+
+def test_a_profile_without_listing_quality_hashes_as_before(tmp_path: Path) -> None:
+    document = profile_document()
+    profile = _loaded(tmp_path, document)
+    assert profile.listing_quality is None
+    assert "listing_quality" not in profile.to_document()
+    assert profile.profile_hash() == content_hash(document)
+
+
+@pytest.mark.parametrize("version", ["1.0.0", "1.0.7"])
+def test_listing_quality_needs_schema_1_1(tmp_path: Path, version: str) -> None:
+    document = listing_profile_document()
+    document["schema_version"] = version
+    _rejects(tmp_path, document, "listing_quality needs profile schema_version >= 1.1.0")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("listing_quality", "metadata"),
+        ("listing_quality", "prefix_fanout"),
+        ("listing_quality", "metadata", "key_tree"),
+        ("listing_quality", "metadata", "run_limits", "fanout"),
+        ("listing_quality", "metadata", "max_snapshots"),
+    ],
+)
+def test_a_missing_listing_field_is_rejected(tmp_path: Path, path: tuple[str, ...]) -> None:
+    document = listing_profile_document()
+    *parents, leaf = path
+    node = document
+    for key in parents:
+        node = node[key]
+    del node[leaf]
+    _rejects(tmp_path, document, "missing")
+
+
+@pytest.mark.parametrize(
+    "path", [("listing_quality",), ("listing_quality", "metadata", "key_tree")]
+)
+def test_an_unknown_listing_field_is_rejected(tmp_path: Path, path: tuple[str, ...]) -> None:
+    document = listing_profile_document()
+    node = document
+    for key in path:
+        node = node[key]
+    node["surprise"] = 1
+    _rejects(tmp_path, document, "unknown fields")
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("listing_quality", "prefix_fanout"), 1),
+        (("listing_quality", "max_hash_chunk_bytes"), 15),
+        (("listing_quality", "row_chunk_capacity"), 0),
+        (("listing_quality", "metadata", "run_merge_fanout"), 1),
+        (("listing_quality", "metadata", "key_tree", "fanout"), 1),
+        (("listing_quality", "max_record_bytes"), True),
+        (("listing_quality", "max_record_bytes"), 1.5),
+    ],
+)
+def test_a_listing_value_below_its_minimum_is_rejected(
+    tmp_path: Path, path: tuple[str, ...], value: Any
+) -> None:
+    document = listing_profile_document()
+    *parents, leaf = path
+    node = document
+    for key in parents:
+        node = node[key]
+    node[leaf] = value
+    with pytest.raises(DatasetProfileError):
+        load_dataset_profile(write_profile(tmp_path / "profile.json", document))
