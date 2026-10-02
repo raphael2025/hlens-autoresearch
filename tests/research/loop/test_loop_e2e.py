@@ -368,14 +368,19 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
 #: and that row renders its floats as decimal text (W1 fix: no float in a hashed record). The
 #: 2.2.0 values below held up to ``ca8bd57^`` (verified by bisect, 2026-10-01).
 #: 2.2.0 values (evidence, git history): cd8e1512…, c94401f4…, 9acaa76b…
+#: Re-pinned for contract 2.6.0 (ADR-0109, 2026-10-02): envelope change only; the 2.5.0 values
+#: still hold when the unmodified test runs with every object (imports included) built inside
+#: ``contract_schema_version_scope("2.5.0")`` (verified).
+#: 2.5.0 values (evidence, git history): 6dca257d…, eef9f1d7…, 503116d5…; fingerprint 196485af…
 PINNED_RECORD_HASHES = [
-    "6dca257dbf87f267129f4087dcc95244fd2bc318e90fe3f89d3c40be8626d56c",
-    "eef9f1d7fcae4c5cb7aed3a9a2538270f9b6eb5720a11ffa3b4829f457ff75d6",
-    "503116d5b6037089f127a3929d986de96ab79faf2f081e93cb524e40ae8ba558",
+    "7f82a54ea805788e3fcb791fa39c17d2c99994540773123a5f0f494ff9ba5da4",
+    "9dfd9ed61a33d1c1c8dd819143950d6777024c51a2cd263a9b6867a5cad29c38",
+    "9cd2c06322ac7beec5414709d22a58e420993a90f43e79ae313270e1abfdadff",
 ]
 #: Fingerprint re-pinned for contracts 2.3.0 – 2.5.0: envelope change only — built entirely at
 #: 2.2.0 (scope entered before any import) it is still ``fbbd152b…`` (verified 2026-10-01).
-PINNED_FINGERPRINT_HASH = "196485afb1be414e7c01f781c2b08289849612fcc75e2fb15cdae233654d6c1a"
+#: Re-pinned for 2.6.0 with the record hashes above (was ``196485af…``, verified at 2.5.0).
+PINNED_FINGERPRINT_HASH = "2d3f585449647c9ea715591119a1f9f38fd43b699cd0b837351db7d8a435dd42"
 
 
 def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:
