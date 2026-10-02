@@ -69,6 +69,7 @@ from core.domain.research import FailureRecord, Verdict
 from core.domain.specs import RiskPolicy, StrategySpec
 from core.errors import ReasonCode
 from plugins.backtest import BarBacktester
+from research.hypotheses.p7_binding import P7PlanRecord
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.validation import BacktestValidation, BacktestValidator, TrialRun
 
@@ -99,15 +100,27 @@ class EvaluationStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class StrategyCandidate:
-    """A library strategy wired to its providers."""
+    """A library strategy wired to its providers.
+
+    ``plan_record`` (ADR-0103 D1; ``None`` by default, which changes nothing): the
+    ``hlens.p7.plan@1.0.0`` record of the compiled P7 plan whose strategy root this candidate
+    is. Only ``research.loop.p7_plan.p7_strategy_candidates`` sets it; a run of such a
+    candidate binds the record (and every node output) into its reproducibility tuple."""
 
     spec: StrategySpec
     strategy: StrategyProvider
     hypothesis_family_id: str
     risk_policy: RiskPolicy | None = None
     risk: RiskProvider | None = None
+    plan_record: P7PlanRecord | None = None
 
     def __post_init__(self) -> None:
+        if self.plan_record is not None:
+            if type(self.plan_record) is not P7PlanRecord:
+                raise ValueError("plan_record must be a P7PlanRecord (or None)")
+            root = next(n for n in self.plan_record.nodes if n.node_id == self.plan_record.root)
+            if (root.spec_ref, root.spec_hash) != (str(self.spec.ref), self.spec.content_hash()):
+                raise ValueError(f"{self.spec.ref}: plan_record's root is not this strategy")
         declared = self.spec.risk_policy
         given = self.risk_policy.ref if self.risk_policy is not None else None
         if (declared is None) != (given is None) or (

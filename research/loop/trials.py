@@ -56,6 +56,14 @@ differs from what it would hand the validator (the record would be false), and g
 validator exactly the recorded family count, seed and control seeds. Runs of earlier versions
 carry no record and are never backfilled (H3 / H6).
 
+P7 plans (ADR-0103 D1 / D3; nothing changes without one). A trial of a hypothesis admitted from a
+compiled P7 plan (origin ``p7_plan``, ``research.loop.p7_admission``) runs the plan's strategy-root
+candidate, whose ``plan_record`` is bound into the run's hashed ``repro.params``
+(``hlens.p7.plan@1.0.0``) and whose node outputs join ``repro.dependency_hashes``; the experiment
+row's ``params`` stay the strategy's parameters. A hypothesis whose ``p7_plan`` condition does not
+name its candidate's plan — or a plan candidate run by a hypothesis that names no plan — is a
+``CONTRACT_VIOLATION`` trial, never a run of something else.
+
 C-T4 market benchmark (ADR-0060 enforced in the loop, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING):
 ``ValidationStage`` builds its ``ValidatorSetup`` with ``market_benchmark=True``, so every trial
 report carries what the bound Profile's ``benchmark.market_benchmark_rule`` /
@@ -218,6 +226,13 @@ from research.experiments.run_inputs import (
     recorded_run_inputs,
     strategy_params,
     with_run_inputs,
+)
+from research.hypotheses.p7_binding import (
+    strategy_params as p7_strategy_params,
+)
+from research.hypotheses.p7_binding import (
+    with_p7_plan,
+    with_plan_dependency_hashes,
 )
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
@@ -617,12 +632,15 @@ def require_durable_unsealing(budget: OosUnsealBudget | None, ledger: UnsealingL
 
 
 def _registered_this_round(ctx: RoundContext) -> tuple[tuple[Hypothesis, str, str | None], ...]:
-    """This round's trials in order: new hypotheses, re-evaluations, ADR-0083 retry trials (a
-    retry round holds only those), then evolution offspring."""
+    """This round's trials in order: hypotheses admitted from a P7 plan (ADR-0103 D3), new
+    hypotheses, re-evaluations, ADR-0083 retry trials (a retry round holds only those), then
+    evolution offspring."""
     stage = ctx.artifacts.get("hypothesis", {})
     found: list[tuple[Hypothesis, str, str | None]] = [
-        (h, "hypothesis", None) for h in stage.get("registered", ())
+        (h, "p7_plan", None)
+        for h in stage.get("p7_registered", ())  # ADR-0103 D3
     ]
+    found += [(h, "hypothesis", None) for h in stage.get("registered", ())]
     found += [(h, "reevaluation", attempt) for h, attempt in stage.get("reevaluations", ())]
     found += [(h, "retry", attempt) for h, attempt in stage.get("retry_reevaluations", ())]
     found += [
@@ -687,6 +705,20 @@ def _request_point(
             raise ValueError(f"{spec.ref}: float parameter {key}={value!r} cannot be requested")
         point[key] = value
     return point
+
+
+def _require_plan_binding(
+    hypothesis: Hypothesis, plan_hash: str | None, candidate: StrategyCandidate
+) -> None:
+    """ADR-0103 D1: a ``p7_plan`` condition runs only its own plan's candidate, and a plan's
+    candidate runs only for a hypothesis that names that plan."""
+    record = candidate.plan_record
+    recorded = None if record is None else record.plan_hash
+    if plan_hash != recorded:
+        raise ValueError(
+            f"{hypothesis.ref} names P7 plan {plan_hash}, its strategy {candidate.spec.ref} "
+            f"belongs to plan {recorded}"
+        )
 
 
 def _float_text(value: Any) -> Any:
@@ -895,6 +927,10 @@ class ExperimentStage:
             run_params = {**dict(spec.params), **dict(params)}
         if run_inputs is not None:  # bound into experiment_hash through repro.params
             run_params = with_run_inputs(run_params, run_inputs)
+        record = None if candidate is None else candidate.plan_record
+        if record is not None:  # ADR-0103 D1: the plan and every node output, hash-bound
+            run_params = with_p7_plan(run_params, record)
+            dependencies = with_plan_dependency_hashes(dependencies, record)
         return ReproducibilityTuple(
             hypothesis_ref=hypothesis.ref,
             strategy_ref=None if spec is None else spec.ref,
@@ -949,6 +985,7 @@ class ExperimentStage:
                 if candidate is None:
                     raise ValueError(f"no strategy {point.strategy} in the loop's catalog")
                 params = _request_point(candidate, point.overrides)
+                _require_plan_binding(hypothesis, point.p7_plan, candidate)
             except ValueError as exc:
                 error, reason = str(exc), ReasonCode.CONTRACT_VIOLATION
                 candidate = None
@@ -1063,7 +1100,7 @@ class ExperimentStage:
             "strategy": None if candidate is None else str(candidate.spec.ref),
             "params": {
                 k: decimal_text(v) if isinstance(v, float) else v
-                for k, v in sorted(strategy_params(repro.params).items())
+                for k, v in sorted(p7_strategy_params(strategy_params(repro.params)).items())
             },
             # as ``params``: floats as decimal text, so the hashed record holds no float
             "run_inputs": None if run_inputs is None else _float_text(run_inputs.payload()),

@@ -14,8 +14,9 @@
   labels point at the synthetic market) and F4 feature runs over contiguous chunks — a chunk sees
   one earlier bar, so values do not depend on the chunk size (a performance parameter only);
 - ``trial_point``: the strategy and parameter point a hypothesis pre-registers
-  (``strategy = name@version`` exactly once, ``param <key> = <value>`` any number of times; any
-  other condition is refused, so a hypothesis is never run as something else than it says);
+  (``strategy = name@version`` exactly once, ``param <key> = <value>`` any number of times, and
+  at most one ``p7_plan = <plan_hash>`` naming a compiled P7 plan, ADR-0103 D1; any other
+  condition is refused, so a hypothesis is never run as something else than it says);
 - ``decimal_text``: floats that enter hashed loop records are first turned into Decimal text with
   a fixed quantization (``RECORD_QUANTUM``, half-even), so a record hash never depends on float
   formatting.
@@ -96,6 +97,8 @@ _CONTEXT: Final = Context(prec=80, rounding=ROUND_HALF_EVEN)
 _STRATEGY: Final = re.compile(r"^strategy\s*=\s*([a-z][a-z0-9_]*@\S+)$")
 _PARAM: Final = re.compile(r"^param\s+([a-z][a-z0-9_]*)\s*=\s*(\S+)$")
 _INT: Final = re.compile(r"^-?\d+$")
+#: ``p7_plan = <plan_hash>`` (ADR-0103 D1; ``research.hypotheses.p7_binding.p7_plan_condition``).
+_P7_PLAN: Final = re.compile(r"^p7_plan\s*=\s*([0-9a-f]{64})$")
 #: A requestable strategy parameter value (floats cannot be requested, ADR-0041).
 type Param = str | int | bool
 
@@ -566,6 +569,9 @@ def feature_pairs(
 class TrialPoint:
     strategy: str  # ``name@version`` of the StrategySpec
     overrides: FrozenMapping[str, Param]
+    #: The compiled P7 plan the hypothesis names (``p7_plan = <hash>``, ADR-0103 D1); ``None``
+    #: for every hypothesis without that condition.
+    p7_plan: str | None = None
 
 
 def _scalar(text: str) -> Param:
@@ -580,10 +586,13 @@ def trial_point(hypothesis: Hypothesis) -> TrialPoint:
     """The strategy and parameter overrides a hypothesis pre-registered (see module docs)."""
     strategy: list[str] = []
     overrides: dict[str, Param] = {}
+    plans: list[str] = []
     for condition in hypothesis.conditions:
         text = condition.strip()
         if match := _STRATEGY.fullmatch(text):
             strategy.append(match.group(1))
+        elif match := _P7_PLAN.fullmatch(text):
+            plans.append(match.group(1))
         elif match := _PARAM.fullmatch(text):
             key = match.group(1)
             if key in overrides:
@@ -593,4 +602,10 @@ def trial_point(hypothesis: Hypothesis) -> TrialPoint:
             raise ValueError(f"{hypothesis.ref}: unsupported condition {condition!r}")
     if len(strategy) != 1:
         raise ValueError(f"{hypothesis.ref} does not name exactly one 'strategy = name@version'")
-    return TrialPoint(strategy=strategy[0], overrides=FrozenMapping(overrides))
+    if len(plans) > 1:
+        raise ValueError(f"{hypothesis.ref} names more than one 'p7_plan = <hash>'")
+    return TrialPoint(
+        strategy=strategy[0],
+        overrides=FrozenMapping(overrides),
+        p7_plan=plans[0] if plans else None,
+    )
