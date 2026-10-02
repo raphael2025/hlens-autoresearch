@@ -128,11 +128,15 @@ def _source(**changes: Any) -> DatasetSourceValues:
 
 def test_the_synthetic_operator_identity_is_unchanged() -> None:
     """Golden: the ADR-0074 identity of fixed TEST ONLY inputs, computed before ADR-0105 §5
-    extracted ``wiring_identity`` (and recomputed with the pre-§5 module, 2026-10-02)."""
+    extracted ``wiring_identity`` (and recomputed with the pre-§5 module, 2026-10-02).
+
+    Re-pinned for contract 2.6.0 (ADR-0109): envelope change only; the 2.5.0 value
+    ``81f4173b…43c0be73e8d50`` still holds when the unmodified test runs inside
+    ``contract_schema_version_scope("2.5.0")`` (imports included; verified)."""
     identity = operator_config._operator_identity(
         _providers(PROVIDER_ROLES), _loop_values(synthetic=True), _wiring_values()
     )
-    assert identity == "81f4173b520f17e47c6e01df803804ecbe99bbc3e1482e69e5843c0be73e8d50"
+    assert identity == "7f9c91f145cc42d4bddc5416ad6061082fa0ef54cfaa7015bf5210280f93f277"
 
 
 # ---- the dataset identity -----------------------------------------------------------------
