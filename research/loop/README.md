@@ -22,6 +22,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `compose.py` | `compose_loop` / `compose_durable`（两种数据源共用的组合：同一组阶段、预算、护栏、审计、持久钩子与自动持久总线）+ `LoopSettings` / `settings_fingerprint`；`SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：合成组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
 | `dataset_source.py` | `DatasetIngestStage` / `DatasetRound` / `DatasetSegment` / `DatasetCatalog`：每轮从声明的 manifest 读数据；`SealedDatasetPair`（封存 manifest 对，只在开封认领后读取）/ `WithheldSealedWindow`（只扣留声明：只记录哈希与 Profile 封存窗口，从不读取；见下「数据集组合」） |
 | `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
+| `dataset_operator.py` / `dataset_operator_config.py` | ADR-0105 §5（修订 ADR-0074 §9）：Dataset 版有限批次 operator，`python -m research.loop.dataset_operator run --config PATH --rounds N --catalog MODULE:CALLABLE`。与合成 operator 并列：同一严格 TOML v1 读取规则、`[paths]` / `[loop.wiring]` / 交叉校验 / ADR-0062 冻结登记校验 / provider allowlist（去掉合成市场 role），同一预检（`check_code_identity`、`check_anchor_paths`、`check_state_dir`）与轮次执行（`run_durable`），只把数据源换成 `[source]`（`kind = "research_dataset"`、Canonical `symbol`、`ingest_compute_seconds`、逐轮 manifest 哈希；v1 不接受封存 manifest 对）。没有冻结 Profile 时拒绝一切配置。身份 `hlens.dataset-loop-operator-identity@1.0.0` 写入 v5 state；`DatasetCatalog` 不是配置，由受信 `--catalog` 工厂（预检全部通过后才调用）或嵌入调用方给出。合成 operator 身份不变（`tests/research/loop/test_dataset_operator.py` 固定）。测试：同文件与 `tests/infrastructure/e2e/test_research_loop_dataset_operator.py` |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 | `state_export.py` | ADR-0105 §3 第二项：durable 状态**只读**导出。`read_durable_state(state_dir)` 只读重放 memory / audit 日志（不取写锁、不写锚点、不恢复；只计 audit 已记录的轮次）；`export_run_artifacts(state_dir, run_id, out_dir, *, strategy_spec, cost_model, label_spec)` 把一个已记录 run 的 `ExperimentRun`、其唯一 `ValidationReport`、`StrategySpec` 及（给出时）`CostModelSpec` / `OutcomeLabelSpec` 写为 JSON 文件（独占创建、不覆盖、`out_dir` 须在 state 外）。state 只记录配置策略 / 成本 / 标签的哈希，这些对象由调用方给出且须与 state 头指纹及 run 记录的哈希逐一相等；不改 durable 写路径与格式。测试：`tests/research/loop/test_state_export.py` |
 | `recovery_review.py` | `failed_round_review_packet(DurableState)`：只对最后记录的 failed experiment stage 生成纯内存、hash-bound 证据投影；不打开目录、不触发写路径，不等于恢复操作 |
@@ -396,6 +397,18 @@ descriptor_hash = "<exact sha256>"
 ```
 
 成功运行前仍必须通过所有 path / artifact / provider / Profile freeze 检查。state 只新建或以相同 identity 重开 v5；不接管 v3 / v4，不自动修复中断轮。每次打开先从已验证 audit 幂等补齐 `research_loop_round` 报告，再执行一轮、立即写一份报告；不写 Phase 6 matrix。SIGINT / SIGTERM 在当前轮完成并报告后退出。退出码为 0（完成 / 边界停止）、2（命令或配置拒绝）、3（预算或 loop halt）、4（中断 / 人工恢复审查）、5（损坏、锁、锚点或报告 I/O 故障）。
+
+### Dataset 版 operator（ADR-0105 §5，修订 ADR-0074 §9）
+
+`python -m research.loop.dataset_operator run --config PATH --rounds N --catalog MODULE:CALLABLE`。配置与上面模板相同，只有三处不同：没有 `[providers.synthetic_market_provider]`；`[loop]` 没有 `market` / `minutes_per_round` / `compute_seconds_per_bar`；新增 `[source]` 表（下例同样全是占位符，Parser 必定拒绝）。`--catalog` 指向部署方受信的工厂（无参数，返回 `DatasetCatalog` 或产出它的 context manager），只在配置、provider、代码身份、锚点与 state 预检全部通过后才调用；不给 `--catalog`（也没有嵌入调用方的 catalog）时在读取任何文件前拒绝。退出码、信号、报告与 v5 state 规则同合成 operator。当前同样**没有可运行配置**（无冻结 Profile）。
+
+```toml
+[source]
+kind = "research_dataset"
+symbol = "<Canonical symbol, e.g. BTC-USDT>"
+ingest_compute_seconds = "<seconds>"
+rounds = [{ feature_manifest_hash = "<sha256>", price_manifest_hash = "<sha256>", sealed_manifest_hash = false }]
+```
 
 ## 循环内替换提案触发（ADR-0100 第 7 项，2026-09-30，CODE_COMPLETE / DEBUG_PENDING，默认关闭）
 
