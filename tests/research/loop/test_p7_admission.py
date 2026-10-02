@@ -41,7 +41,7 @@ from research.hypotheses.typed_plan_compiler import (
     PlanCompileRefused,
 )
 from research.hypotheses.typed_plan_resolver import resolve_direct_references
-from research.loop import LoopStateInconsistent, build_synthetic_loop, open_synthetic_loop
+from research.loop import build_synthetic_loop, open_synthetic_loop
 from research.loop.compose import DurableLoop, loop_fingerprint
 from research.loop.durable import PLAN_ADMISSION_FILE, DurableState
 from research.loop.memory import ResearchMemory
@@ -178,10 +178,15 @@ def test_a_declared_plan_is_admitted_committed_and_run_with_its_binding(tmp_path
         assert admission.pending() is None and admission.trials() == 0
     finally:
         durable.close()
-    # Known limit (ADR-0103 实现记录): restoring a P7 candidate after a restart is not
-    # specified, so the directory is refused on reopening (fail closed, nothing restored).
-    with pytest.raises(LoopStateInconsistent, match="cannot be rebuilt"):
-        _open(state_dir, _source(request))
+    # ADR-0110: the reopened directory rebuilds the candidate through LoopWiring.p7_plans (the
+    # restart / refusal cases are in test_p7_restore.py).
+    reopened = _open(state_dir, _source(request))
+    try:
+        restored = reopened.memory.strategies[str(compiled.root.spec.ref)]
+        assert restored.plan_record == record
+        assert restored.spec == compiled.root.spec
+    finally:
+        reopened.close()
 
 
 def test_a_rejected_plan_writes_nothing_and_is_recorded(tmp_path: Path) -> None:
