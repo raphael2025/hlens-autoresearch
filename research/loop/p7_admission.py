@@ -33,9 +33,17 @@ summary (the ``LoopRecord`` format is unchanged) and ``rejected_plans`` — ever
 far, read back from the audit, so a rejected plan is never offered again. Anything that fails in
 step 2 or 3 fails the stage (the durable state's own recovery applies, ADR-0073 §4).
 
-Known limit (reported, ADR-0103 实现记录): a state directory whose rounds admitted a P7 plan is
-refused on reopening — the durable restore rebuilds only library and evolution candidates, and
-rebuilding a P7 candidate after a restart is not specified by ADR-0103 (fail closed).
+**Restore** (ADR-0110). The candidate's memory-checkpoint row carries
+``provenance: {origin: "p7", plan_hash, round_index}``; reopening the directory rebuilds it only
+through ``p7_rebuild`` (``LoopWiring.p7_plans``): the durable state first finds the plan's
+checkpointed COMMIT of that round in the plan admission journal, then ``P7CandidateRebuild``
+recompiles the declared plan on the admission's own path (cross-sectional refusal, compile with the
+source's switch and allowlist, strategy root and its Provider, the binding), requires every piece
+of the PREPARE evidence — compiler, operators, Providers, inputs, outputs, bound ExperimentSpecs
+and hypotheses — to be exactly what that recompilation produces, and builds the candidate with
+``p7_strategy_candidates`` and the COMMIT as this round's proof. Any difference refuses the
+directory (``P7RestoreRefused``, a ``ValueError``: the durable state reports it as an inconsistent
+checkpoint).
 """
 
 from __future__ import annotations
@@ -89,10 +97,13 @@ from research.strategies.pipeline import StrategyCandidate
 
 __all__ = [
     "P7AdmissionRefused",
+    "P7CandidateRebuild",
     "P7PlanRequest",
     "P7PlanSource",
+    "P7RestoreRefused",
     "P7RoundAdmission",
     "P7RoundOutcome",
+    "p7_rebuild",
     "rejected_plans",
 ]
 
@@ -105,6 +116,15 @@ _WHERE_LIMIT: Final = 200
 
 class P7AdmissionRefused(PlanRefused):
     """A declared plan cannot be admitted into this loop; ``code`` names the precise reason."""
+
+    def __init__(self, code: str, where: str, detail: str) -> None:
+        self.code = code
+        self.where = where
+        super().__init__(f"{code}: {where}: {detail}")
+
+
+class P7RestoreRefused(ValueError):
+    """A P7-admitted catalog entry does not rebuild exactly on reopening (ADR-0110 §5)."""
 
     def __init__(self, code: str, where: str, detail: str) -> None:
         self.code = code
@@ -367,43 +387,9 @@ class P7RoundAdmission:
 
     def _check(self, request: P7PlanRequest) -> _Checked:
         plan = request.plan
-        cross_sectional = has_cross_sectional_node(plan)
-        if cross_sectional is not None:
-            raise P7AdmissionRefused(
-                CROSS_SECTIONAL_LOOP_UNSUPPORTED,
-                cross_sectional,
-                "the research loop is single-instrument; a cross-sectional plan needs its own ADR",
-            )
-        compiled = compile_lowered_plan(
-            plan,
-            resolution=request.resolution,
-            created_at=request.created_at,
-            allowlist=self._source.allowlist,
-            switch=self._source.switch,
-            universes=request.universes,
-        )
-        root = compiled.root.spec
-        if type(root) is not StrategySpec:
-            raise P7AdmissionRefused(
-                "root_not_strategy", plan.root, "only a strategy root can enter the loop"
-            )
-        providers = compiled.build_providers(
-            feature_providers=request.feature_providers,
-            strategy_providers=request.strategy_providers,
-            bar_durations=request.bar_durations,
-            instrument_type=request.instrument_type,
-            universes=request.universes,
-        )
-        provider = providers.get(plan.root)
-        if provider is None or not provider.descriptor.supports(root.ref, root.content_hash()):
-            raise P7AdmissionRefused(
-                "root_provider_mismatch", plan.root, "the root Provider does not serve the root"
-            )
-        try:  # produce the binding
-            record = P7PlanRecord.from_compiled(compiled)
-            experiments = tuple(bind_experiment(item, record) for item in request.experiment_specs)
-        except P7PlanRecordError as exc:
-            raise P7AdmissionRefused("plan_binding_refused", "experiment_specs", str(exc)) from exc
+        compiled, providers, root = _compile(self._source, request)
+        provider = providers[plan.root]
+        experiments = _bind(request, compiled)
         outputs = tuple(
             binding
             for experiment in experiments
@@ -495,3 +481,136 @@ class P7RoundAdmission:
                 hypotheses=request.hypotheses,
             )
             return lease.complete()
+
+
+# ---------------------------------------------------------------------- shared with the restore
+
+
+def _compile(
+    source: P7PlanSource, request: P7PlanRequest
+) -> tuple[CompiledPlan, dict[str, Any], StrategySpec]:
+    """Step 1's compile part: cross-sectional refusal, compile, strategy root, its Provider."""
+    plan = request.plan
+    cross_sectional = has_cross_sectional_node(plan)
+    if cross_sectional is not None:
+        raise P7AdmissionRefused(
+            CROSS_SECTIONAL_LOOP_UNSUPPORTED,
+            cross_sectional,
+            "the research loop is single-instrument; a cross-sectional plan needs its own ADR",
+        )
+    compiled = compile_lowered_plan(
+        plan,
+        resolution=request.resolution,
+        created_at=request.created_at,
+        allowlist=source.allowlist,
+        switch=source.switch,
+        universes=request.universes,
+    )
+    root = compiled.root.spec
+    if type(root) is not StrategySpec:
+        raise P7AdmissionRefused(
+            "root_not_strategy", plan.root, "only a strategy root can enter the loop"
+        )
+    providers = compiled.build_providers(
+        feature_providers=request.feature_providers,
+        strategy_providers=request.strategy_providers,
+        bar_durations=request.bar_durations,
+        instrument_type=request.instrument_type,
+        universes=request.universes,
+    )
+    provider = providers.get(plan.root)
+    if provider is None or not provider.descriptor.supports(root.ref, root.content_hash()):
+        raise P7AdmissionRefused(
+            "root_provider_mismatch", plan.root, "the root Provider does not serve the root"
+        )
+    return compiled, providers, root
+
+
+def _bind(request: P7PlanRequest, compiled: CompiledPlan) -> tuple[ExperimentSpec, ...]:
+    """Step 1's binding: the plan record into every declared ExperimentSpec."""
+    try:
+        record = P7PlanRecord.from_compiled(compiled)
+        return tuple(bind_experiment(item, record) for item in request.experiment_specs)
+    except P7PlanRecordError as exc:
+        raise P7AdmissionRefused("plan_binding_refused", "experiment_specs", str(exc)) from exc
+
+
+def _hashes(items: Sequence[Any]) -> list[str]:
+    return [item.content_hash for item in items]
+
+
+@dataclass(frozen=True)
+class P7CandidateRebuild:
+    """``open_state(p7_rebuild=...)``: a P7-admitted catalog entry rebuilt on reopening (ADR-0110
+    §2 / §5; module docs, **Restore**). Called with the row's ``plan_hash``, the plan's COMMIT of
+    the row's round (found and checked by the durable state) and that round's index."""
+
+    source: P7PlanSource
+    family_id: str
+
+    def __call__(
+        self, plan_hash: str, admission: CommittedAdmission, round_index: int
+    ) -> StrategyCandidate:
+        try:
+            return self._rebuild(plan_hash, admission, round_index)
+        except (PlanRefused, PlanRejected, TypeError) as exc:
+            code = getattr(exc, "code", None)
+            raise P7RestoreRefused(
+                code if isinstance(code, str) and code else "plan_not_rebuilt",
+                plan_hash,
+                str(exc),
+            ) from exc
+
+    def _rebuild(
+        self, plan_hash: str, admission: CommittedAdmission, round_index: int
+    ) -> StrategyCandidate:
+        request = next((item for item in self.source.plans if item.plan_hash == plan_hash), None)
+        if request is None:
+            raise P7RestoreRefused(
+                "plan_not_declared", plan_hash, "LoopWiring.p7_plans does not declare this plan"
+            )
+        compiled, providers, _ = _compile(self.source, request)
+        experiments = _bind(request, compiled)
+        prepared = admission.prepare
+        recompiled = {
+            "compiler": [compiled.compiler_evidence().content_hash],
+            "operators": _hashes(compiled.operator_evidence()),
+            "providers": _hashes(compiled.provider_evidence()),
+            "inputs": _hashes(inputs_evidence(request.resolution)),
+            "outputs": _hashes(outputs_evidence(compiled)),
+            "experiment_specs": _hashes(experiment_evidence(experiments)),
+            "hypotheses": sorted(item.content_hash() for item in request.hypotheses),
+        }
+        recorded = {
+            "compiler": [prepared.compiler.content_hash],
+            "operators": _hashes(prepared.operators),
+            "providers": _hashes(prepared.providers),
+            "inputs": _hashes(prepared.inputs),
+            "outputs": _hashes(prepared.outputs),
+            "experiment_specs": _hashes(prepared.experiment_specs),
+            "hypotheses": sorted(item.content_hash() for item in prepared.hypotheses),
+        }
+        differ = sorted(key for key in recompiled if recompiled[key] != recorded[key])
+        if differ:
+            raise P7RestoreRefused(
+                "admission_evidence_mismatch",
+                plan_hash,
+                f"the declared plan no longer recompiles to its PREPARE evidence ({differ})",
+            )
+        (candidate,) = p7_strategy_candidates(
+            compiled,
+            providers,
+            switch=self.source.switch,
+            admission=admission,
+            round_index=round_index,
+            hypothesis_family_id=self.family_id,
+            risk_policy=request.risk_policy,
+            risk=request.risk,
+        )
+        return candidate
+
+
+def p7_rebuild(source: P7PlanSource | None, *, family_id: str) -> P7CandidateRebuild | None:
+    """The composition's ``open_state(p7_rebuild=...)`` for ``LoopWiring.p7_plans`` (``None``
+    without a source: a P7-admitted row is then refused on reopening)."""
+    return None if source is None else P7CandidateRebuild(source, family_id)

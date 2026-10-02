@@ -147,7 +147,7 @@ from research.loop.durable import (
 )
 from research.loop.llm_content import ContentVerifiedLLM
 from research.loop.memory import ResearchMemory
-from research.loop.p7_admission import P7PlanSource, P7RoundAdmission
+from research.loop.p7_admission import P7PlanSource, P7RoundAdmission, p7_rebuild
 from research.loop.replacement import (
     EPOCH_CHECK_KEY,
     ReplacementTrigger,
@@ -717,6 +717,7 @@ def open_synthetic_loop(
         provider=provider,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
+        p7_rebuild=p7_rebuild(wiring.p7_plans, family_id=config.family_id),  # ADR-0110
         state_version=(
             RETRY_STATE_VERSION
             if enable_failed_round_retry

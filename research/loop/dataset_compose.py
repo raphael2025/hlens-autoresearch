@@ -86,6 +86,7 @@ from research.loop.durable import (
     open_state,
 )
 from research.loop.memory import ResearchMemory
+from research.loop.p7_admission import p7_rebuild
 
 __all__ = [
     "DatasetLoopConfig",
@@ -225,6 +226,7 @@ def open_dataset_loop(
         provider=None,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
+        p7_rebuild=p7_rebuild(wiring.p7_plans, family_id=config.family_id),  # ADR-0110
         **({} if operator_identity is None else {"state_version": OPERATOR_STATE_VERSION}),
     )
     for record in state.audit.records:
