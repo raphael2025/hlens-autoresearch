@@ -45,6 +45,7 @@ from infrastructure.dataset.builder import (
     DatasetSpecError,
 )
 from infrastructure.dataset.factory import OpenedDatasetPipeline, open_dataset_pipeline
+from infrastructure.dataset.job_port import profile_identity, summary_document
 from infrastructure.dataset.pinning import pin_dataset_pit_spec
 from infrastructure.dataset.profile import (
     DatasetBuildProfile,
@@ -145,34 +146,13 @@ def _emit(document: Mapping[str, Any]) -> None:
 
 
 def _identity(command: str, profile: DatasetBuildProfile) -> dict[str, Any]:
-    return {
-        "command": command,
-        "profile_hash": profile.profile_hash(),
-        "capacity_evidence": "none"
-        if profile.capacity_evidence is None
-        else profile.capacity_evidence,
-    }
+    return {"command": command, **profile_identity(profile)}
 
 
 def _build_summary(
     profile: DatasetBuildProfile, pit: PointInTimeSpec, summary: DatasetBuildSummary
 ) -> dict[str, Any]:
-    return {
-        **_identity("build", profile),
-        "selection_id": summary.selection_id,
-        "manifest_hash": summary.manifest_hash,
-        "pit_content_hash": pit.content_hash(),
-        "dataset": {"table": summary.dataset.table, "snapshot_id": summary.dataset.snapshot_id},
-        "row_count": summary.row_count,
-        "chunk_count": summary.chunk_count,
-        "replayed_chunk_count": summary.replayed_chunk_count,
-        "manifest_replayed": summary.manifest_replayed,
-        "replayed": summary.replayed,
-        "evidence": [
-            {"stream": ref.stream.value, "record_count": ref.record_count}
-            for ref in summary.evidence
-        ],
-    }
+    return {"command": "build", **summary_document(profile, pit, summary)}
 
 
 # ------------------------------------------------------------------------- commands

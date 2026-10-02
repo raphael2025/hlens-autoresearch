@@ -7,6 +7,12 @@ context manager，yield 已配置的 `JobRunner` 并在退出时关闭总线等�
 外部 supervisor 执行。Factory 是受信代码，消息内容不参与 handler 导入或选择；`apps/worker`
 不导入 `research/`。同步 handler 不支持强制取消，supervisor 应设置退出宽限时间。
 
+> v3 Dataset 构建任务（[ADR-0101](../../docs/adr/0101-dataset-v3-production-entry.md) D2）：`dataset_job.py` 只定义任务形状——
+> `dataset_build_job(port, request)` 以 `selection_id` 为幂等键提交 `{"selection_id", "request"}`，`dataset_job_handlers(port)`
+> 给出 `dataset.build` 处理器（重新推导 `selection_id`、不符即拒绝；端口失败只记录异常类型）。端口由部署方 factory 注入
+> （`infrastructure.dataset.job_port.PipelineDatasetJobPort`，包装 `open_dataset_pipeline`）；仓库不自动注册，`serve` 与
+> `apps.worker` 均不导入它；本模块只依赖 `apps`、`core` 与标准库。是否在 `idempotent=` 中声明它由部署方决定。
+
 异步任务执行：采集、计算、实验运行、验证。任务必须幂等可重试。事件总线通过 EventBusAdapter 访问（NATS 引入时机见待决 D-10）。
 
 > 框架已实现（ADR-0044，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`jobs.py` 的 `JobRunner`（内容寻址任务 ID、至少一次消息 + 幂等执行、有界重试、失败记录不丢弃），总线为 `infrastructure/event_bus/InMemoryEventBus`。
