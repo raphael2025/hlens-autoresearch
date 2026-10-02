@@ -52,3 +52,14 @@ ADR-0101 修订 1 第 1 条要求：v3 构建按质量 join 实际读取的表�
 - [x] 不修改 Validation Constitution / Profile / DQ-9 数值（H3）
 - [x] Domain 层仍无具体技术依赖
 - [x] Research / Application Plane 边界不变
+
+## 实现记录（2026-10-02，`feature/adr-0109-contract-260`，实现 Agent）
+
+按决策 §1 ~ §4 落地；v2 `ResearchDatasetManifest` / v2 `DatasetBuilder`、Validation Profile / Constitution 未改动。
+
+- **契约（§1）**：`core/domain/base.py` `CONTRACT_SCHEMA_VERSION = "2.6.0"`，追加进 `PUBLISHED_CONTRACT_SCHEMA_VERSIONS`；`core/contracts/universe.py` 新增 `ADR_0109_VERSION = "2.6.0"`。`ResearchDatasetEvidenceManifest._manifest_invariants`：记录版本 ≥ 2.6.0 要求 `canonical.instrument_listings` 与 `quality.data_quality_report_manifests`，不再要求 `quality.data_quality_reports`（出现时仍合法）；< 2.6.0 分支逐字保留原规则。无新字段 / 取值 / 模型，`CONTRACT_MODELS` 仍为 148。Schema 经 `python -m core.contracts.registry` 重新导出（信封默认值与该 manifest 的 docstring）；`docs/architecture/02-domain.md` 新增 §2.13 并更新 §3.3，`03-data.md`、`10-migration.md`、`core/README.md`、`core/contracts/README.md` 同步。
+- **构建（§2）**：`infrastructure/dataset/builder.py` 的 v3 路径：`_check_evidence_request` 只在给定记录版本 < 2.6.0 时要求旧表（无版本的预检查由随后的带版本检查决定）；`_check_unbound_evidence` 新增必填 `schema_version`，≥ 2.6.0 时旧表与 Raw evidence / 缺口表同列（`_BOUND_IF_PRESENT_V3_260`，拒绝信息标 ADR-0109），持久化 manifest 的重放照旧豁免（按首次构建判定）。`build` 先确定版本（新组 = 当前版本，重放 = 记录版本）再做该检查。`pin_dataset_pit_spec` 本已只绑定有 snapshot 的表，未改。
+- **DTO / Web（§4(d)）**：`validation_report` 的 API 与 Web DTO 基线 2.6.0，2.0.0 ~ 2.5.0 仍受支持；`apps/api/openapi.json` 重新导出，`apps/web/src/api.d.ts` 与 `openapi-typescript` 输出逐字一致。六份 2.5.0 控制台 fixture 登记为 `LEGACY_2_5_0`（`regenerate_legacy("2.5.0")` 在 `contract_schema_version_scope("2.5.0")` 下逐字节复现，生成器只新写六份 2.6.0 文件），旧 fixture 文件未改动。
+- **当前版本期望值（§4(e)）**：按 2.5.0 先例逐项改为 2.6.0 的只是"当前版本 / 已发布元组 / 当前信封 / Schema 默认值"断言（`tests/test_*` 中 11 个文件，`tests/infrastructure` 中 4 个文件，DTO / fixture 计数与 Web 测试）。依赖当前信封的两处钉值按同文件先例重钉并在注释保留旧值：golden experiment `75c58fd4…` → `e874ba87…`（唯一变化的输出是 `backtest.result_hash`），`test_loop_e2e` 的三个 record hash 与 fingerprint；未修改的旧测试在 `contract_schema_version_scope("2.5.0")`（含 import）下仍通过，helper 在该 scope 下逐字节复现 `75c58fd4…`。没有任何旧版本 golden / 历史哈希被重钉，没有删除断言或放宽容差。
+- **验收测试**：(a)(b) `tests/infrastructure/e2e/test_phase1_first_slice_v3.py` 新增 v3-only catalog（从不写旧版报告）端到端构建与重启重放、以及旧表有 snapshot 而 spec 未绑定时拒绝且不提交任何东西；主流程断言 manifest 记录 2.6.0、旧表绑定当且仅当其有 snapshot。(c) `tests/test_adr_0109_contract_260.py`：2.6.0 规则、2.3.0 ~ 2.5.0 缺旧表仍拒绝、2.5.0 载荷不被 2.6.0 规则挽救；新增 2.5.0 七流 v3 manifest golden `tests/golden/v2_5_0/dataset_v3_manifest.json`（由升版前代码 `b0707d2` 生成，哈希 `63c5bd73…`，新代码逐字节复现）；既有 2.3.0 / 2.4.0 golden 与 v2 重放测试未改动且通过。
+- **检查**：见提交说明与最终报告；全量测试由协调者的门禁运行，本实现只运行了目标套件。
