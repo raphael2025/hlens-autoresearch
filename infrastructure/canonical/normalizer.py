@@ -2619,6 +2619,13 @@ class CanonicalNormalizer:
                 f"batch {found.batch_id} of {channel.canonical.table} was committed with other "
                 "content"
             )
+        # ADR-0108 §8: the layout is told apart by the summary marker, not by the id alone.
+        layout = pin.catalog.commit_layout(channel.canonical.table, found.snapshot_id)
+        if not layout.unit or layout.window_rows != plan.chunk:
+            raise CatalogIntegrityError(
+                f"batch {found.batch_id} of {channel.canonical.table} does not record the unit "
+                "commit layout its id claims"
+            )
         return found
 
     def _check_window_snapshot(

@@ -30,7 +30,7 @@ from infrastructure.canonical.normalizer import (
     unit_batch_id,
 )
 from infrastructure.catalog import iceberg_adapter as iceberg_adapter_module
-from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError, CommitLayout
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveIngested, RawRevisionStore
 from infrastructure.revision import identity as archive_identity
@@ -2069,3 +2069,42 @@ def test_the_bounded_page_check_keeps_the_unbounded_verdicts(
     h.forge_rows(c.REST_AGGS, [dict(foreign[0], response_revision_id="elsewhere")], "copy")
     outcome, proved = _same_verdicts(_page_verdicts(h, [b_id]))[b_id]
     assert outcome[0] == "CanonicalUnitIncomplete" and proved == []
+
+
+@dataclass
+class _ForgedLayout(ProxyCatalog):
+    """Reports another commit layout for the Canonical trades table's snapshots."""
+
+    layout: CommitLayout = field(default_factory=lambda: CommitLayout(unit=False, window_rows=None))
+
+    def commit_layout(self, table: str, snapshot_id: str) -> CommitLayout:
+        if table == c.TRADES.table:
+            return self.layout
+        return super().commit_layout(table, snapshot_id)
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [CommitLayout(unit=False, window_rows=None), CommitLayout(unit=True, window_rows=3)],
+    ids=["no-layout-marker", "other-window"],
+)
+def test_a_unit_id_without_its_layout_marker_fails_closed(
+    h: RestHarness, layout: CommitLayout
+) -> None:
+    """ADR-0108 §8: a ``.unit`` batch id must be backed by the summary's unit layout and the
+    window size the id records."""
+    items = ss.agg_items(5)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    before = _state(h)
+    for read in ("verify_unit", "normalize_unit"):
+        clock = StepClock(start=K_NORM)
+        forged = _ForgedLayout(h.adapter, layout=layout)
+        with pytest.raises(CatalogIntegrityError, match="does not record the unit commit layout"):
+            getattr(c.normalizer(h, clock=clock, adapter=forged), read)(
+                c.ARCHIVE_AGGS.table, archive
+            )
+        assert clock.calls == 0
+    assert _state(h) == before

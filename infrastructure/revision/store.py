@@ -454,7 +454,7 @@ class RawRevisionStore:
         scratch_directory: Path | None = None,
         _legacy_batch_commits: bool = False,
     ) -> None:
-        """``scratch_directory`` holds a unit's bounded spools while it is committed (default:
+        """``scratch_directory`` holds the D1 parse spool and a unit's bounded spools (default:
         the system temporary directory). ``_legacy_batch_commits`` is **test only**: it writes
         new archives in the pre-ADR-0108 one-snapshot-per-microbatch layout so old-history
         fixtures can be built; production never sets it."""
@@ -483,7 +483,9 @@ class RawRevisionStore:
         request = ArchiveParseRequest.for_collected_object(
             collected, data_type=context.data_type, archive_revision_id=revision_id
         )
-        outcome = parse_archive_spooled(request, self._storage)
+        outcome = parse_archive_spooled(
+            request, self._storage, scratch_directory=self._scratch_directory
+        )
         if isinstance(outcome, ArchiveRejection):
             return self._persist(collected, context, outcome, observation_key, revision_id)
         try:
