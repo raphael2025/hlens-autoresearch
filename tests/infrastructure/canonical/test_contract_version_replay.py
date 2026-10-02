@@ -82,13 +82,18 @@ def _committed_unit(h: RestHarness, version: str = CONTRACT_SCHEMA_VERSION) -> s
 
 def _crash_partial(h: RestHarness, count: int, microbatch_rows: int) -> str:
     """A unit whose normalization stopped after its first batch (committed at the current
-    version)."""
+    version). Only the pre-ADR-0108 per-batch layout can stop half way, so the fixture writes that
+    old history (``legacy``); completing it is the read-only compatibility of ADR-0108 §7."""
     items = ss.agg_items(count)
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
     proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.TRADES.table))
     with pytest.raises(Crash):
         c.normalizer(
-            h, clock=StepClock(start=K_NORM), adapter=proxy, microbatch_rows=microbatch_rows
+            h,
+            clock=StepClock(start=K_NORM),
+            adapter=proxy,
+            microbatch_rows=microbatch_rows,
+            legacy=True,
         ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     return archive
 

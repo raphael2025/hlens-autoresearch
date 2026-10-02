@@ -318,8 +318,9 @@ def test_a_unit_whose_normalization_stopped_half_way_is_never_selected(h: RestHa
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_A)
     proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.TRADES.table))
     with pytest.raises(ss.Crash):
+        # Only the pre-ADR-0108 per-batch layout can stop half way: old history (legacy).
         c.normalizer(
-            h, clock=StepClock(start=N_A), adapter=proxy, microbatch_rows=1
+            h, clock=StepClock(start=N_A), adapter=proxy, microbatch_rows=1, legacy=True
         ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert len(h.rows(c.TRADES)) == 1
     with pytest.raises(CanonicalUnitIncomplete, match="1 of the 3 batches"):

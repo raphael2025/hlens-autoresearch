@@ -17,7 +17,7 @@ from typing import Any, Protocol, cast
 import pytest
 from pyiceberg.expressions import AlwaysFalse, And, EqualTo, GreaterThanOrEqual, In
 
-from core.contracts.catalog import CommitRequest, SnapshotNotFound
+from core.contracts.catalog import CommitRequest, CommitResult, SnapshotNotFound
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
 from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
 from infrastructure.canonical import normalizer as nz
@@ -679,9 +679,10 @@ def test_a_crash_between_batches_resumes_with_the_first_base_and_time(
 ) -> None:
     archive, _, _ = _pair(h)
     proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(crash_after, table=c.TRADES.table))
+    # Only the pre-ADR-0108 per-batch layout can stop between batches: old history (legacy).
     with pytest.raises(Crash):
-        c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy, microbatch_rows=1)\
-            .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+        c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy, microbatch_rows=1,
+                     legacy=True).normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
     assert len(h.rows(c.TRADES)) == crash_after
     later = StepClock(start=K_NORM + timedelta(hours=5))
     out = c.normalizer(h, clock=later, microbatch_rows=1).normalize_unit(
@@ -884,12 +885,17 @@ def _unit_batches(h: RestHarness, source: str) -> list[tuple[str | None, int | N
 
 
 def _crash_partial(h: RestHarness, count: int, microbatch_rows: int) -> str:
+    """A unit stopped after its first batch: pre-ADR-0108 per-batch history (``legacy``)."""
     items = ss.agg_items(count)
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
     proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.TRADES.table))
     with pytest.raises(Crash):
         c.normalizer(
-            h, clock=StepClock(start=K_NORM), adapter=proxy, microbatch_rows=microbatch_rows
+            h,
+            clock=StepClock(start=K_NORM),
+            adapter=proxy,
+            microbatch_rows=microbatch_rows,
+            legacy=True,
         ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     return archive
 
@@ -1143,11 +1149,13 @@ class _ScanLog(ProxyCatalog):
 
 
 def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None:
+    """The pre-ADR-0108 per-batch writer (``legacy``): still the path that completes a stopped
+    old unit, so its bounded per-window reads stay pinned here."""
     items = ss.agg_items(7)
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
     log = _ScanLog(h.adapter)
-    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=2)\
-        .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=2,
+                       legacy=True).normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
     assert out.batch_count == 4
     assert [count for _, count in _unit_batches(h, archive)] == [2, 2, 2, 1]
     wide = [(table, rows) for table, width, rows in log.scans if width > 3]
@@ -1155,14 +1163,142 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     assert max(rows for table, rows in wide if table == c.TRADES.table) <= 2
     # Raw rows: the first proving window is one filtered scan (<= 2 rows); the second window
     # spools the unit once (one 7-row scan) and the remaining proving and all four writing
-    # windows read that spool. The other four 7-row reads are the verifier's own lineage checks.
-    # There is no Raw scan per window (E1-RAW-WINDOW-REUSE).
-    assert [rows for table, rows in wide if table == c.ARCHIVE_AGGS.table] == [2] + [7] * 5
+    # windows read that spool (E1-RAW-WINDOW-REUSE). The other 7-row read is the verifier's
+    # proof of the Raw unit's one snapshot (ADR-0108: once per pinned head, then cached).
+    assert [rows for table, rows in wide if table == c.ARCHIVE_AGGS.table] == [2, 7, 7]
     rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
     assert [row["revision_id"] for row in rows] == list(
         c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)
     )
     assert [row["arrival_seq"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
+
+
+@pytest.mark.parametrize("microbatch_rows", [1, 2, 7, None])
+def test_a_new_unit_is_one_snapshot_whatever_its_windows(
+    h: RestHarness, microbatch_rows: int | None
+) -> None:
+    """ADR-0108 §9(a)/(b): a new unit is exactly one Canonical snapshot, whatever N and M, and its
+    rows are bit for bit the rows the pre-ADR-0108 per-batch layout writes."""
+    items = ss.agg_items(7)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    before = len(h.history(c.TRADES.table))
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=microbatch_rows)\
+        .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    chunk = microbatch_rows or nz.DEFAULT_MICROBATCH_ROWS
+    assert out.revision_count == 7 and out.batch_count == -(-7 // chunk)
+    assert not out.replayed
+    added = h.history(c.TRADES.table)[before:]  # oldest first
+    assert [(s.batch_id, s.added_rows) for s in added] == [
+        (nz.unit_commit_id(archive, 7, chunk), 7)
+    ]
+    rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
+    assert [row["revision_id"] for row in rows] == list(
+        c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)
+    )
+    again = c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert again.replayed and again.replayed_batch_count == out.batch_count
+    assert len(h.history(c.TRADES.table)) == before + 1
+    with ss.sqlite_harness(h.tmp_path / "legacy") as old:
+        old_archive = c.ingest_archive(
+            old, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE
+        )
+        c.normalizer(
+            old, clock=StepClock(start=K_NORM), microbatch_rows=microbatch_rows, legacy=True
+        ).normalize_unit(c.ARCHIVE_AGGS.table, old_archive)
+        assert len(_unit_batches(old, old_archive)) == out.batch_count
+        old_rows = sorted(old.rows(c.TRADES), key=lambda row: row["arrival_seq"])
+    assert rows == old_rows
+
+
+@dataclass
+class _StagedThenCrash(ProxyCatalog):
+    """Dies once a unit commit has staged every file, before its snapshot (ADR-0108 §9(c))."""
+
+    def commit_unit(self, request: CommitRequest, batches: Any, **kwargs: Any) -> Any:
+        if request.table != c.TRADES.table:
+            return super().commit_unit(request, batches, **kwargs)
+        passes = [0]
+
+        def staged_then_crash() -> Any:
+            passes[0] += 1
+            yield from batches()
+            if passes[0] >= 2:
+                raise Crash("staged, not committed")
+
+        return self.inner.commit_unit(request, staged_then_crash, **kwargs)
+
+
+def test_a_crash_after_staging_leaves_nothing_and_the_rerun_commits_once(
+    h: RestHarness,
+) -> None:
+    """ADR-0108 §9(c): staged files without their snapshot are invisible; the rerun reads a new
+    clock (nothing was committed) and equals one clean run."""
+    items = ss.agg_items(7)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    before = (_state(h), len(h.history(c.TRADES.table)))
+    with pytest.raises(Crash):
+        c.normalizer(
+            h, clock=StepClock(start=K_NORM), adapter=_StagedThenCrash(h.adapter), microbatch_rows=2
+        ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert (_state(h), len(h.history(c.TRADES.table))) == before
+    later = StepClock(start=K_NORM + timedelta(hours=1))
+    out = c.normalizer(h, clock=later, microbatch_rows=2).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert (
+        later.calls == 1 and not out.replayed and out.knowledge_time == K_NORM + timedelta(hours=1)
+    )
+    assert len(h.history(c.TRADES.table)) == before[1] + 1
+    with ss.sqlite_harness(h.tmp_path / "clean") as ref:
+        ref_archive = c.ingest_archive(
+            ref, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE
+        )
+        c.normalizer(
+            ref, clock=StepClock(start=K_NORM + timedelta(hours=1)), microbatch_rows=2
+        ).normalize_unit(c.ARCHIVE_AGGS.table, ref_archive)
+        ref_rows = sorted(ref.rows(c.TRADES), key=lambda row: row["arrival_seq"])
+    assert sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"]) == ref_rows
+
+
+def test_a_crash_after_the_unit_commit_replays_on_rerun(h: RestHarness) -> None:
+    """ADR-0108 §9(c): a unit committed just before the process died is adopted, not rewritten."""
+    items = ss.agg_items(7)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+
+    def die(request: CommitRequest, result: CommitResult) -> None:
+        if request.table == c.TRADES.table:
+            raise Crash("committed, not returned")
+
+    with pytest.raises(Crash):
+        c.normalizer(
+            h,
+            clock=StepClock(start=K_NORM),
+            adapter=ProxyCatalog(h.adapter, after=die),
+            microbatch_rows=2,
+        ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    committed = _state(h)
+    later = StepClock(start=K_NORM + timedelta(hours=1))
+    out = c.normalizer(h, clock=later, microbatch_rows=3).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert later.calls == 0 and out.replayed and out.knowledge_time == K_NORM
+    assert out.batch_count == 4  # the committed plan's windows (M = 2), not the new setting
+    assert _state(h) == committed
+
+
+def test_a_unit_layout_beside_per_batch_commits_fails_closed(h: RestHarness) -> None:
+    """ADR-0108 §7: one unit never mixes the two commit layouts."""
+    archive = _crash_partial(h, 5, 2)
+    h.forge_rows(c.TRADES, [_forged_row(h, 4)], nz.unit_commit_id(archive, 5, 2))
+    before = _state(h)
+    for read in ("verify_unit", "normalize_unit"):
+        clock = StepClock(start=K_NORM)
+        with pytest.raises(CatalogIntegrityError, match="mixes the one-snapshot unit layout"):
+            getattr(c.normalizer(h, clock=clock), read)(c.ARCHIVE_AGGS.table, archive)
+        assert clock.calls == 0
+    assert _state(h) == before
 
 
 def test_windows_and_one_window_normalize_identically(h: RestHarness) -> None:
@@ -1561,7 +1697,17 @@ def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
     ]
 
 
-def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
+@pytest.mark.parametrize(
+    ("legacy", "match"),
+    [
+        (True, "not exactly the 5 lines of its object"),
+        # ADR-0108: a one-snapshot Raw unit is proven whole first (its unit fingerprint).
+        (False, "committed with other content"),
+    ],
+)
+def test_an_archive_unit_missing_its_last_lines_is_truncated(
+    h: RestHarness, legacy: bool, match: str
+) -> None:
     """Review E-3: an archive revision's rows are all the lines of its object."""
     arc = rs.archive(
         h.storage,
@@ -1573,19 +1719,23 @@ def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> 
         request_id="archive-1",
     )
     ingested = RawRevisionStore(
-        h.adapter, h.storage, clock=StepClock(start=K_ARCHIVE), microbatch_rows=2
+        h.adapter,
+        h.storage,
+        clock=StepClock(start=K_ARCHIVE),
+        microbatch_rows=2,
+        _legacy_batch_commits=legacy,
     ).ingest(arc.collected, arc.context)
     assert isinstance(ingested, ArchiveIngested), ingested
     archive = ingested.archive_revision_id
     h.delete_rows(c.ARCHIVE_AGGS, GreaterThanOrEqual("archive_line_number", 5))  # type: ignore[call-arg, arg-type]
     clock = StepClock(start=K_NORM)
-    with pytest.raises(CatalogIntegrityError, match="not exactly the 5 lines of its object"):
+    with pytest.raises(CatalogIntegrityError, match=match):
         c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert clock.calls == 0 and h.rows(c.TRADES) == []
 
 
 def test_a_replay_reads_the_committed_block_once_after_its_first_window(h: RestHarness) -> None:
-    """E1-CANONICAL-WINDOW-REUSE: the first (newest) window keeps its two filtered Canonical reads;
+    """E1-CANONICAL-WINDOW-REUSE: the first window keeps its two filtered Canonical reads;
     the block slice and the symbol's (revision_id, time) span are then read once for the rest."""
     items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
@@ -1607,8 +1757,9 @@ def test_a_replay_reads_the_committed_block_once_after_its_first_window(h: RestH
     wide = len(c.TRADES.arrow_schema)
     trades = [rows for table, _, rows in log.scans if table == c.TRADES.table]
     full = [rows for cols, rows in zip(columns, trades, strict=True) if len(cols) == wide]
-    # one 1-row window read (batch 3), then one 7-row block read for batches 2, 1, 0
-    assert full == [1, 7]
+    # ADR-0108 unit layout: windows are proven in row order (the unit fingerprint is re-derived
+    # as they go), so one 2-row window read (window 0), then one 7-row block read for 1, 2, 3
+    assert full == [2, 7]
     assert columns.count(("revision_id",)) == 1  # batch 3's own uniqueness read
     assert columns.count(("revision_id", "event_time")) == 1  # the indexed span, once
     replay.close()

@@ -107,8 +107,12 @@ def normalizer(
     adapter: Any = None,
     microbatch_rows: int | None = None,
     metadata_limits: Any = None,
+    legacy: bool = False,
 ) -> CanonicalNormalizer:
+    """``legacy``: write the pre-ADR-0108 one-snapshot-per-microbatch layout (old history)."""
     kwargs: dict[str, Any] = {}
+    if legacy:
+        kwargs["_legacy_batch_commits"] = True
     if microbatch_rows is not None:
         kwargs["microbatch_rows"] = microbatch_rows
     if metadata_limits is not None:
