@@ -112,7 +112,8 @@
 | [0105](0105-p11-operational-completion.md) | P11 运行周边补全与 D-P11-WINDOW | Accepted（2026-10-02；PM，于 phase/1 重新接受）：D-P11-WINDOW = 固定日历；Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator、resolver 测试；修订 ADR-0074 §9 |
 | [0106](0106-reference-backtest-migration-target.md) | P14 迁移目标——参考回测引擎 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：独立 `ReferenceBacktester` 为迁移对象（容差 0，不替换生产默认），EventBus 内存→文件为搭档演练；`MigrationTarget` / `MigrationReport`；关闭 P14-TARGET |
 | [0107](0107-e1-bounded-working-set-round-3.md) | E1 有界工作集第三轮与容量测量范围 | Rejected（2026-10-02；PM）：被 E1-CAP-1 正式协议结果与 ADR-0108 取代；残余 A3（listing_at 重证）/ A11（采集 body 整读）记为风险，需要时另立 ADR |
-| [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | Accepted（2026-10-02；PM 依 Raphael 直接指令）：方案 A，一个逻辑单元 = 一个 snapshot（Canonical 与 Raw 归档元素），infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；未实现；残余"随单元数 K 增长"记为 D-META-AGE |
+| [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | Accepted（2026-10-02；PM 依 Raphael 直接指令）：方案 A，一个逻辑单元 = 一个 snapshot（Canonical 与 Raw 归档元素），infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；已在 phase/1 实现（窄证明的单元内容复核 2026-10-02 补齐）；残余"随单元数 K 增长"记为 D-META-AGE |
+| [0109](0109-v3-manifest-legacy-quality-binding.md) | v3 Dataset manifest 的旧质量表绑定（契约 2.6.0） | Accepted（2026-10-02；PM）：2.6.0+ v3 manifest 不再要求绑定 `quality.data_quality_reports`（有 snapshot 才绑定，同 Raw evidence / 缺口表规则）；关闭 D-V3-LEGACY-BIND；旧版本规则与哈希不变；未实现 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
