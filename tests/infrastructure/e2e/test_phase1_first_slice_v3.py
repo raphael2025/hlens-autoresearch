@@ -164,6 +164,7 @@ def _walk_to_manifest(
     ``legacy_reports=False`` is a v3-only catalog: no legacy Quality report is ever written, so
     ``quality.data_quality_reports`` has no snapshot and the pinned spec cannot bind it (ADR-0109).
     """
+    tmp_path.mkdir(parents=True, exist_ok=True)  # a sub-path of the test's tmp_path (PostgreSQL)
     _, profile = make_profile(tmp_path)
     _ingest(w)
 
