@@ -60,7 +60,7 @@ import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,9 +108,22 @@ __all__ = [
     "EXIT_RECOVERY_REQUIRED",
     "EXIT_REFUSED",
     "OperatorRefused",
+    "RecoveryRequired",
+    "StateFault",
+    "StopRequest",
+    "boundary_stop",
+    "check_anchor_paths",
+    "check_code_identity",
+    "check_state_dir",
     "current_code_commit",
     "current_environment_lock",
+    "emit",
+    "fail",
     "main",
+    "needs_review",
+    "preparation_failure",
+    "run_durable",
+    "run_rounds",
 ]
 
 EXIT_OK: Final = 0
@@ -145,11 +158,11 @@ class OperatorRefused(ValueError):
     """Refused before any state was opened (exit code 2): command, identity, path or state."""
 
 
-class _StateFault(RuntimeError):
+class StateFault(RuntimeError):
     """A state file could not be read or verified during the pre-open check (exit code 5)."""
 
 
-class _RecoveryRequired(RuntimeError):
+class RecoveryRequired(RuntimeError):
     """The verified audit has a fail-stop condition requiring human review (exit code 4)."""
 
 
@@ -160,11 +173,11 @@ def _line(text: object) -> str:
     return " ".join(str(text).split())  # one line, no control characters
 
 
-def _emit(key: str, value: object) -> None:
+def emit(key: str, value: object) -> None:
     print(f"{key}={_line(value)}", flush=True)
 
 
-def _fail(code: int, what: str, exc: BaseException) -> int:
+def fail(code: int, what: str, exc: BaseException) -> int:
     print(f"operator: {what} (exit {code}): {type(exc).__name__}: {_line(exc)}", file=sys.stderr)
     return code
 
@@ -286,7 +299,7 @@ def current_environment_lock() -> str:
     )
 
 
-def _check_code_identity(code_commit: str, environment_lock: str) -> None:
+def check_code_identity(code_commit: str, environment_lock: str) -> None:
     head = current_code_commit()
     if code_commit != head:
         raise OperatorRefused(f"code_commit {code_commit} is not the current HEAD {head}")
@@ -300,7 +313,7 @@ def _check_code_identity(code_commit: str, environment_lock: str) -> None:
 # ---- anchors and state directory (ADR-0074 §4 / §5.2) ---------------------------------------
 
 
-def _check_anchor_paths(paths: OperatorPaths) -> None:
+def check_anchor_paths(paths: OperatorPaths) -> None:
     """Re-check the anchors right before the state is opened (``load_operator_config`` already
     refused overlapping, nested and aliased ``[paths]``; this closes a change since then)."""
     state = paths.state_dir
@@ -333,11 +346,11 @@ def _check_anchor_paths(paths: OperatorPaths) -> None:
 
 
 def _journal_entries(path: Path) -> tuple[JournalEntry, ...]:
-    """A state journal's verified entries, read only (``_StateFault`` when unreadable)."""
+    """A state journal's verified entries, read only (``StateFault`` when unreadable)."""
     try:
         return AppendOnlyJournal(path).entries
     except Exception as exc:  # noqa: BLE001 - any read / verification failure is a state fault
-        raise _StateFault(f"{path.name} cannot be read or verified: {exc}") from exc
+        raise StateFault(f"{path.name} cannot be read or verified: {exc}") from exc
 
 
 def _check_state_anchor(
@@ -348,14 +361,14 @@ def _check_state_anchor(
         anchored = FileAnchor(anchor_path).load()
         audit = LoopAuditLog(state_dir / AUDIT_FILE)
     except Exception as exc:  # noqa: BLE001 - malformed anchor/audit is durable-state corruption
-        raise _StateFault(f"the state anchor or audit cannot be replayed: {exc}") from exc
+        raise StateFault(f"the state anchor or audit cannot be replayed: {exc}") from exc
     records = audit.records
     if anchored is None:
         if len(memory_entries) > 1 or records:
-            raise _StateFault("the state anchor is empty or lost beside recorded state")
+            raise StateFault("the state anchor is empty or lost beside recorded state")
         return  # header-only v5 creation window
     if anchored.memory_seq > len(memory_entries) or anchored.rounds > len(records):
-        raise _StateFault("the state directory is behind its external state anchor")
+        raise StateFault("the state directory is behind its external state anchor")
     entry = memory_entries[anchored.memory_seq - 1]
     if (
         entry.hash != anchored.memory_head
@@ -364,7 +377,7 @@ def _check_state_anchor(
         != anchored.rounds
         or (anchored.rounds > 0 and records[anchored.rounds - 1].record_hash != anchored.audit_head)
     ):
-        raise _StateFault("the external state anchor disagrees with its state history prefix")
+        raise StateFault("the external state anchor disagrees with its state history prefix")
 
     positions = anchored.heads
     if not positions:
@@ -378,14 +391,14 @@ def _check_state_anchor(
     }
     expected_keys = {*expected_files, "failures"}
     if set(positions) != expected_keys:
-        raise _StateFault("the state anchor has an unknown or incomplete journal-head set")
+        raise StateFault("the state anchor has an unknown or incomplete journal-head set")
     for name, filename in expected_files.items():
         position = positions[name]
         if not isinstance(position, Mapping) or set(position) != {"seq", "hash"}:
-            raise _StateFault(f"the state anchor has an invalid {name} position")
+            raise StateFault(f"the state anchor has an invalid {name} position")
         seq, expected_hash = position["seq"], position["hash"]
         if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
-            raise _StateFault(f"the state anchor has an invalid {name} sequence")
+            raise StateFault(f"the state anchor has an invalid {name} sequence")
         path = state_dir / filename
         entries = _journal_entries(path) if path.exists() else ()
         actual_hash = entries[seq - 1].hash if 0 < seq <= len(entries) else None
@@ -394,18 +407,18 @@ def _check_state_anchor(
             or (seq == 0 and expected_hash != "0" * 64)
             or (seq > 0 and actual_hash != expected_hash)
         ):
-            raise _StateFault(f"{name} is behind or differs from its anchored position")
+            raise StateFault(f"{name} is behind or differs from its anchored position")
     failure_position = positions["failures"]
     if not isinstance(failure_position, Mapping) or set(failure_position) != {
         "count",
         "digest",
     }:
-        raise _StateFault("the state anchor has an invalid failures position")
+        raise StateFault("the state anchor has an invalid failures position")
     try:
         failures = FailureRegistry(state_dir / FAILURES_FILE).records()
         failure_hashes = [record.content_hash() for record in failures]
     except Exception as exc:  # noqa: BLE001 - malformed failure history is corruption
-        raise _StateFault(f"the failure registry cannot be replayed: {exc}") from exc
+        raise StateFault(f"the failure registry cannot be replayed: {exc}") from exc
     count, digest = failure_position["count"], failure_position["digest"]
     if (
         isinstance(count, bool)
@@ -414,14 +427,14 @@ def _check_state_anchor(
         or count > len(failure_hashes)
         or content_hash(failure_hashes[:count]) != digest
     ):
-        raise _StateFault("the failure registry differs from its anchored position")
+        raise StateFault("the failure registry differs from its anchored position")
 
 
 def _check_bus_anchor(state_dir: Path, anchor_path: Path) -> None:
     """Verify every anchored topic prefix read-only; a longer unanchored tail is a valid crash."""
     topic_root = state_dir / BUS_DIR / "topics"
     if not anchor_path.exists():
-        raise _StateFault("the external bus anchor is missing for an existing state")
+        raise StateFault("the external bus anchor is missing for an existing state")
     entries = _journal_entries(anchor_path)
     anchored: dict[str, tuple[int, str]] = {}
     for entry in entries:
@@ -439,19 +452,19 @@ def _check_bus_anchor(state_dir: Path, anchor_path: Path) -> None:
             or length < 1
             or not isinstance(head_hash, str)
         ):
-            raise _StateFault("the external bus anchor contains an invalid topic head")
+            raise StateFault("the external bus anchor contains an invalid topic head")
         previous = anchored.get(topic)
         if previous is not None and length <= previous[0]:
-            raise _StateFault(f"the external bus anchor moves topic {topic!r} backwards")
+            raise StateFault(f"the external bus anchor moves topic {topic!r} backwards")
         anchored[topic] = (length, head_hash)
     for topic, (length, head_hash) in anchored.items():
         path = topic_root / f"{topic}.jsonl"
         topic_entries = _journal_entries(path) if path.exists() else ()
         if length > len(topic_entries) or topic_entries[length - 1].hash != head_hash:
-            raise _StateFault(f"bus topic {topic!r} is behind or differs from its anchor")
+            raise StateFault(f"bus topic {topic!r} is behind or differs from its anchor")
 
 
-def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bool:
+def check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bool:
     """Refuse a ``state_dir`` that is neither new nor this configuration's operator v5 state;
     return whether it already holds a state header. ``open_state`` repeats checks under the
     directory lock; this read-only pass classifies foreign identity, corruption and recovery
@@ -471,22 +484,22 @@ def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bo
         entry.name for entry in state_dir.iterdir() if entry.name not in _STATE_ENTRIES
     )
     if unknown:
-        raise _StateFault(
+        raise StateFault(
             f"state_dir is not a loop state directory (unexpected entries: {unknown[:5]})"
         )
     for entry in state_dir.iterdir():
         info = os.lstat(entry)
         if entry.name == BUS_DIR:
             if not stat.S_ISDIR(info.st_mode):
-                raise _StateFault("state_dir's bus entry is not a real directory")
+                raise StateFault("state_dir's bus entry is not a real directory")
             for bus_entry in entry.rglob("*"):
                 bus_info = os.lstat(bus_entry)
                 if stat.S_ISDIR(bus_info.st_mode):
                     continue
                 if not stat.S_ISREG(bus_info.st_mode) or bus_info.st_nlink != 1:
-                    raise _StateFault("state_dir's bus contains a non-regular or aliased entry")
+                    raise StateFault("state_dir's bus contains a non-regular or aliased entry")
         elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise _StateFault(f"state_dir entry {entry.name!r} is not a regular, unaliased file")
+            raise StateFault(f"state_dir entry {entry.name!r} is not a regular, unaliased file")
     memory = state_dir / MEMORY_FILE
     children = tuple(state_dir.iterdir())
     if not children:
@@ -500,30 +513,30 @@ def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bo
                 )
         return False
     if not memory.is_file():
-        raise _StateFault(
+        raise StateFault(
             "a non-empty state_dir without its memory header is not a recognized operator state"
         )
     entries = _journal_entries(memory)
     if not entries:
-        raise _StateFault("state_dir's memory journal is empty and has no operator header")
+        raise StateFault("state_dir's memory journal is empty and has no operator header")
     header = entries[0]
     if header.type != LOOP_STATE_OPENED:
-        raise _StateFault("state_dir's memory journal does not start with a state header")
+        raise StateFault("state_dir's memory journal does not start with a state header")
     version = header.payload.get("state_version")
     if type(version) is not int:
-        raise _StateFault("state_dir's memory header has no valid state_version")
+        raise StateFault("state_dir's memory header has no valid state_version")
     if version in {3, 4}:
         raise OperatorRefused(
             f"state_dir is a v{version!r} loop state: the operator only creates / opens v"
             f"{OPERATOR_STATE_VERSION} and never takes over or migrates v3 / v4 directories"
         )
     if version != OPERATOR_STATE_VERSION:
-        raise _StateFault(f"state_dir has unknown state version {version!r}")
+        raise StateFault(f"state_dir has unknown state version {version!r}")
     if set(header.payload) != {"state_version", "fingerprint"}:
-        raise _StateFault("state_dir's operator state header has unexpected fields")
+        raise StateFault("state_dir's operator state header has unexpected fields")
     recorded = header.payload.get("fingerprint")
     if not isinstance(recorded, Mapping):
-        raise _StateFault("state_dir's operator state header has no fingerprint object")
+        raise StateFault("state_dir's operator state header has no fingerprint object")
     if canonical_json(recorded) != canonical_json(fingerprint):
         changed = sorted(
             key
@@ -539,12 +552,12 @@ def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bo
         ("bus_anchor", paths.bus_anchor),
     ):
         if not anchor.is_file():
-            raise _StateFault(f"{label} is missing for an existing operator state")
+            raise StateFault(f"{label} is missing for an existing operator state")
     _check_state_anchor(state_dir, paths.state_anchor, entries)
     _check_bus_anchor(state_dir, paths.bus_anchor)
     audit = LoopAuditLog(state_dir / AUDIT_FILE)
     if audit.open_round is not None:
-        raise _RecoveryRequired(
+        raise RecoveryRequired(
             f"round {audit.open_round} was started but never recorded; human review is required"
         )
     records = audit.records
@@ -552,7 +565,7 @@ def _check_state_dir(paths: OperatorPaths, fingerprint: Mapping[str, Any]) -> bo
         stage.name == "experiment" and stage.status is StageStatus.FAILED
         for stage in records[-1].stages
     ):
-        raise _RecoveryRequired(
+        raise RecoveryRequired(
             "the last round has a failed experiment stage; ADR-0070 requires human review"
         )
     return True
@@ -569,7 +582,7 @@ def _expected_fingerprint(compiled: CompiledOperatorConfig) -> Mapping[str, Any]
     return loaded
 
 
-def _needs_review(state_dir: Path) -> bool:
+def needs_review(state_dir: Path) -> bool:
     """After ``open_synthetic_loop`` refused: whether the audit shows an interrupted round or an
     ADR-0070 failed experiment (exit 4) rather than corruption (exit 5). Read only."""
     try:
@@ -588,7 +601,7 @@ def _needs_review(state_dir: Path) -> bool:
 # ---- signals (ADR-0074 §7.3) ----------------------------------------------------------------
 
 
-class _StopRequest:
+class StopRequest:
     """Set by SIGINT / SIGTERM; read only at round boundaries."""
 
     def __init__(self) -> None:
@@ -601,8 +614,8 @@ class _StopRequest:
 
 
 @contextmanager
-def _boundary_stop() -> Iterator[_StopRequest]:
-    request = _StopRequest()
+def boundary_stop() -> Iterator[StopRequest]:
+    request = StopRequest()
     previous = {sig: signal.signal(sig, request) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         yield request
@@ -628,9 +641,9 @@ def _prepare(config: Path) -> _Prepared:
     if compiled.operator_identity != operator_config.operator_identity:
         raise OperatorRefused("the compiled operator identity is not the configuration's")
     wiring = compiled.loop_config.wiring
-    _check_code_identity(wiring.code_commit, wiring.environment_lock)
-    _check_anchor_paths(compiled.paths)
-    existing = _check_state_dir(compiled.paths, _expected_fingerprint(compiled))
+    check_code_identity(wiring.code_commit, wiring.environment_lock)
+    check_anchor_paths(compiled.paths)
+    existing = check_state_dir(compiled.paths, _expected_fingerprint(compiled))
     return _Prepared(compiled, existing)
 
 
@@ -652,36 +665,36 @@ def _final_state(loop: ResearchLoop) -> tuple[int, str]:
 
 
 def _summarize_loop(loop: ResearchLoop, code: int, outcome: str, ran: int, requested: int) -> None:
-    _emit("rounds_requested", requested)
-    _emit("rounds_run", ran)
-    _emit("rounds_recorded_total", len(loop.audit.records))
-    _emit("total_usage", canonical_json(loop.total_usage.payload()))
-    _emit("outcome", outcome)
+    emit("rounds_requested", requested)
+    emit("rounds_run", ran)
+    emit("rounds_recorded_total", len(loop.audit.records))
+    emit("total_usage", canonical_json(loop.total_usage.payload()))
+    emit("outcome", outcome)
     if loop.halted is not None:
-        _emit("halted", loop.halted.value)
+        emit("halted", loop.halted.value)
     if loop.recovery_required is not None:
-        _emit("recovery_required", loop.recovery_required)
+        emit("recovery_required", loop.recovery_required)
     if loop.stopped is not None:
-        _emit("stopped", loop.stopped)
+        emit("stopped", loop.stopped)
     if code == EXIT_HALTED:
-        _emit("action", "halted: a new budget or configuration needs a new loop_id and state_dir")
+        emit("action", "halted: a new budget or configuration needs a new loop_id and state_dir")
     elif code == EXIT_RECOVERY_REQUIRED:
-        _emit(
+        emit(
             "action",
             "human review required: do not rerun this state_dir; keep its audit, ledgers and "
             "failure evidence and use a new loop_id and state_dir",
         )
 
 
-def _run_rounds(durable: DurableLoop, reports_root: Path, rounds: int, stop: _StopRequest) -> int:
+def run_rounds(durable: DurableLoop, reports_root: Path, rounds: int, stop: StopRequest) -> int:
     loop = durable.loop
     records = loop.audit.records
     try:
         caught_up = write_research_loop_rounds(reports_root, records)
     except (ReportConflict, ValueError, OSError) as exc:
-        return _fail(EXIT_FAULT, "round report catch-up failed", exc)
-    _emit("reports_caught_up", sum(1 for written in caught_up if written.written))
-    _emit("rounds_recorded_before", len(records))
+        return fail(EXIT_FAULT, "round report catch-up failed", exc)
+    emit("reports_caught_up", sum(1 for written in caught_up if written.written))
+    emit("rounds_recorded_before", len(records))
     ran = 0
     for _ in range(rounds):
         if stop.signal_name is not None:
@@ -699,13 +712,13 @@ def _run_rounds(durable: DurableLoop, reports_root: Path, rounds: int, stop: _St
                 exc, (LoopHalted, JobInterrupted)
             )
             code = EXIT_RECOVERY_REQUIRED if interrupted else EXIT_FAULT
-            _fail(code, "the round could not be completed", exc)
+            fail(code, "the round could not be completed", exc)
             _summarize_loop(loop, code, "interrupted" if interrupted else "fault", ran, rounds)
             return code
         try:
             written = _write_reports(reports_root, new)
         except (ReportConflict, ValueError, OSError) as exc:
-            _fail(EXIT_FAULT, "the round report could not be written", exc)
+            fail(EXIT_FAULT, "the round report could not be written", exc)
             _summarize_loop(loop, EXIT_FAULT, "report_fault", ran + len(new), rounds)
             return EXIT_FAULT
         for record, path in zip(new, written, strict=True):
@@ -727,69 +740,98 @@ def _run_rounds(durable: DurableLoop, reports_root: Path, rounds: int, stop: _St
     return code
 
 
-def _run(config: Path, rounds: int, stop: _StopRequest) -> int:
+def preparation_failure(exc: Exception) -> int:
+    """Report a refusal or fault raised before any state was opened and return its exit code
+    (ADR-0074 §8); shared with the Dataset-sourced operator (ADR-0105 §5)."""
+    if isinstance(exc, (OperatorConfigError, OperatorProviderError, OperatorRefused)):
+        return fail(EXIT_REFUSED, "refused", exc)
+    if isinstance(exc, FreezeRegistryFault):
+        return fail(EXIT_FAULT, "freeze registry fault", exc)
+    if isinstance(exc, StateFault):
+        return fail(EXIT_FAULT, "state_dir cannot be verified", exc)
+    if isinstance(exc, (ValueError, TypeError)):  # a compiled loop config / LoopWiring refusal
+        return fail(EXIT_REFUSED, "refused", exc)
+    if isinstance(exc, RecoveryRequired):
+        return fail(EXIT_RECOVERY_REQUIRED, "state requires human review", exc)
+    return fail(EXIT_FAULT, "preparation failed", exc)  # nothing was opened; never a success
+
+
+def run_durable(
+    open_loop: Callable[[], DurableLoop],
+    *,
+    loop_id: str,
+    operator_identity: str,
+    paths: OperatorPaths,
+    existing: bool,
+    rounds: int,
+    stop: StopRequest,
+) -> int:
+    """Open the prepared loop with ``open_loop``, run at most ``rounds`` rounds with their reports
+    and always close it (module docs, **Run**); shared with the Dataset-sourced operator."""
+    emit("loop_id", loop_id)
+    emit("operator_identity", operator_identity)
+    emit("state_dir", paths.state_dir)
+    emit("state", "existing" if existing else "new")
+    emit("reports_root", paths.reports_root)
+    try:
+        durable = open_loop()
+    except (LoopStateLocked, BusLocked) as exc:
+        return fail(EXIT_FAULT, "state or bus is locked by another writer", exc)
+    except Exception as exc:  # noqa: BLE001 - classified from the audit, read only
+        if needs_review(paths.state_dir):
+            fail(EXIT_RECOVERY_REQUIRED, "state_dir requires human review", exc)
+            emit("outcome", "recovery_required")
+            emit(
+                "action",
+                "human review required: do not rerun this state_dir; use a new loop_id and "
+                "state_dir",
+            )
+            emit("exit_code", EXIT_RECOVERY_REQUIRED)
+            return EXIT_RECOVERY_REQUIRED
+        return fail(EXIT_FAULT, "state_dir could not be opened", exc)
+    try:
+        code = run_rounds(durable, paths.reports_root, rounds, stop)
+    except Exception as exc:  # noqa: BLE001 - never exit with a success or a traceback code
+        code = fail(EXIT_FAULT, "the operator failed", exc)
+    finally:
+        try:
+            durable.close()
+        except Exception as exc:  # noqa: BLE001 - a failed release is a lock / I/O fault
+            fail(EXIT_FAULT, "closing the loop failed", exc)
+            code = EXIT_FAULT
+    emit("exit_code", code)
+    return code
+
+
+def _run(config: Path, rounds: int, stop: StopRequest) -> int:
     try:
         prepared = _prepare(config)
-    except (OperatorConfigError, OperatorProviderError, OperatorRefused) as exc:
-        return _fail(EXIT_REFUSED, "refused", exc)
-    except FreezeRegistryFault as exc:
-        return _fail(EXIT_FAULT, "freeze registry fault", exc)
-    except _StateFault as exc:
-        return _fail(EXIT_FAULT, "state_dir cannot be verified", exc)
-    except (ValueError, TypeError) as exc:  # a compiled SyntheticLoopConfig / LoopWiring refusal
-        return _fail(EXIT_REFUSED, "refused", exc)
-    except _RecoveryRequired as exc:
-        return _fail(EXIT_RECOVERY_REQUIRED, "state requires human review", exc)
-    except Exception as exc:  # noqa: BLE001 - nothing was opened; never report a success
-        return _fail(EXIT_FAULT, "preparation failed", exc)
+    except Exception as exc:  # noqa: BLE001 - classified; nothing was opened
+        return preparation_failure(exc)
     compiled = prepared.compiled
     paths = compiled.paths
-    _emit("loop_id", compiled.loop_config.loop_id)
-    _emit("operator_identity", compiled.operator_identity)
-    _emit("state_dir", paths.state_dir)
-    _emit("state", "existing" if prepared.existing else "new")
-    _emit("reports_root", paths.reports_root)
-    try:
-        durable = open_synthetic_loop(
+    return run_durable(
+        lambda: open_synthetic_loop(
             compiled.loop_config,
             state_dir=paths.state_dir,
             provider=compiled.market_provider,
             anchor=paths.state_anchor,
             bus_anchor=paths.bus_anchor,
             operator_identity=compiled.operator_identity,
-        )
-    except (LoopStateLocked, BusLocked) as exc:
-        return _fail(EXIT_FAULT, "state or bus is locked by another writer", exc)
-    except Exception as exc:  # noqa: BLE001 - classified from the audit, read only
-        if _needs_review(paths.state_dir):
-            _fail(EXIT_RECOVERY_REQUIRED, "state_dir requires human review", exc)
-            _emit("outcome", "recovery_required")
-            _emit(
-                "action",
-                "human review required: do not rerun this state_dir; use a new loop_id and "
-                "state_dir",
-            )
-            _emit("exit_code", EXIT_RECOVERY_REQUIRED)
-            return EXIT_RECOVERY_REQUIRED
-        return _fail(EXIT_FAULT, "state_dir could not be opened", exc)
-    try:
-        code = _run_rounds(durable, paths.reports_root, rounds, stop)
-    except Exception as exc:  # noqa: BLE001 - never exit with a success or a traceback code
-        code = _fail(EXIT_FAULT, "the operator failed", exc)
-    finally:
-        try:
-            durable.close()
-        except Exception as exc:  # noqa: BLE001 - a failed release is a lock / I/O fault
-            _fail(EXIT_FAULT, "closing the loop failed", exc)
-            code = EXIT_FAULT
-    _emit("exit_code", code)
-    return code
+        ),
+        loop_id=compiled.loop_config.loop_id,
+        operator_identity=compiled.operator_identity,
+        paths=paths,
+        existing=prepared.existing,
+        rounds=rounds,
+        stop=stop,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line (argparse exits 2 on a usage error) and run one bounded batch."""
     args = _parser().parse_args(None if argv is None else list(argv))
-    with _boundary_stop() as stop:
+    with boundary_stop() as stop:
         return _run(args.config, args.rounds, stop)
 
 

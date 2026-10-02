@@ -8,7 +8,8 @@ descriptor is checked before the caller can open loop state.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
 from core.contracts.strategy import BacktestProviderDescriptor
@@ -23,6 +24,7 @@ from research.loop.operator_config import (
     InjectedProviders,
     OperatorConfig,
     ProviderIdentity,
+    WiringValues,
 )
 from research.strategies.time_series_momentum import (
     TimeSeriesMomentumProvider,
@@ -30,7 +32,12 @@ from research.strategies.time_series_momentum import (
     tsmom_vol_scaled_spec,
 )
 
-__all__ = ["OperatorProviderError", "build_providers"]
+__all__ = [
+    "CoreProviders",
+    "OperatorProviderError",
+    "build_core_providers",
+    "build_providers",
+]
 
 
 class OperatorProviderError(ValueError):
@@ -54,8 +61,8 @@ def _refuse(message: str) -> OperatorProviderError:
     return OperatorProviderError(message)
 
 
-def _identity(config: OperatorConfig, role: str) -> ProviderIdentity:
-    matches = tuple(item for item in config.providers if item.role == role)
+def _identity(identities: Sequence[ProviderIdentity], role: str) -> ProviderIdentity:
+    matches = tuple(item for item in identities if item.role == role)
     if len(matches) != 1:
         raise _refuse(f"configuration must contain exactly one {role} identity")
     identity = matches[0]
@@ -68,11 +75,11 @@ def _identity(config: OperatorConfig, role: str) -> ProviderIdentity:
 
 
 def _verify_descriptor(
-    config: OperatorConfig,
+    identities: Sequence[ProviderIdentity],
     role: str,
     descriptor: object,
 ) -> None:
-    identity = _identity(config, role)
+    identity = _identity(identities, role)
     try:
         name = descriptor.name  # type: ignore[attr-defined]
         version = descriptor.version  # type: ignore[attr-defined]
@@ -116,24 +123,27 @@ def _expected(spec: object) -> dict[str, str]:
     return {str(spec.ref): spec.content_hash()}  # type: ignore[attr-defined]
 
 
-def build_providers(config: OperatorConfig) -> InjectedProviders:
-    """Construct the six statically registered providers and verify them before loop opening.
+@dataclass(frozen=True, slots=True)
+class CoreProviders:
+    """The five allowlisted providers every operator source shares (all roles but the synthetic
+    market provider), built and verified by ``build_core_providers``."""
 
-    The only supported provider set is ADR-0074 §3. Constructor inputs come from the already
-    loaded, hash-bound artifacts in ``config``; no state directory or execution phase is touched.
-    """
-    if not isinstance(config, OperatorConfig):
-        raise _refuse("config must be an OperatorConfig")
-    if tuple(identity.role for identity in config.providers) != PROVIDER_ROLES:
-        raise _refuse("provider identities must occur exactly once in PROVIDER_ROLES order")
+    feature_provider: BarLogReturnProvider
+    state_provider: TrendRangeProvider
+    strategy_provider: TimeSeriesMomentumProvider
+    backtester: BarBacktester
+    outcome_provider: ForwardReturnOutcome
 
-    wiring = config.wiring
+
+def build_core_providers(
+    identities: Sequence[ProviderIdentity], wiring: WiringValues
+) -> CoreProviders:
+    """Construct and verify the five non-market providers of ``build_providers`` against
+    ``identities`` and the hash-bound ``wiring`` specs (shared with the Dataset-sourced operator,
+    ADR-0105 §5). Raises ``OperatorProviderError``."""
     try:
-        synthetic = RandomWalkMarket()
-        _verify_descriptor(config, "synthetic_market_provider", synthetic.descriptor)
-
         feature = BarLogReturnProvider(specs=(wiring.feature_spec,))
-        _verify_descriptor(config, "feature_provider", feature.descriptor)
+        _verify_descriptor(identities, "feature_provider", feature.descriptor)
         _verify_supported_specs(
             "feature_provider",
             feature.descriptor,
@@ -142,7 +152,7 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
         )
 
         state = TrendRangeProvider(specs=(wiring.state_spec,))
-        _verify_descriptor(config, "state_provider", state.descriptor)
+        _verify_descriptor(identities, "state_provider", state.descriptor)
         _verify_supported_specs(
             "state_provider",
             state.descriptor,
@@ -169,7 +179,7 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
                     "or declares risk"
                 )
         strategy = TimeSeriesMomentumProvider(specs=strategy_specs)
-        _verify_descriptor(config, "strategy_provider", strategy.descriptor)
+        _verify_descriptor(identities, "strategy_provider", strategy.descriptor)
         _verify_supported_specs(
             "strategy_provider",
             strategy.descriptor,
@@ -178,7 +188,7 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
         )
 
         backtester = BarBacktester(execution=None)
-        _verify_descriptor(config, "backtester", backtester.descriptor)
+        _verify_descriptor(identities, "backtester", backtester.descriptor)
         descriptor = backtester.descriptor
         if (
             backtester.execution is not None
@@ -195,7 +205,7 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
         ):
             raise _refuse("outcome_provider only allows a forward_return OutcomeLabelSpec")
         outcome = ForwardReturnOutcome(label_specs=(label_spec,))
-        _verify_descriptor(config, "outcome_provider", outcome.descriptor)
+        _verify_descriptor(identities, "outcome_provider", outcome.descriptor)
         _verify_supported_specs(
             "outcome_provider",
             outcome.descriptor,
@@ -206,14 +216,42 @@ def build_providers(config: OperatorConfig) -> InjectedProviders:
         raise
     except Exception as exc:
         raise _refuse(f"provider construction or verification failed: {exc}") from exc
-
-    return InjectedProviders(
-        identities=tuple(config.providers),
-        synthetic_market_provider=synthetic,
+    return CoreProviders(
         feature_provider=feature,
         state_provider=state,
         strategy_provider=strategy,
         backtester=backtester,
         outcome_provider=outcome,
+    )
+
+
+def build_providers(config: OperatorConfig) -> InjectedProviders:
+    """Construct the six statically registered providers and verify them before loop opening.
+
+    The only supported provider set is ADR-0074 §3. Constructor inputs come from the already
+    loaded, hash-bound artifacts in ``config``; no state directory or execution phase is touched.
+    """
+    if not isinstance(config, OperatorConfig):
+        raise _refuse("config must be an OperatorConfig")
+    if tuple(identity.role for identity in config.providers) != PROVIDER_ROLES:
+        raise _refuse("provider identities must occur exactly once in PROVIDER_ROLES order")
+
+    try:
+        synthetic = RandomWalkMarket()
+        _verify_descriptor(config.providers, "synthetic_market_provider", synthetic.descriptor)
+    except OperatorProviderError:
+        raise
+    except Exception as exc:
+        raise _refuse(f"provider construction or verification failed: {exc}") from exc
+    core = build_core_providers(config.providers, config.wiring)
+
+    return InjectedProviders(
+        identities=tuple(config.providers),
+        synthetic_market_provider=synthetic,
+        feature_provider=core.feature_provider,
+        state_provider=core.state_provider,
+        strategy_provider=core.strategy_provider,
+        backtester=core.backtester,
+        outcome_provider=core.outcome_provider,
         _allowlist_seal=_ALLOWLIST_VALIDATION_SEAL,
     )
