@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import pytest
-from pyiceberg.expressions import AlwaysFalse, And, EqualTo, GreaterThanOrEqual, In
+from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, And, EqualTo, GreaterThanOrEqual, In
 
 from core.contracts.catalog import CommitRequest, CommitResult, SnapshotNotFound
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
@@ -806,6 +806,34 @@ def test_a_committed_canonical_row_that_drifts_fails_closed(
     with pytest.raises(CatalogIntegrityError, match=match):
         c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert _state(h) == before
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_a_narrow_proof_of_a_unit_layout_rejects_a_reappended_row(
+    h: RestHarness, pinned: bool
+) -> None:
+    """ADR-0108 unit layout: a narrow (PIT) proof must catch a delete + re-append of a unit row.
+
+    The forged rows keep their revision ids and arrival_seqs but all move ``knowledge_time``, so
+    the recovered unit facts and the window's planned rows move with them; only the unit
+    snapshot's whole-unit fingerprint, re-checked on the narrow path, still tells them apart.
+    """
+    archive, _, _ = _pair(h, 3)
+    c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=1).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    rows = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])
+    h.delete_rows(c.TRADES, AlwaysTrue())
+    shifted = rows[0]["knowledge_time"] + timedelta(hours=1)
+    h.forge_rows(c.TRADES, [dict(row, knowledge_time=shifted) for row in rows], "corruption")
+    adapter: Any = h.adapter
+    if pinned:
+        channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+        tables = (channel.element.table, channel.source.table, channel.canonical.table)
+        adapter = PinnedCatalogView(h.adapter, {table: h.head(table) for table in tables})
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=adapter)
+    with pytest.raises(CatalogIntegrityError):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={rows[2]["arrival_seq"]})
 
 
 def test_a_committed_batch_that_no_longer_reproduces_fails_closed(h: RestHarness) -> None:

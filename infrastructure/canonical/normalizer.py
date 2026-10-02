@@ -1320,6 +1320,9 @@ class CanonicalNormalizer:
         self._pins: dict[tuple[str, ...], _Pin] = {}
         self._facts: dict[tuple[str, str], _UnitFacts] = {}
         self._batches: dict[tuple[str, str, int], tuple[Mapping[str, Any], ...]] = {}
+        #: Unit-layout units whose committed content was proven against the unit snapshot's
+        #: fingerprint on this (frozen) view; see ``_check_unit_content``.
+        self._unit_content: set[tuple[str, str]] = set()
 
     def close(self) -> None:
         """Release temporary position and Raw-row files retained by immutable-view facts."""
@@ -1328,6 +1331,7 @@ class CanonicalNormalizer:
             facts.raw_rows.close()
         self._facts.clear()
         self._batches.clear()
+        self._unit_content.clear()
         for pin in self._pins.values():
             pin.verifier.close()
         self._pins.clear()
@@ -1637,6 +1641,8 @@ class CanonicalNormalizer:
             assert facts.version is not None
             plan, base, ready = facts.plan, facts.base, facts.ready
             _require_complete(channel, source_revision_id, plan, len(facts.positions))
+            if plan.unit:
+                self._check_unit_content(pin, channel, source_revision_id, plan, facts)
             # Public verify_unit keeps its compatibility collection path. PIT's private bounded
             # path streams revision-sorted requests into an ordered RunSet of unique batch IDs,
             # replacing the all-history `wanted` set while preserving newest-first proof order.
@@ -2661,6 +2667,53 @@ class CanonicalNormalizer:
                 f"batch {snapshot.batch_id} of {channel.canonical.table} was committed with other "
                 "content"
             )
+
+    def _check_unit_content(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        plan: _CommittedPlan,
+        facts: _UnitFacts,
+    ) -> None:
+        """Unit layout, narrow proof: the unit's committed rows are exactly its one commit.
+
+        A per-batch commit fingerprints each window, so a narrow proof of one window also proves
+        that window's committed bytes (``check_batch_snapshot``). The unit layout has one
+        whole-unit fingerprint (ADR-0108 §2), so a narrow proof first streams the unit's committed
+        rows at the pinned head, window by window in ``arrival_seq`` order (bounded by the
+        microbatch), and requires their fingerprint and count to be the unit snapshot's. Without
+        it a later delete + re-append of a unit row (another ``knowledge_time``, say) would shift
+        the recovered unit facts and the window's planned rows with it, and pass. Like the Raw
+        verifier's unit check (ADR-0108 implementation record 4) it is done once per unit on a
+        frozen view; an unpinned normalizer re-checks it on every call.
+        """
+        key = (channel.canonical.table, source_revision_id)
+        if self._frozen and key in self._unit_content:
+            return
+        assert facts.base is not None
+        snapshot = self._unit_snapshot(pin, channel, source_revision_id, plan)
+        with UnitFingerprint(channel.canonical.arrow_schema, self._scratch_directory) as unit:
+            for index in range(plan.count):
+                low, high, end = _batch_window(facts.positions, plan.chunk, index)
+                expected = end - index * plan.chunk
+                rows = self._scan_block(
+                    pin.catalog, channel, facts.base + low, facts.base + high, None, expected
+                )
+                if len(rows) != expected:
+                    raise CatalogIntegrityError(
+                        f"{channel.canonical.table}: unit {source_revision_id} window {index} "
+                        "is missing committed rows"
+                    )
+                rows.sort(key=lambda row: cast(int, row["arrival_seq"]))
+                unit.add(batch(channel.canonical, rows))
+            if unit.rows != snapshot.added_rows or unit.hexdigest() != snapshot.batch_fingerprint:
+                raise CatalogIntegrityError(
+                    f"batch {snapshot.batch_id} of {channel.canonical.table} no longer reads as "
+                    "its committed content"
+                )
+        if self._frozen:
+            self._unit_content.add(key)
 
     def _committed_times(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
