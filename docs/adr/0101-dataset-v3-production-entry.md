@@ -75,3 +75,11 @@ DQ-9 的**数值**仍 OPEN（ADR-0077），本 ADR 不选择任何数值。
 1. **质量来源按其实际使用的表绑定。** v3 构建（`DatasetEvidenceBuilder` / `DatasetBuildPipeline`）的质量 join 读取哪张表，PIT spec 就必须绑定哪张表：分区报告来自 ADR-0093 的 v3 manifest 表时，必须绑定该表（及其 evidence streams 所在位置的规则所要求的表）；旧表 `quality.data_quality_reports` 改为与 Raw evidence / 缺口表相同的规则——**构建运行时它有 snapshot 才必须绑定**，没有 snapshot 时不得要求（也不得为满足要求而写旧版报告）。每个覆盖分区仍必须恰有一份在绑定 snapshot 上可重新推导的报告；同一分区同时有旧版与 v3 报告时，以 ADR-0093 已定的优先 / 兼容规则判定，规则不唯一即失败关闭。既有 v2 / 旧版回放结果按位不变。
 2. **listing 质量报告入口。** `DatasetBuildProfile` 增加 listing-history 质量报告所需的限值段（与现有分区质量限值同样：显式、无默认值、缺失即拒绝；`schema_version` 按 additive 升 minor，旧 profile 文件读取时若缺该段，则只有不需要 listing 报告的命令可用，构建命令拒绝并说明原因）。`infrastructure.quality.report_cli` 增加 listing 报告子命令（plan / report / verify 语义与分区报告一致），限值全部来自 profile。
 3. 测试：v3-only catalog（旧表无 snapshot）上端到端构建成功；旧表有 snapshot 而 spec 未绑定时拒绝；同分区新旧报告冲突时失败关闭；旧 profile 缺 listing 段时构建拒绝；既有测试断言不变（H4）。
+
+## 修订 2（2026-10-02，PM，实现修订 1 时）
+
+1. **修订 1 第 1 条暂缓，转入契约 ADR。** 它与冻结契约 2.5.0 冲突：`ResearchDatasetEvidenceManifest` 要求上游绑定 `quality.data_quality_reports`；`PointInTimeSpec.snapshot_bindings` 的值必须是非空 snapshot id；`CommitRequest.row_count ≥ 1` 禁止空提交。没有 snapshot 的旧表既不能绑定，也不能用空提交补出 snapshot。放宽这条要求必须改契约，而契约版本变化会改变每一份新 v3 manifest 的 `schema_version` 与内容哈希，不属于"不改契约"的本 ADR。登记为 **D-V3-LEGACY-BIND**，由后续契约 ADR 决定。在此之前行为不变：v3 构建要求旧表已有 snapshot，`pin_dataset_pit_spec` 只钉定有 snapshot 的表，缺绑定时构建以 `DatasetSpecError` 拒绝；仍不得为满足绑定而写旧版报告。
+2. **修订 1 第 2 条的实现细化。**
+   - Profile `schema_version` 1.1.0 新增可选段 `listing_quality`：`metadata`（`BoundedMetadataLimits` 全部字段，含 `run_limits` 与 `key_tree`）及 `max_record_bytes`、`prefix_leaf_max_records`、`prefix_fanout`、`prefix_max_node_bytes`、`prefix_max_record_bytes`、`row_chunk_capacity`、`max_hash_chunk_bytes`。容量、fanout、run / stream 限值、run object 与 identity 字节、各记录字节上限和重试次数取自 `quality` 段（与容量探针的映射相同）。没有默认值；1.0.x 文件出现该段即拒绝。不含该段的 profile 哈希不变。
+   - 构建命令**不**因缺少该段而拒绝：构建只读取已提交的 listing 报告，缺报告时质量 join 照旧拒绝。修订 1 第 2 条原文"构建命令拒绝"据此收窄为"只有 listing 报告子命令需要该段，缺失即拒绝（退出码 3），且在打开任何资源之前"。
+   - 子命令为 `report_cli listing-plan / listing-report / listing-verify`，绑定 `canonical.instrument_listings` 与 exchangeInfo Raw 表的当前 head；`listing-plan` 不打开任何资源，`listing-verify` 只做 `existing_only` 重新推导。
