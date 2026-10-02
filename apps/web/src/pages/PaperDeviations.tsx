@@ -5,17 +5,22 @@ import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 import {
   asPaperDeviationPayload,
+  BINDING_LABELS,
+  bindingKind,
   deviationChartOption,
   decimalText,
   deviationLabel,
   percent,
+  runBindingRows,
   summaryRows,
   type PaperDeviationPayload,
 } from "../lib/paperDeviation";
 
 // Phase 10 paper deviation (research/router/deviation.py): the router's net paper result vs a
 // reference backtest the caller declared, mark by mark. Descriptive only — no threshold, no
-// verdict. Payload types and the pure helpers live in src/lib/paperDeviation.ts.
+// verdict. Payload types and the pure helpers live in src/lib/paperDeviation.ts. A 2.1.0 report is
+// bound to its run (ADR-0104); 2.0.0 is scope-only (legacy, not comparable evidence) and 1.0.0
+// carries no scope — the page says which one it is showing.
 
 function short(hash: string): string {
   return `${hash.slice(0, 12)}…`;
@@ -39,6 +44,35 @@ function DeviationChart({ report }: { report: PaperDeviationPayload }) {
   return <div ref={chartRef} style={{ width: "100%", height: 280, margin: "16px 0" }} />;
 }
 
+function BindingSection({ report }: { report: PaperDeviationPayload }) {
+  const kind = bindingKind(report);
+  const rows = runBindingRows(report);
+  return (
+    <>
+      <p data-binding={kind} style={{ color: kind === "run_bound" ? "#166534" : "#92400e", fontSize: 13 }}>
+        <strong>{BINDING_LABELS[kind]}</strong>
+        {kind === "run_bound"
+          ? " — 绑定同一 Router 配置、实验、价格数据、成本模型与参照请求（ADR-0104）"
+          : null}
+      </p>
+      {rows.length > 0 ? (
+        <table>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.label}>
+                <td>{row.label}</td>
+                <td>
+                  <code>{row.value}</code>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </>
+  );
+}
+
 function DeviationDetail({ envelope }: { envelope: ReportEnvelope }) {
   const report = asPaperDeviationPayload(envelope.payload);
   if (report === null) {
@@ -46,6 +80,7 @@ function DeviationDetail({ envelope }: { envelope: ReportEnvelope }) {
   }
   return (
     <>
+      <BindingSection report={report} />
       <p>
         router <strong>{report.router}</strong> · run_hash <code>{short(report.run_hash)}</code> ·
         paper result <code>{short(report.paper_result_hash)}</code>

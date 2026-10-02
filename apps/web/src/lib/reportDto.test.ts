@@ -111,3 +111,54 @@ test("paper deviation 2.0.0 declared_scope missing its nested scope_hash is inva
   const inspected = inspectReportDTO({ ...report, payload });
   assert.equal(inspected.status, "invalid");
 });
+
+// --- paper_deviation 2.1.0 (ADR-0104): scope 1.1.0 with a run binding -----------------------------
+
+function runBoundPayload(): Record<string, unknown> {
+  const [report] = fixtureEnvelopes("paper_deviation").filter((item) => item.payload.schema_version === "2.1.0");
+  return JSON.parse(JSON.stringify(report.payload)) as Record<string, unknown>;
+}
+
+function inspected(payload: Record<string, unknown>) {
+  const [report] = fixtureEnvelopes("paper_deviation");
+  return inspectReportDTO({ ...report, payload });
+}
+
+test("paper deviation 2.1.0 with a well-formed run binding is supported", () => {
+  assert.deepEqual(inspected(runBoundPayload()), { status: "supported", version: "2.1.0" });
+});
+
+test("paper deviation 2.1.0 must carry its scope-bound fields and a scope 1.1.0 with a run binding", () => {
+  const noMarks = runBoundPayload();
+  delete noMarks.marks;
+  assert.equal(inspected(noMarks).status, "invalid");
+  const noBinding = runBoundPayload();
+  delete (noBinding.declared_scope as Record<string, unknown>).run_binding;
+  assert.equal(inspected(noBinding).status, "invalid");
+  const oldScope = runBoundPayload();
+  (oldScope.declared_scope as Record<string, unknown>).scope_schema_version = "1.0.0";
+  assert.equal(inspected(oldScope).status, "invalid");
+  const badBinding = runBoundPayload();
+  ((badBinding.declared_scope as Record<string, unknown>).run_binding as Record<string, unknown>).cost_model_hash = "1";
+  const view = inspected(badBinding);
+  assert.equal(view.status, "invalid");
+  assert.ok(view.status === "invalid" && view.reason.includes("scope DTO 1.1.0"));
+  const mismatched = runBoundPayload();
+  mismatched.reference_request_hash = "0".repeat(64);
+  assert.equal(inspected(mismatched).status, "invalid");
+});
+
+test("paper deviation 2.0.0 (scope-only) stays supported and cannot carry a run binding", () => {
+  const legacy = fixtureEnvelopes("paper_deviation").find((item) => item.payload.schema_version === "2.0.0");
+  assert.ok(legacy !== undefined);
+  assert.deepEqual(inspectReportDTO(legacy), { status: "supported", version: "2.0.0" });
+  const smuggled = JSON.parse(JSON.stringify(legacy.payload)) as Record<string, unknown>;
+  (smuggled.declared_scope as Record<string, unknown>).run_binding = {};
+  assert.equal(inspectReportDTO({ ...legacy, payload: smuggled }).status, "invalid");
+});
+
+test("paper deviation versions 1.0.0, 2.0.0 and 2.1.0 are supported; 2.2.0 is kept as unknown", () => {
+  const [report] = fixtureEnvelopes("paper_deviation");
+  const future = { ...report, payload: { ...report.payload, schema_version: "2.2.0" } };
+  assert.deepEqual(inspectReportDTO(future), { status: "unknown-version", version: "2.2.0" });
+});

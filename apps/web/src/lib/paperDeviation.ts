@@ -32,8 +32,19 @@ export type DeviationSummaryPayload = {
   tracking_error: string | null;
 };
 
+export type RunBindingPayload = {
+  router_spec_hash: string;
+  router_strategy_spec_hash: string;
+  experiment_hash: string;
+  bars_hash: string;
+  window_start: string;
+  window_end: string;
+  cost_model_hash: string;
+  reference_request_hash: string;
+};
+
 export type DeclaredScopePayload = {
-  scope_schema_version: "1.0.0";
+  scope_schema_version: "1.0.0" | "1.1.0";
   validation_profile: string;
   validation_profile_hash: string;
   validation_report_hash: string;
@@ -41,6 +52,8 @@ export type DeclaredScopePayload = {
   symbol: string;
   timeframe: string;
   research_class: string;
+  /** Scope 1.1.0 only (ADR-0104): what the deviation is bound to besides the P8 scope. */
+  run_binding?: RunBindingPayload;
   scope_hash: string;
 };
 
@@ -66,35 +79,104 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const HASH = /^[0-9a-f]{64}$/;
+const isHash = (value: unknown): boolean => typeof value === "string" && HASH.test(value);
+const RUN_BINDING_HASHES = [
+  "router_spec_hash",
+  "router_strategy_spec_hash",
+  "experiment_hash",
+  "bars_hash",
+  "cost_model_hash",
+  "reference_request_hash",
+] as const;
+
+/** Payload version -> the declared-scope version it carries (ADR-0079 / ADR-0104). */
+export const DEVIATION_SCOPE_VERSIONS: Record<string, string> = { "2.0.0": "1.0.0", "2.1.0": "1.1.0" };
+
+/** Shape of a scope 1.1.0 `run_binding`; the console does not re-derive or re-hash it. */
+export function isRunBinding(value: unknown, referenceRequestHash: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value).sort().join(",");
+  if (keys !== [...RUN_BINDING_HASHES, "window_start", "window_end"].sort().join(",")) return false;
+  if (!RUN_BINDING_HASHES.every((field) => isHash(value[field]))) return false;
+  const start = Date.parse(String(value.window_start));
+  const end = Date.parse(String(value.window_end));
+  return (
+    typeof value.window_start === "string" && typeof value.window_end === "string" &&
+    Number.isFinite(start) && Number.isFinite(end) && start <= end &&
+    value.reference_request_hash === referenceRequestHash
+  );
+}
+
+/**
+ * Whether `payload.declared_scope` is a well-formed scope for the payload `version` (2.0.0 -> scope
+ * 1.0.0, no run binding; 2.1.0 -> scope 1.1.0 with a run binding). Shape only: the hashes are
+ * verified server-side by apps/api.
+ */
+export function isDeclaredScopeFor(payload: Record<string, unknown>, version: string): boolean {
+  const scope = payload.declared_scope;
+  if (!isRecord(scope) || scope.scope_schema_version !== DEVIATION_SCOPE_VERSIONS[version]) return false;
+  if (!isHash(scope.scope_hash)) return false;
+  if (
+    !["validation_profile", "venue", "symbol", "timeframe", "research_class"].every(
+      (field) => typeof scope[field] === "string",
+    )
+  ) return false;
+  if (!isHash(scope.validation_profile_hash) || !isHash(scope.validation_report_hash)) return false;
+  if (version === "2.1.0") return isRunBinding(scope.run_binding, payload.reference_request_hash);
+  return !("run_binding" in scope);
+}
+
+/**
+ * What the report is bound to (ADR-0104): `run_bound` (payload 2.1.0, scope 1.1.0: router spec,
+ * experiment, bars, window, cost model, reference request), `scope_only` (2.0.0: only the P8
+ * scope; legacy, not comparable evidence) or `unscoped` (1.0.0: descriptive, no scope at all).
+ */
+export type BindingKind = "run_bound" | "scope_only" | "unscoped";
+
+export function bindingKind(report: PaperDeviationPayload): BindingKind {
+  if (report.schema_version === "2.1.0") return "run_bound";
+  return report.schema_version === "2.0.0" ? "scope_only" : "unscoped";
+}
+
+export const BINDING_LABELS: Record<BindingKind, string> = {
+  run_bound: "带运行绑定",
+  scope_only: "scope-only（legacy，无运行绑定，不可作为可比证据）",
+  unscoped: "无范围绑定（legacy 1.0.0，仅描述）",
+};
+
+export type BindingRow = { label: string; value: string };
+
+/** The run binding as label / exact value rows (`[]` unless the report is run-bound). */
+export function runBindingRows(report: PaperDeviationPayload): BindingRow[] {
+  const binding = report.declared_scope?.run_binding;
+  if (bindingKind(report) !== "run_bound" || binding === undefined) return [];
+  return [
+    { label: "router_spec_hash", value: binding.router_spec_hash },
+    { label: "router_strategy_spec_hash", value: binding.router_strategy_spec_hash },
+    { label: "experiment_hash", value: binding.experiment_hash },
+    { label: "bars_hash", value: binding.bars_hash },
+    { label: "window", value: `${binding.window_start} → ${binding.window_end}` },
+    { label: "cost_model_hash", value: binding.cost_model_hash },
+    { label: "reference_request_hash", value: binding.reference_request_hash },
+  ];
+}
+
 export function asPaperDeviationPayload(
   payload: Record<string, unknown> | undefined,
 ): PaperDeviationPayload | null {
   if (
     payload === undefined ||
     payload.kind !== "paper_deviation" ||
-    !["1.0.0", "2.0.0"].includes(String(payload.schema_version)) ||
+    !["1.0.0", "2.0.0", "2.1.0"].includes(String(payload.schema_version)) ||
     typeof payload.deviation_hash !== "string" ||
     !Array.isArray(payload.marks) ||
     !isRecord(payload.summary)
   ) {
     return null;
   }
-  if (payload.schema_version === "2.0.0") {
-    const scope = payload.declared_scope;
-    if (
-      !isRecord(scope) || scope.scope_schema_version !== "1.0.0" ||
-      typeof scope.scope_hash !== "string" || !/^[0-9a-f]{64}$/.test(scope.scope_hash) ||
-      typeof scope.validation_profile !== "string" ||
-      typeof scope.validation_profile_hash !== "string" ||
-      !/^[0-9a-f]{64}$/.test(scope.validation_profile_hash) ||
-      typeof scope.validation_report_hash !== "string" ||
-      !/^[0-9a-f]{64}$/.test(scope.validation_report_hash) ||
-      typeof scope.venue !== "string" ||
-      typeof scope.symbol !== "string" ||
-      typeof scope.timeframe !== "string" ||
-      typeof scope.research_class !== "string"
-    ) return null;
-  }
+  const version = String(payload.schema_version);
+  if (version in DEVIATION_SCOPE_VERSIONS && !isDeclaredScopeFor(payload, version)) return null;
   return payload as unknown as PaperDeviationPayload;
 }
 
