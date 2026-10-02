@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from core.domain.research import Hypothesis, HypothesisOrigin
+from core.domain.specs import StrategySpec
 from research.hypotheses.p7_binding import p7_plan_condition
 from research.hypotheses.typed_plan import PlanLimits, TypedPlan, parse_plan_json
 from research.hypotheses.typed_plan_compiler import (
@@ -82,3 +83,10 @@ def plan_hypothesis(
         origin=origin,
         origin_refs=(TSMOM.spec.ref,),
     )
+
+
+def root_strategy(compiled: CompiledPlan) -> StrategySpec:
+    """The compiled plan's strategy root spec."""
+    spec = compiled.root.spec
+    assert isinstance(spec, StrategySpec)
+    return spec

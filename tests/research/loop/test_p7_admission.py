@@ -43,7 +43,7 @@ from research.hypotheses.typed_plan_compiler import (
 from research.hypotheses.typed_plan_resolver import resolve_direct_references
 from research.loop import LoopStateInconsistent, build_synthetic_loop, open_synthetic_loop
 from research.loop.compose import DurableLoop, loop_fingerprint
-from research.loop.durable import PLAN_ADMISSION_FILE
+from research.loop.durable import PLAN_ADMISSION_FILE, DurableState
 from research.loop.memory import ResearchMemory
 from research.loop.p7_admission import (
     P7PlanRequest,
@@ -76,6 +76,7 @@ from tests.research.loop.p7_loop_fixtures import (
     compiled_plan,
     negation_plan,
     plan_hypothesis,
+    root_strategy,
 )
 from tests.test_universe_contracts import manifest
 
@@ -111,6 +112,11 @@ def _open(state_dir: Path, source: P7PlanSource | None) -> DurableLoop:
     return open_synthetic_loop(
         _config(source), state_dir=state_dir, provider=RandomWalkMarket(), bus=InMemoryEventBus()
     )
+
+
+def _state(durable: DurableLoop) -> DurableState:
+    assert durable.durable_state is not None
+    return durable.durable_state
 
 
 def _hypothesis_summary(durable: DurableLoop) -> Any:
@@ -167,7 +173,7 @@ def test_a_declared_plan_is_admitted_committed_and_run_with_its_binding(tmp_path
         assert trial.summary["origin"] == "p7_plan"
         # a fully registered plan is not pending any more
         admission = P7RoundAdmission(
-            _source(request), durable.durable_state, loop_id="synthetic_loop", family_id=fx.FAMILY
+            _source(request), _state(durable), loop_id="synthetic_loop", family_id=fx.FAMILY
         )
         assert admission.pending() is None and admission.trials() == 0
     finally:
@@ -197,7 +203,7 @@ def test_a_rejected_plan_writes_nothing_and_is_recorded(tmp_path: Path) -> None:
         assert _journal_events(state_dir) == ["plan_admission_header"]
         assert rejected_plans(durable.loop.audit.records) == [request.plan_hash]
         admission = P7RoundAdmission(
-            _source(request), durable.durable_state, loop_id="synthetic_loop", family_id=fx.FAMILY
+            _source(request), _state(durable), loop_id="synthetic_loop", family_id=fx.FAMILY
         )
         assert admission.pending() is None  # never offered again
     finally:
@@ -334,7 +340,7 @@ def test_p7_plans_need_a_durable_state(tmp_path: Path) -> None:
 def test_a_plan_candidate_in_the_static_catalog_is_refused(tmp_path: Path) -> None:
     compiled = compiled_plan(negation_plan())
     candidate = StrategyCandidate(
-        spec=compiled.root.spec,
+        spec=root_strategy(compiled),
         strategy=TSMOM.strategy,
         hypothesis_family_id=fx.FAMILY,
         plan_record=P7PlanRecord.from_compiled(compiled),

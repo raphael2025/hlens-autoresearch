@@ -687,10 +687,10 @@ class HypothesisStage:
         for hypothesis in again:  # pre-registered as new trials before they run
             if not self._memory.ledger.register_reevaluation(hypothesis, attempt):
                 raise ValueError(f"{hypothesis.ref} was already re-evaluated as {attempt}")
-        listed = (*p7_registered, *registered)
+        this_round = (*p7_registered, *registered)
         summary = {
-            "registered": [str(h.ref) for h in listed],
-            "hypothesis_hashes": [h.content_hash() for h in listed],
+            "registered": [str(h.ref) for h in this_round],
+            "hypothesis_hashes": [h.content_hash() for h in this_round],
             "reevaluations": [str(h.ref) for h in again],
             "reevaluation_attempt": attempt if again else None,
             "family_trials": self._memory.ledger.trials(self._family),

@@ -15,6 +15,7 @@ from tests.research.loop.p7_loop_fixtures import (
     compiled_plan,
     negation_plan,
     plan_hypothesis,
+    root_strategy,
 )
 
 
@@ -67,7 +68,7 @@ def test_trial_point_reads_the_p7_plan_condition() -> None:
 def test_a_trial_runs_a_plan_candidate_only_for_its_own_plan() -> None:
     compiled = compiled_plan(negation_plan())
     candidate = StrategyCandidate(
-        spec=compiled.root.spec,
+        spec=root_strategy(compiled),
         strategy=TSMOM.strategy,
         hypothesis_family_id=fx.FAMILY,
         plan_record=P7PlanRecord.from_compiled(compiled),

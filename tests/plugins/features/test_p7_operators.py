@@ -57,23 +57,22 @@ def bar(
     minute: int, volume: int, *, delay: int = 0, symbol: str = "BTC-USDT"
 ) -> FeatureObservation:
     start = T0 + minute * MINUTE
+    values: dict[str, Decimal | int | str] = {
+        "symbol": symbol,
+        "open": Decimal(100),
+        "high": Decimal(101),
+        "low": Decimal(99),
+        "close": Decimal(100),
+        "volume": Decimal(volume),
+        "trade_count": 3,
+    }
     return FeatureObservation(
         observation_key=f"bar:{symbol}:{minute}",
         event_time=start,
         event_end_time=start + MINUTE,
         available_time=start + MINUTE + delay * MINUTE,
         knowledge_time=start + MINUTE + (delay + 1) * MINUTE,
-        values=FrozenMapping(
-            {
-                "symbol": symbol,
-                "open": Decimal(100),
-                "high": Decimal(101),
-                "low": Decimal(99),
-                "close": Decimal(100),
-                "volume": Decimal(volume),
-                "trade_count": 3,
-            }
-        ),
+        values=FrozenMapping(values),
         lineage=SelectedRevisionLineage(
             canonical_table="canonical.bars_1m",
             canonical_revision_id=f"crev-{minute}",
@@ -446,7 +445,7 @@ def test_a_bool_upstream_value_is_refused() -> None:
 
     for bad in (True, False):
         spec = transformation("smooth", window=2)
-        table = {str(VOL1.ref): UpstreamFeature(VOL1, _Text(VOL1, bad))}  # type: ignore[arg-type]
+        table = {str(VOL1.ref): UpstreamFeature(VOL1, _Text(VOL1, bad))}
         provider = P7SmoothSmaProvider((spec,), upstream=table)
         with pytest.raises(FeatureInputError, match="not a Decimal or int"):
             evaluate(provider, spec, bars())
