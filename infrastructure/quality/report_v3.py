@@ -78,7 +78,12 @@ from infrastructure.revision.row_integrity import ACCEPTED, PersistedRowVerifier
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
-__all__ = ["QualityReportV3Error", "QualityReportedV3", "QualityReporterV3"]
+__all__ = [
+    "CANONICAL_V3_IDENTITY_RULE_HASHES",
+    "QualityReportV3Error",
+    "QualityReportedV3",
+    "QualityReporterV3",
+]
 
 _UTC_ZERO: Final = timedelta(0)
 _DAY: Final = timedelta(days=1)
@@ -132,6 +137,9 @@ def _identity_rule_hash_registry() -> Mapping[str, str]:
 
 _IDENTITY_RULE_HASHES: Final = _identity_rule_hash_registry()
 _MAX_IDENTITY_RULE_HASHES: Final = len(_IDENTITY_RULE_HASHES)
+#: Public alias of the registered canonical v3 identity hashes (ADR-0101 §5): the finite set the
+#: bounded Dataset Quality join re-derives report ids with (``CanonicalV3IdentityRegistry``).
+CANONICAL_V3_IDENTITY_RULE_HASHES: Final = _IDENTITY_RULE_HASHES
 
 
 class QualityReportV3Error(Exception):
