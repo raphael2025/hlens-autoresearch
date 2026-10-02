@@ -4,10 +4,13 @@ The same small BTCUSDT / ETHUSDT fixture and walk as ``test_phase1_first_slice.p
 Raw -> Canonical -> PIT -> Research Dataset + manifest -> Representation), with the dataset step on
 the bounded v3 path that new datasets take since ADR-0077 DQ-10:
 
-- the Quality step writes the legacy reports (the v3 build still binds that table in its PIT
-  identity) and the v3 report manifests the v3 build joins: one ``QualityReporterV3``
+- the Quality step writes the v3 report manifests the v3 build joins: one ``QualityReporterV3``
   canonical-partition report per covered partition, built by the production profile mapping
-  (``infrastructure.quality.report_cli.reporter_from_profile``), and the listing-history report;
+  (``infrastructure.quality.report_cli.reporter_from_profile``), and the listing-history report.
+  The main walk also writes the legacy reports first: from contract 2.6.0 (ADR-0109) a v3 build
+  binds the legacy table only because it then has a snapshot. The v3-only variant writes no legacy
+  report at all (a new catalog), and a spec that leaves an existing legacy snapshot unbound is
+  refused;
 - the dataset step is ``open_dataset_pipeline(settings, profile)`` -> ``DatasetBuildPipeline.build``
   over a ``pin_dataset_pit_spec`` spec (the ADR-0101 entry wiring; the catalog opener serves the
   world's catalog, so no DSN is connected);
@@ -41,17 +44,18 @@ from core.contracts.universe import (
     SelectedRevisionLineage,
     UniverseMember,
 )
-from core.domain.base import Kind, Ref, canonical_json
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Kind, Ref, canonical_json
 from infrastructure.canonical.resample import resample_bars
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_EXCHANGE_INFO,
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORT_MANIFESTS,
+    DATA_QUALITY_REPORTS,
     DATASET_EVIDENCE_MANIFESTS,
     DATASET_SELECTION_CHUNKS,
     DATASET_SELECTIONS,
 )
-from infrastructure.dataset.builder import DatasetEvidenceRequest
+from infrastructure.dataset.builder import DatasetEvidenceRequest, DatasetSpecError
 from infrastructure.dataset.factory import bind_profile, open_dataset_pipeline
 from infrastructure.dataset.pinning import pin_dataset_pit_spec
 from infrastructure.dataset.profile import DatasetBuildProfile
@@ -149,9 +153,17 @@ def _stream(
 
 
 def _walk_to_manifest(
-    w: ds.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    w: ds.World,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    legacy_reports: bool = True,
 ) -> tuple[DatasetBuildProfile, DatasetEvidenceRequest, ResearchDatasetEvidenceManifest, str]:
-    """Steps 1-5 and the restart replay; returns the persisted manifest and its snapshot."""
+    """Steps 1-5 and the restart replay; returns the persisted manifest and its snapshot.
+
+    ``legacy_reports=False`` is a v3-only catalog: no legacy Quality report is ever written, so
+    ``quality.data_quality_reports`` has no snapshot and the pinned spec cannot bind it (ADR-0109).
+    """
     _, profile = make_profile(tmp_path)
     _ingest(w)
 
@@ -166,20 +178,24 @@ def _walk_to_manifest(
     eth_bars = archive_rows(c.BARS, "ETH-USDT", c.ARCHIVE_KLINES.table)
     assert len(btc_bars) == len(eth_bars) == KLINE_COUNT
 
-    # The v3 build still requires the legacy report table in its PIT identity
-    # (``DatasetEvidenceBuilder``: "the shared dataset contract requires it"), so the legacy
-    # reports are written first, exactly as the v3 bar / Quality integration supports do.
-    w.report("klines_1m", symbols=(BTC, ETH), listing=True)
+    # From contract 2.6.0 (ADR-0109) the legacy report table is bound iff it has a snapshot when
+    # the build runs; the main walk writes the legacy reports first, exactly as the v3 bar /
+    # Quality integration supports do, the v3-only walk writes none.
+    if legacy_reports:
+        w.report("klines_1m", symbols=(BTC, ETH), listing=True)
     report_ids = _v3_quality(w, tmp_path, profile)
+    assert (w.h.head(DATA_QUALITY_REPORTS.table) is not None) is legacy_reports
     assert len(report_ids) == 3  # BTC/DAY, ETH/DAY, the listing-history report
 
     # ---- step 5: the v3 dataset through the ADR-0101 entry wiring ----
     patch_catalog(monkeypatch, w)
     request = _request(w)
     assert DATASET_SELECTION_CHUNKS.table not in request.pit.snapshot_bindings
+    assert (DATA_QUALITY_REPORTS.table in request.pit.snapshot_bindings) is legacy_reports
     with open_dataset_pipeline(settings_for(w), profile) as opened:
         summary = opened.pipeline.build(request)
         manifest = summary.manifest
+        assert manifest.schema_version == CONTRACT_SCHEMA_VERSION == "2.6.0"
         assert not summary.replayed and not summary.manifest_replayed
         assert summary.row_count == manifest.row_count == 2 * KLINE_COUNT
         assert manifest.data_type == "klines_1m"
@@ -304,6 +320,50 @@ def test_phase1_first_slice_archive_to_representation_v3(
     assert request_again.model_dump_json() == request_first.model_dump_json()
     result_again = run_feature(BarLogReturnProvider((feature,)), feature, request_again)
     assert result_again.result_hash == result_first.result_hash
+
+
+def test_phase1_first_slice_v3_on_a_catalog_without_legacy_quality_reports(
+    w: ds.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0109 acceptance (a): only v3 report manifests, the legacy table never written."""
+    _, request, manifest, manifest_hash = _walk_to_manifest(
+        w, tmp_path, monkeypatch, legacy_reports=False
+    )
+    assert w.h.head(DATA_QUALITY_REPORTS.table) is None
+    bound = manifest.point_in_time.snapshot_bindings
+    assert DATA_QUALITY_REPORTS.table not in bound
+    assert bound[DATA_QUALITY_REPORT_MANIFESTS.table] == w.h.head(
+        DATA_QUALITY_REPORT_MANIFESTS.table
+    )
+    assert manifest.schema_version == "2.6.0" and manifest.content_hash() == manifest_hash
+    assert manifest.point_in_time == request.pit
+
+
+def test_a_v3_build_refuses_a_spec_that_leaves_an_existing_legacy_snapshot_unbound(
+    w: ds.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0109 acceptance (b): the legacy table has a snapshot, the spec does not bind it."""
+    _, profile = make_profile(tmp_path)
+    _ingest(w)
+    w.report("klines_1m", symbols=(BTC, ETH), listing=True)
+    _v3_quality(w, tmp_path, profile)
+    assert w.h.head(DATA_QUALITY_REPORTS.table) is not None
+    patch_catalog(monkeypatch, w)
+    pinned = _request(w)
+    bound = dict(pinned.pit.snapshot_bindings)
+    del bound[DATA_QUALITY_REPORTS.table]
+    request = DatasetEvidenceRequest(
+        pinned.universe,
+        pinned.pit.model_copy(update={"snapshot_bindings": bound}),
+        pinned.data_type,
+        pinned.start,
+        pinned.end,
+    )
+    with open_dataset_pipeline(settings_for(w), profile) as opened:
+        with pytest.raises(DatasetSpecError, match=r"data_quality_reports.*ADR-0109"):
+            opened.pipeline.build(request)
+    assert w.h.head(DATASET_SELECTION_CHUNKS.table) is None  # nothing was committed
+    assert w.h.rows(DATASET_EVIDENCE_MANIFESTS) == []
 
 
 # =========================================================================================

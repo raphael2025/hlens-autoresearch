@@ -1,5 +1,5 @@
 """D-NET committed data replayed across published contract versions (ADR-0052 versioned replay,
-M2 gate): earlier-version data is re-run by the current 2.5.0 code.
+M2 gate): earlier-version data is re-run by the current 2.6.0 code.
 
 The D-NET capability steps (collect, ingest, normalize, report, pit, f2) run offline — the mock
 archive site of ``test_dnet_capability_run`` and a temporary SQLite catalog; no download, no REST
@@ -120,7 +120,7 @@ def test_dnet_data_committed_earlier_replays_unchanged_now(
     monkeypatch: pytest.MonkeyPatch,
     old: str,
 ) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
     monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)

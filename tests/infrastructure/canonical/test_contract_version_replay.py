@@ -265,7 +265,7 @@ prior_versions = pytest.mark.parametrize("old", PRIOR)
 
 
 def test_the_bump_is_real() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (*PRIOR, CONTRACT_SCHEMA_VERSION)
 
 

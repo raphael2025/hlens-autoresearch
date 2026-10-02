@@ -92,7 +92,10 @@ policy / parser 绑定；universe 以 `UniverseSpecBinding` 绑定，listing 历
 manifest 只含固定大小字段（自身 `DatasetRef`、完整 `PointInTimeSpec`、universe 绑定、dataset 规则绑定、`data_type`、
 `selection_id`、行数与定长 chunk 参数），2.3/2.4 manifest 为六条、2.5+ manifest 为七条内容寻址有序 evidence stream（members / exclusions / lineage /
 evidence_gaps / quality_reports / chunk_proofs）以根对象 `key + sha256 + size` 引用，经 manifest 内容哈希承诺整条流的
-顺序、计数与内容；2.5.0+ 增加 `pit_conflicts` 第七流（成功 manifest 必须为空，失败结果可引用已完成的冲突证据树）。对象键只由内容
+顺序、计数与内容；2.5.0+ 增加 `pit_conflicts` 第七流（成功 manifest 必须为空，失败结果可引用已完成的冲突证据树）。
+2.6.0+（[ADR-0109](../adr/0109-v3-manifest-legacy-quality-binding.md)）的上游绑定必须含 `canonical.instrument_listings` 与
+`quality.data_quality_report_manifests`，旧表 `quality.data_quality_reports` 只在构建运行时有 snapshot 时才必须绑定（重放按首次构建判定）；
+< 2.6.0 的 manifest 仍须绑定旧表。对象键只由内容
 SHA-256 决定（`research/dataset-evidence/v1/<sha256>.jsonl`），不含实现生成的 URI。契约同样只证明结构；对象读取、逐项核对与
 streaming verifier 属 `infrastructure/dataset/`（ADR-0077 §5 / §6，实现在 `infrastructure/dataset/`）。
 
@@ -302,7 +305,8 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 
 - `simulation_time` 或 simulation 区间；`knowledge_cutoff`；
 - 读取的每一张相关 Iceberg 表的 `snapshot_id`（至少 `canonical.trades` / `canonical.bars_1m` 中实际使用者、`canonical.instrument_listings`、
-  `quality.data_quality_reports`，以及 lineage 校验所需的 Raw 表）；
+  `quality.data_quality_reports`（v3 自契约 2.6.0 起只在其有 snapshot 时绑定，质量证据来自
+  `quality.data_quality_report_manifests`，ADR-0109），以及 lineage 校验所需的 Raw 表）；
 - PIT spec 版本与内容哈希；availability policy 与 precedence policy 的 ID + 版本；parser 版本；
 - universe spec `name + SemVer + content hash`。
 
