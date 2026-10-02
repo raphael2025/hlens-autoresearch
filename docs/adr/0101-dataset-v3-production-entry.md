@@ -67,3 +67,11 @@ DQ-9 的**数值**仍 OPEN（ADR-0077），本 ADR 不选择任何数值。
   1. v3 构建（`DatasetEvidenceBuilder` 的请求检查）仍要求 PIT spec 绑定旧表 `quality.data_quality_reports`；生产 catalog 若只有 v3 报告、旧表无快照，构建被拒。v3 e2e 与既有 v3 测试支撑一样先写旧版报告。
   2. v3 构建的 Quality join 还需要 listing-history 报告（`ListingHistoryQualityReporterV2`）；其限值（prefix / metadata / hash chunk 等）不在 `DatasetBuildProfile` 中，§6 的 `report_cli` 只覆盖 canonical-partition v3 报告，因此生产侧尚无 listing 质量报告入口。
 - 检查（仅定向运行）：见各 commit 正文；ruff check / format --check 与 mypy（strict）均通过。
+
+## 修订 1（2026-10-02，PM）：v3 构建的质量来源绑定与 listing 质量入口
+
+实现记录中的两项事实是生产阻断，按以下决定处理（不改契约、不选 DQ-9 数值、不放宽任何质量要求）：
+
+1. **质量来源按其实际使用的表绑定。** v3 构建（`DatasetEvidenceBuilder` / `DatasetBuildPipeline`）的质量 join 读取哪张表，PIT spec 就必须绑定哪张表：分区报告来自 ADR-0093 的 v3 manifest 表时，必须绑定该表（及其 evidence streams 所在位置的规则所要求的表）；旧表 `quality.data_quality_reports` 改为与 Raw evidence / 缺口表相同的规则——**构建运行时它有 snapshot 才必须绑定**，没有 snapshot 时不得要求（也不得为满足要求而写旧版报告）。每个覆盖分区仍必须恰有一份在绑定 snapshot 上可重新推导的报告；同一分区同时有旧版与 v3 报告时，以 ADR-0093 已定的优先 / 兼容规则判定，规则不唯一即失败关闭。既有 v2 / 旧版回放结果按位不变。
+2. **listing 质量报告入口。** `DatasetBuildProfile` 增加 listing-history 质量报告所需的限值段（与现有分区质量限值同样：显式、无默认值、缺失即拒绝；`schema_version` 按 additive 升 minor，旧 profile 文件读取时若缺该段，则只有不需要 listing 报告的命令可用，构建命令拒绝并说明原因）。`infrastructure.quality.report_cli` 增加 listing 报告子命令（plan / report / verify 语义与分区报告一致），限值全部来自 profile。
+3. 测试：v3-only catalog（旧表无 snapshot）上端到端构建成功；旧表有 snapshot 而 spec 未绑定时拒绝；同分区新旧报告冲突时失败关闭；旧 profile 缺 listing 段时构建拒绝；既有测试断言不变（H4）。
