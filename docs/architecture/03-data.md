@@ -251,6 +251,7 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 
 有界 `pyarrow.Table` microbatch + 稳定 batch id + 可从 Raw / staging 重建；不向 partitioned 表交付不可重放的 `RecordBatchReader`；
 每表 / 分区单 writer；commit 冲突按 batch id 幂等重试；orphan 只由显式 maintenance 清理（ADR-0023 §7）。
+提交粒度（ADR-0108）：Raw 归档元素与 Canonical 写入为**一个逻辑单元一个 snapshot**；microbatch 只决定处理与暂存数据文件切分，不决定提交粒度；既有逐微批提交的历史只读兼容。
 
 ### 7.3 来源与 policy 标识符
 
