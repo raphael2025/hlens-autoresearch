@@ -105,6 +105,7 @@
 | [0098](0098-p11-authority-registry-and-resolver.md) | P11 生命周期权威登记处、真实 source 与 metric 解析 | Accepted（2026-09-30；PM）；取代 ADR-0080 的 BLOCKED 部分；实现待验收 |
 | [0099](0099-p7-time-series-rank-quantile.md) | P7 transformation 之 rank / quantile 时间序列语义 | Accepted（2026-09-30；PM）；关闭 ADR-0082 最后 OPEN 项；仅纯 lowering；§5/§6 被 ADR-0100 §1/§2 修订 |
 | [0100](0100-complete-remaining-foundation-code.md) | 补完剩余底层代码（Raphael 直接指令） | Accepted（2026-09-30）；P7 执行 Provider、横截面 rank/quantile、P11 指标与默认环境、ADR-0051 政策表、E1 有界化、P12 可选提案；运行开关默认关闭；修订 1：temporal 滞后 / 发生时刻窗口 / 上游哈希绑定（计划格式 1.3.0） |
+| [0102](0102-state-run-entry.md) | State 运行、读回与诊断入口 | Accepted（2026-10-02；PM，于 phase/1 重新接受）：`research.states.run_cli compute`、`infrastructure.state.run_cli show/list`、`research.states.report_cli`；默认零副作用；不接全链路输入 / worker / API |
 | [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | Accepted（2026-10-02；PM 依 Raphael 直接指令）：方案 A，一个逻辑单元 = 一个 snapshot（Canonical 与 Raw 归档元素），infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；未实现；残余"随单元数 K 增长"记为 D-META-AGE |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
