@@ -2396,21 +2396,43 @@ class CanonicalNormalizer:
             pin.verifier.verify_rest_elements(channel.element, channel.data_type, raw_rows)
 
     def _prove_source(self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str) -> None:
-        """A unit without element revisions must still name one committed source revision."""
+        """A unit without element revisions must still name one committed source revision.
+
+        An archive revision's rows are all its object's lines (``_check_positions``); with none
+        committed, an object that has lines is a store that died before its element commit (one
+        unit snapshot under ADR-0108, or before the first batch of the old layout): incomplete,
+        never an empty unit.
+        """
+        archive = channel.name == "archive"
+        columns = ("revision_id", "symbol") if archive else ("revision_id",)
         count = 0
+        found_row: Mapping[str, Any] | None = None
         with _scan_rows(
             pin.catalog,
             channel.source.table,
-            columns=("revision_id",),
+            columns=columns,
             row_filter=_equals("revision_id", source_revision_id),
         ) as found:
-            for _ in found:
+            for row in found:
+                found_row = row
                 count += 1
                 if count > 1:
                     break
         if count != 1:
             raise CanonicalNormalizeError(
                 f"{source_revision_id} is not one committed revision of {channel.source.table}"
+            )
+        if not archive:
+            return
+        assert found_row is not None
+        expected = pin.verifier.archive_row_count(
+            channel.data_type, found_row["symbol"], source_revision_id
+        )
+        if expected:
+            raise CanonicalUnitIncomplete(
+                f"{channel.element.table}: archive revision {source_revision_id} has {expected} "
+                "line(s) but none is committed: its element commit never happened (rerun the "
+                "store)"
             )
 
     def _committed_plan(
