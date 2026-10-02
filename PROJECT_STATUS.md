@@ -9,16 +9,16 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24），**未验收** |
-| 当前子阶段 | E1-CAP-1 正式矩阵数值 PASS，但元数据随批次数线性增长、未关闭；ADR-0108 已于 2026-10-02 决定（一个逻辑单元一个 snapshot）。下一关键路径：实现 ADR-0108，然后重跑 E1-CAP-1（含预填充历史场景）。 |
+| 当前子阶段 | 第三轮代码收口完成（2026-10-02）：ADR-0101 ~ 0106、0108 ~ 0110 全部实现并整合到 `phase/1@1536a409`，无剩余代码缺口。下一关键路径：PostgreSQL 用例实跑 → 合入 `main` → 在 `main` 上重跑 E1-CAP-1（含预填充历史场景）。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`） |
-| 代码基线 | `phase/1` 经 PR #20、#21（2026-10-01）与 #22（2026-10-02）整合入 `main`；PR #17–#19 此前已合入 |
-| 契约 | 2.5.0；current Schema 148 份 |
-| 验证状态 | **全仓门禁通过**（2026-10-01，整合前 `phase/1` 工作树）：pytest 9313 passed / 144 skipped / 0 failed；PostgreSQL 启用的数据库用例另行实跑并修复；ruff、format、mypy 全部通过。详见 [W1 门禁修复记录](docs/reviews/2026-10-01-w1-gate-repair.md)。E1-CAP-1 容量与各 Phase 验收仍未完成。 |
+| 代码基线 | `phase/1@1536a409`（本轮整合，待经 PR 合入 `main`）；`main@d9ddd67`（PR #22） |
+| 契约 | **2.6.0**（ADR-0109）；current Schema 148 份 |
+| 验证状态 | **全仓门禁通过**（2026-10-02，`phase/1@1536a409`，分四段运行）：pytest 10570 passed / 148 skipped / 0 failed（2 项因 `/tmp` tmpfs 写满失败，单独重跑通过）；ruff、format、mypy（884 文件）全部通过。PostgreSQL 启用用例实跑中。E1-CAP-1 容量与各 Phase 验收仍未完成。 |
 | 最后更新时间 | 2026-10-02 |
 
 Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（ADR-0020），契约 2.0.0 随之发布，此后破坏性契约变化必须升 major 并走 ADR。
 
-远程为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025），CI 未配置。2026-10-01 核对时 PR #17–#19 均为 MERGED（#19 非 Draft）、无开放 PR；远端有 `main` 与已合并 PR #19 源分支 `claude/modest-bardeen-zbu3vk`。此前 17 个 Codex 临时分支 tip 已归档并清理。本地快照为 13 个分支 / 13 个 worktree；4 个 Claude worktree 有未提交改动，属于进行中，不算主线完成。计数为本轮文档核对快照。
+远程为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025），CI 未配置。2026-10-02 清理后本地分支只有 `main` 与 `phase/1`；2026-10-01 分支轮的 11 个候选分支 / worktree 已核对（工作已在 `phase/1` 以 Accepted ADR 重新落地，或属 Rejected 的 ADR-0107），tip 与未提交内容归档于 `refs/archive/2026-10-02/` 后删除。另有门禁与探针用的分离 worktree。
 
 ## 2. 当前进度
 
@@ -26,20 +26,20 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入、标签 / 资产检索已实现；种子的标签 / 资产仍需具名人工审阅；未验收 |
-| 1 | Market Representation | 🔄 采集 → 原始 → 规范 → 时点选择 → 质量 → 数据集链路已实现，D3E 已验收、D4 已关闭；归档与 Raw 窗口重复读取已消除（2026-10-01）；上市政策 1.1.0 已写入 BTCUSDT / ETHUSDT 下界 2017-08-17；**E1-CAP-1 未关闭（ADR-0108 已决定、待实现），阻断验收** |
+| 1 | Market Representation | 🔄 全链路已实现；单元级提交（ADR-0108）与 v3 生产入口（ADR-0101 / 0109）已实现；**E1-CAP-1 待在 `main` 上重跑，阻断验收** |
 | 2 | Market State Engine | 🧱 框架与持久化已实现；未验收 |
 | 3 | Event & Interaction Engine | 🧱 已实现；真实 Catalog 尚未建表；未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 已实现；Profile 数值未冻结；未验收 |
 | 5 | Strategy Library + 回测 | 🧱 已实现；晋升链今天拒绝所有策略，无策略晋升 |
 | 6 | State × Strategy | 🧱 已实现；未验收 |
-| 7 | Dynamic Discovery | 🧱 六类组合算子语义已接受；时间事件规则已细化（ADR-0100 修订 1）；执行开关默认关闭。横截面 `rank_cs` / `quantile_cs` 已可在显式 pinned universe 下编译为专用根 Provider（2026-10-01 收口），不接单序列组合器或 Research Loop |
+| 7 | Dynamic Discovery | 🧱 计划绑定、准入交接、拒绝审计（ADR-0103）与重启恢复（ADR-0110）已实现；执行开关默认关闭；未验收 |
 | 8 | Validation & Robustness | 🧱 已实现；未验收 |
 | 9 | Synthetic Market Lab | 🧱 已实现；只出证据、不选数值；未验收 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 已实现（仅纸面）；未验收 |
-| 11 | Continuous Research Loop | 🧱 权威生命周期登记处、钉定数据源、监控指标闭集 2.0.0 与默认运行环境已写；PR #19 增加只读证据强度 / 提案审计视图；G5 与仅报告类指标仍拒绝；真实运行需要部署设置；未测试 |
+| 11 | Continuous Research Loop | 🧱 运维收口（ADR-0105）：Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator 与 resolver / 环境测试；真实运行需要部署设置与冻结 Profile；未验收 |
 | 12 | Strategy Evolution | 🧱 合并规则失败即拒；循环内替换提案为可选触发（默认关闭），PR #19 增加只读审计视图；进入 PAPER 仍须人工批准 |
 | 13 | Production Adaptive System（仅模拟） | 🧱 已实现；实盘在结构上被拒绝 |
-| 14 | Technology Migration | 🧱 框架已实现；尚无具体迁移目标 |
+| 14 | Technology Migration | 🧱 迁移目标 = 独立参考回测引擎（ADR-0106），已实现；未验收 |
 | apps | api / worker / web | 🧱 只读 API、worker、Web 页面已实现；未做浏览器验收 |
 
 图例：🧱 = 代码已写、未验收；阈值 / Profile 数值一律未定；实盘相关一律不实现。
@@ -54,14 +54,13 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 - ✅ 2026-09-30 第一轮补全：整合线、ADR-0098（P11 权威）/ ADR-0099（P7 时间序列排名 / 分位）、深度审查修复，经 PR #17 合入 `main`（未测试）
 - ✅ 2026-10-01 第二轮补全：ADR-0100 批次与审查修复，经 PR #18 合入 `main`（未测试）
 - ✅ 2026-10-01 PR #19 合入 P11 权威证据与 P12 提案审计只读视图（改动含测试文件；最新主线未统一运行门禁）
+- ✅ 2026-10-02 第三轮代码收口：ADR-0101 ~ 0106、0108 ~ 0110 实现并整合到 `phase/1`，契约升至 2.6.0；全仓门禁通过；旧分支轮候选归档清理
 
 ## 4. 当前正在做
 
-- ✅ 四项主线代码缺口全部收口（2026-10-01）：E1 归档 spool 复用（加固资源释放）、E1 Raw 窗口复用（新实现）、DQ-10 v2 重放（加固防止写出新 v2 manifest）、P7 横截面执行接线（加固拒绝直接引用）。
-- ✅ W1 全仓门禁首次全绿：修复首测暴露的约 250 个陈旧测试 / 夹具与 1 个真实缺陷（研究循环哈希记录含 float）；未删除断言、未放宽容差、未改动任何固定哈希值，逐项依据见 [W1 门禁修复记录](docs/reviews/2026-10-01-w1-gate-repair.md)。
-- ✅ E1-CAP-1 正式探针（`main@5c3b516`）暴露 replay / resume 的证明调查逐窗口两次 Canonical 扫描、每次遍历全部 manifest，耗时随 N 二次增长；新增并收口 E1-CANONICAL-WINDOW-REUSE（40k replay 198 s → 48 s），RSS 增长不变或略降。
-- ✅ E1-CAP-1 正式矩阵在 `main@50d6bb6` 完整跑完：**数值 PASS**（证据级配置），但 Iceberg 元数据项随批次数线性增长（`resume` 增长 31.2 / 32 MiB），不满足 E1 review 的关闭标准，E1-CAP-1 **不关闭**。见[正式探针记录](docs/reviews/2026-10-02-e1-cap1-main-50d6bb6.md)。
-- ✅ ADR-0108 已决定（2026-10-02，PM 依 Raphael 指令）：方案 A，Canonical 与 Raw 归档元素都改为一个逻辑单元一个 snapshot；只改 infrastructure，不改契约；旧历史只读兼容。**尚未实现。**
+- ✅ 第三轮代码收口（2026-10-02，`phase/1@1536a409`）：单元级提交（ADR-0108）及审查发现的两处修复（窄证明须复核单元已提交内容；无已提交元素的归档单元判为不完整）、Dataset v3 生产入口（ADR-0101，含 listing 质量报告入口）、契约 2.6.0 旧质量表绑定（ADR-0109）、State 入口（ADR-0102）、P7 计划绑定与重启恢复（ADR-0103 / 0110）、paper deviation 绑定（ADR-0104）、P11 运维收口（ADR-0105）、P14 迁移目标（ADR-0106）。明细见[剩余代码计划](docs/plans/2026-09-28-remaining-code-gaps.md)。
+- ✅ 全仓门禁（四段）：10570 passed / 148 skipped / 0 failed；ruff、format、mypy 通过。
+- 🔄 PostgreSQL 启用用例实跑；随后经 PR 合入 `main`，再在 `main` 上重跑 E1-CAP-1（含 K = 0 / 1000 / 3000 预填充历史）。
 
 ## 5. 下一步
 
@@ -73,7 +72,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 ### Claude Code 需要做
 
-- 实现 ADR-0108（单元级提交），按其第 9 条验收；随后重跑 E1-CAP-1（含预填充历史场景 K = 0 / 1000 / 3000）；32 MiB 门槛不变
+- 合入 `main` 后按 ADR-0108 §9(d)(e) 重跑 E1-CAP-1（含预填充历史场景 K = 0 / 1000 / 3000）；32 MiB 门槛不变
 - 逐 Phase 验收仍是独立工作；全仓门禁通过不等于 Phase 验收
 
 ## 6. 当前待决策
@@ -84,23 +83,22 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | ID | 事项 | 状态 |
 |---|---|---|
-| E1-CAP-1 | Phase 1 完整进程 32 MiB 容量门 | `main@50d6bb6` 正式矩阵数值 PASS（每 stage 增长 ≤ 31.2 MiB）；元数据项随批次数线性增长，不满足关闭标准；待 ADR-0108 实现后重跑，阻断 Phase 1 验收 |
+| E1-CAP-1 | Phase 1 完整进程 32 MiB 容量门 | ADR-0108 已实现（2026-10-02）；待合入 `main` 后重跑正式矩阵与预填充历史场景，阻断 Phase 1 验收 |
 | D-META-AGE | 单元级提交后，Iceberg metadata 仍随表的历史单元数 K 线性增长 | ADR-0108 残余问题；日归档回填到 2017 年时，每张 Canonical 表约 6,700 单元，解析后 metadata 约 130–200 MiB（估算）；等 ADR-0108 第 9(e) 条的 K 轴数据出来后另立 ADR；不阻断 E1-CAP-1 随 N 的判定，但阻断生产规模回填 |
-| W1 | 全仓测试门禁 | ✅ 2026-10-01 全绿（9313 passed / 144 skipped；PostgreSQL 用例另行实跑）；之后每次合并须复跑 |
+| W1 | 全仓测试门禁 | ✅ 2026-10-02 `phase/1@1536a409` 全绿（10570 passed / 148 skipped）；PostgreSQL 用例实跑中；之后每次合并须复跑 |
 | P11-RUN | P11 真实运行 | 需要部署设置 |
 | P0.5-REVIEW | 知识库种子标签 / 资产 | 需具名人工审阅 |
-| P14-TARGET | 技术迁移 | 无具体迁移目标 |
 | D-CATALOG-TABLES | 真实 Catalog 建 `event.*` / `state.*` 表 | 已授权，尚未执行 |
 | D-09 | Profile 数值（TBD-1 ~ TBD-5） | 未冻结，Phase 4 校准后决定 |
-| D-P11-WINDOW | 滚动循环与固定日历 Profile 如何配合 | ADR-0049 遗留，开放 |
+| STAGING-RETAIN | 本地存储 publish 后保留 staging 条目，inode 只增不减 | FOLLOW-UP，清理策略须另立 ADR（见剩余代码计划） |
 
-**已决定（仅列索引，详见 ADR 与 Git 历史）**：D-0108 → ADR-0108；D-P11-AUTH → ADR-0098；D-P7-OPS → ADR-0088 / 0099 / 0100；P12-LOOP → ADR-0100 §7（取代原暂缓决定）；D-LIST → ADR-0051（政策 1.1.0）；D-HIST → ADR-0032；D-QGAP → ADR-0031；D-33 → ADR-0027；D-FLOAT / D-PFIELDS / D-CTRL → ADR-0052；D-VFAIL → ADR-0053；D-PARTIAL → ADR-0054；E1 各子决定 → ADR-0075 / 0077 / 0093 / 0094 / 0097；D-STATE-INC 暂缓（ADR-0035）。
+**已决定（仅列索引，详见 ADR 与 Git 历史）**：D-V3-LEGACY-BIND → ADR-0109；P7 重启恢复 → ADR-0110；D-P11-WINDOW → ADR-0105；P14-TARGET → ADR-0106；D-0108 → ADR-0108；D-P11-AUTH → ADR-0098；D-P7-OPS → ADR-0088 / 0099 / 0100；P12-LOOP → ADR-0100 §7（取代原暂缓决定）；D-LIST → ADR-0051（政策 1.1.0）；D-HIST → ADR-0032；D-QGAP → ADR-0031；D-33 → ADR-0027；D-FLOAT / D-PFIELDS / D-CTRL → ADR-0052；D-VFAIL → ADR-0053；D-PARTIAL → ADR-0054；E1 各子决定 → ADR-0075 / 0077 / 0093 / 0094 / 0097；D-STATE-INC 暂缓（ADR-0035）。
 
 ## 7. 当前风险
 
 - ⚠️ 全仓门禁已通过，但测试通过不等于 Phase 验收；E1-CAP-1 与各 Phase 验收矩阵仍未完成
 - ⚠️ 授权文件内部冲突（§6 第一项）未消除前，后续代理可能读到相互矛盾的指挥关系
-- ⚠️ Iceberg metadata 无界增长：ADR-0108 已决定按单元提交，但尚未实现；实现后仍随历史单元数线性增长（D-META-AGE），生产规模回填前须再决定
+- ⚠️ Iceberg metadata：ADR-0108 已实现按单元提交；仍随历史单元数线性增长（D-META-AGE），生产规模回填前须再决定
 - ⚠️ 官方资料不能证明历史行情的公开时刻：不绑定假设政策时，早于本机采集的历史不可用于回测
 - ⚠️ 上市政策 1.1.0 只是研究假设，不能证明真实上市史或排除幸存者偏差
 - ⚠️ 契约层只校验结构与声明：传递依赖闭包、`LlmCall` 调用登记完整性、注册存在性、哈希与真实内容一致、泄漏检测、Profile 已冻结等仍依赖运行时服务
@@ -126,17 +124,17 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-10-02 | ADR-0108 Accepted | Canonical 与 Raw 归档元素改为一个逻辑单元一个 snapshot；只改 infrastructure、不改契约；待实现后重跑 E1-CAP-1；残余记为 D-META-AGE |
-| 2026-10-02 | E1-CAP-1 正式矩阵完成（`main@50d6bb6`） | 数值 PASS（证据级）；元数据线性增长使其不能关闭；ADR-0108 Proposed |
-| 2026-10-01 | E1 Canonical 窗口复用 | replay / resume 调查不再逐窗口扫 Canonical（每单元一次 block spool + 一次 revision 索引）；修复 E1-CAP-1 测量中暴露的二次耗时 |
-| 2026-10-01 | phase/1 → main 整合（PR #20） | 四项代码缺口收口与 W1 修复进入主线 |
-| 2026-10-01 | W1 全仓门禁全绿 | pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过；修复研究循环哈希记录含 float 的真实缺陷 |
+| 2026-10-02 | 第三轮代码收口 + 全仓门禁 | ADR-0101 ~ 0106、0108 ~ 0110 实现整合于 `phase/1@1536a409`；门禁 10570 passed / 0 failed |
+| 2026-10-02 | 契约 2.6.0（ADR-0109） | v3 manifest 的旧质量表"有 snapshot 才绑定"；旧版本规则与哈希不变 |
+| 2026-10-02 | ADR-0108 审查修复 | 窄证明复核单元已提交内容（伪造行回归）；无已提交元素的归档单元判为不完整 |
+| 2026-10-02 | ADR-0108 Accepted | Canonical 与 Raw 归档元素改为一个逻辑单元一个 snapshot；只改 infrastructure、不改契约 |
+| 2026-10-02 | E1-CAP-1 正式矩阵完成（`main@50d6bb6`） | 数值 PASS（证据级）；元数据线性增长使其不能关闭 |
 
 ## 10. 下一阶段进入条件
 
 **Phase 0 关闭条件：全部满足**（2026-09-24）——宪法 1.0.0 Approved 且无数值阈值；Profile 与实验元数据契约已定义；核心实体契约与 Schema 导出（收口时 38 份，现为 148 份，契约 2.5.0）；状态机只允许定义的转移；契约层无基础设施依赖；本地测试命令可运行。
 
-**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足。当前 #1 ~ #12 与 #17 满足；全仓门禁已于 2026-10-01 通过；E1-CAP-1 容量门未完成。
+**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足。当前 #1 ~ #12 与 #17 满足；全仓门禁 2026-10-02 通过；E1-CAP-1 容量门待在 `main` 上重跑。
 
 ## 11. 给 Raphael 的下一步
 
@@ -150,7 +148,7 @@ Phase 0 已于 2026-09-24 关闭：研究宪法发布为 `1.0.0 / Approved`（AD
 
 > Claude 下一步可以执行什么？
 
-1. 实现 ADR-0108（单元级提交，Canonical + Raw 归档元素），完成其第 9 条 (a)–(f) 验收，再重跑 E1-CAP-1 正式矩阵与预填充历史场景。
+1. 合入 `main` 后重跑 E1-CAP-1 正式矩阵与预填充历史场景（ADR-0108 §9(d)(e)），据结果关闭或另立 ADR。
 2. 按 roadmap 逐 Phase 准备验收证据；全仓门禁通过不等于验收，每次合并前复跑门禁。
-3. 未合入 worktree 候选（P2 / P10 / P11 / P14 等）仍按模块计划逐项审阅，不整支合并、不把 branch-only ADR 当授权。
+3. FOLLOW-UP：P11 解析重复复核同一 manifest、本地存储 staging 条目保留、D-META-AGE，各自需要时另立任务 / ADR。
 4. 真实 Catalog 建表仍是独立运行操作；不得实盘、不猜 Profile 数值、不打开 P7 执行或 P12 循环内提案开关。

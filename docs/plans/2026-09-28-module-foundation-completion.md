@@ -4,6 +4,7 @@
 
 ## 当前基线
 
+- **2026-10-02 第三轮**：ADR-0101 ~ 0106、0108 ~ 0110 的实现全部整合到 `phase/1`（模块表与状态见[剩余代码计划](2026-09-28-remaining-code-gaps.md)「本轮模块」）；无剩余 `CODE_GAP`。2026-10-01 的分支轮候选已核对、归档（`refs/archive/2026-10-02/`）并删除。下一步：门禁 → 合入 `main` → E1-CAP-1 重跑。下表各行已按本轮更新。
 - **2026-10-01 更新**：四项任务卡（E1-ARCHIVE-REUSE、E1-RAW-WINDOW-REUSE、E1-V2-REPLAY、P7-CS-EXEC）均已收口（`fe842b3`、`63d09a4`），全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed；ruff / format / mypy 通过），随 PR #20 整合入 `main`；见 [W1 门禁修复记录](../reviews/2026-10-01-w1-gate-repair.md)。下列较早基线描述保留作历史；E1-CAP-1 与 Phase 验收仍开放。
 - 代码权威基线为 `main@b5f80fe`，且 `origin/main` 同步；PR #17–#19 均已合入，GitHub 当前无开放 PR，PR #19 为 `MERGED`、非 Draft。主线最新 HEAD 未运行全仓门禁或 Phase 验收。
 - 本地快照为 13 个分支 / 13 个 worktree；当前根 worktree 在 `phase/1@4c2356c`，有计划 / 状态文档改动；4 个 Claude feature worktree 有未提交文件，详见下表。计数为 2026-10-01 快照。
@@ -18,18 +19,18 @@
 | Phase / 模块 | `main@b5f80fe` 状态 | 未合入工作 / 缺口 | 依赖与边界 |
 |---|---|---|---|
 | P0.5 Knowledge | 实现已在主线，未验收 | 本地 `phase/1` 有 126 项定向回归结果，未合入；种子 tags/assets 等待具名人工审阅 | 不自动补人工标签；golden hash 属后续验证。 |
-| P1 Data / Catalog / Normalizer | ADR-0075/0076/0100 的 bounded scan、ID stream 与严格归档解析路径已在主线；E1 archive 与 Raw window 有重复读取缺口，容量未验证 | archive / Raw window 复用已收口（2026-10-01）；`feature/e1-catalog`、`feature/e1-ingest`、`feature/e1-listing` 有重叠 Catalog/E1 候选待审 | 依次复核 archive reuse 与 Raw window reuse；多 archive 顺序处理 / 关闭；P1/E1 与 Dataset / `core/` 契约任务串行。候选 probe 不作为主线容量证据。 |
-| P1 Dataset / Quality | ADR-0077/0093/0094 的 v3 路径已在主线；DQ-10 v2 replay 关联缺陷仍在 main | DQ-10 v2 replay 已收口（2026-10-01）；`feature/p1-entry` 有未提交 CLI / factory / pinning / profile / identity registry | DQ-10 修复见唯一缺口清单；不得恢复新 v2 写入；Dataset 与 `core/` 契约改动串行。 |
-| P2 State | 计算 / 持久化路径在主线，未验收 | `feature/p2-state` 及 P11 worktree 有 State CLI / report 候选 | 先拆分 P2 与 P11 共享改动；branch-only ADR 不构成 main 授权；契约任务不得并行。 |
+| P1 Data / Catalog / Normalizer | ADR-0075/0076/0100/0108 已实现：单元级提交、窗口复用、窄证明复核单元内容、无元素归档判不完整 | 无代码缺口；E1-CAP-1 待在 `main` 上重跑（含预填充历史） | 容量结论只来自正式探针；D-META-AGE 待 K 轴数据 |
+| P1 Dataset / Quality | v3 生产入口（ADR-0101）与契约 2.6.0 旧质量表绑定规则（ADR-0109）已实现 | 无代码缺口；DQ-9 数值仍 OPEN | 不选 DQ-9 数值；v2 写路径保持禁用 |
+| P2 State | run / show / list 与诊断报告（ADR-0102）已实现 | 无代码缺口 | 真实 Catalog `state.*` 建表是运行操作 |
 | P3 Event / P4 Outcome | Provider / 存储 / 操作入口在主线，未验收 | 无已确认可直接执行的普通代码缺口；Catalog 建表是运行操作 | 依赖 Phase 1 数据；不以本计划代替运行操作或验收。 |
 | P5 Strategy / P6 Matrix | 研究与验证代码在主线，未验收 | 未发现已批准的直接实现缺口；Profile 数值与 Promotion 是决策 / 验收门 | 不猜 Profile，不绕过 Promotion / Validation。 |
-| P7 Discovery | ADR-0088/0099/0100 语义和 Provider 在主线；compiler 对 `rank_cs` / `quantile_cs` 仍 fail closed | P7-CS-EXEC 已收口（2026-10-01）；`feature/p7-bind` 有独立 binding / evidence 候选待审 | P7-CS-EXEC 单独执行，binding 候选另审；不得与 E1 或 `core/` 并行；跨类型组合保持 fail closed。 |
+| P7 Discovery | 计划绑定、PREPARE 证据、拒绝审计、准入交接（ADR-0103）与持久化恢复（ADR-0110）已实现 | 无代码缺口；执行开关默认关 | 验收前不打开开关 |
 | P8 Robustness / P9 Calibration | 主线有报告与合成校准实现，未验收 | 暂无确认的 Accepted-ADR 代码缺口；待调试项须有具体失败证据 | 依赖 W1；不得更改验证阈值或 Profile。 |
-| P10 Router | 纸面路由 / deviation 报告在主线，未验收 | `feature/p10-deviation` 有 API / DTO / research / Web 候选，其中 Web 当前有未提交改动 | 按主线 ADR 与 DTO 逐项对账；只读 / 纸面边界保持。 |
-| P11 Research Loop | ADR-0098/0100 与 PR #19 的 authority / read-only audit view 已在主线，未验收 | `feature/p11-ops`、`feature/p11-tests`、`claude/module-completion` 有 lifecycle CLI、baseline export、degradation batch 候选 | 先处理与 P2 重叠提交；真实运行需要部署与合格 repro inputs；不伪造旧输入。 |
+| P10 Router | paper deviation 绑定运行（ADR-0104）已实现 | 无代码缺口 | 只读 / 纸面边界不变 |
+| P11 Research Loop | 运维收口（ADR-0105）已实现：Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator、测试 | 无代码缺口；真实运行需部署与冻结 Profile | 不伪造旧输入 |
 | P12 Evolution | 可选 replacement trigger 与审计视图已在主线，默认关闭 | 未发现已批准的普通代码缺口 | OOS→PAPER 仍需人工批准；不得开启运行开关。 |
 | P13 Execution | 仅模拟执行在主线，LIVE 被拒绝 | 无代码缺口；实盘明确不在范围 | 不连接真实账户、不加入下单 / 凭据。 |
-| P14 Migration | 通用迁移框架在主线，未验收 | `feature/p14-migration` 有 target / reference backtester 候选和未提交文件 | 分支 ADR-0106 尚未进入 main；没有目标系统 / golden data 前阻塞。 |
+| P14 Migration | 参考回测引擎迁移目标与演练（ADR-0106）已实现 | 无代码缺口 | 其他迁移目标另立 ADR |
 | Apps / shared APIs | 只读 API / Web 查询面在主线；PR #19 视图已合入 | P10 候选改动按模块归档；当前无单独确认的代码缺口 | 不增加未批准的写触发或运行控制端点。 |
 
 ## 当前可执行任务卡
