@@ -73,6 +73,17 @@ Normalizer 每个 microbatch（M = 256 行）向 `canonical.*` 提交一个 Iceb
 - [x] 不改 `core/` 契约（H1）：暂存单元提交只在 infrastructure 内；实现中若发现必须改契约，停下另立 ADR
 - [x] 不削弱现有测试（H4）：旧布局测试保留，新布局另加测试
 
+## 实现记录（2026-10-02，PM；`feature/adr-0108-unit-commit`）
+
+实现按上文决策落地；以下为实现层细化（不改变决策）：
+
+1. **单元提交能力**（`c8214a3`）：`PyIcebergCatalogAdapter.commit_unit(request, batches_factory, *, scratch_directory, window_rows)`，只在 infrastructure，冻结的 `CatalogAdapter` / `CommitRequest` 不变。步骤与 `commit_batch` 同序：先验证实际单元（流式整单元指纹 `UnitFingerprint`，与规则对拼接整表的结果按位相同，金向量 + 任意切分验证），再按 batch id 幂等重放、检查期望父 snapshot，然后边暂存边复验（来源不确定即拒绝），最后一次多文件 fast append；summary 记录 `hlens.commit.layout = hlens.unit-commit@1.0.0` 与 `hlens.commit.window-rows`。只接受绑定生产指纹规则的表。暂存写入器复用 PyIceberg `write_file` 路径（schema、分区切分、ParquetFormatWriter、footer 统计），但按分区流式写、固定行组，`DataFile` 数随关闭的文件数而非微批数增长。
+2. **暂存文件名**：`hlens-unit-<单元标签>-<写入者 UUID>-<n>.parquet`。决策 §2 写的是"按内容寻址"；实现加入每个写入者自己的 UUID，因为并发或重试的同一单元写入者若用相同文件名，可能覆盖另一写入者正在提交的文件。未提交文件仍按 ADR-0077 孤儿语义处理。
+3. **batch id**：Canonical 为 `<normalizer>@<版本>.<source revision>.<行数>.<窗口>.unit`（`unit_commit_id`）。窗口大小也写入 id，因为冻结契约 `SnapshotInfo` 不带 summary 扩展字段，计划恢复只能从 id 读；序号仍不在 id 中（§3）。Raw 元素为 `<archive revision>.rows-unit.<行数>`，窗口从 summary 读（`commit_layout`），因此换 D2 批大小重跑仍是同一单元的重放。两种 id 都不可能被解析为旧的逐微批 id。
+4. **证明**：Canonical 全量调查按行序证明各窗口，并要求单元 snapshot 的指纹与行数一致；窄 PIT 证明检查窗口落在单元 snapshot 内，并照旧做窗口逐行精确核对（§6）。Raw 校验器对单元布局做整单元指纹核对：按窗口有界读取，每个 pinned head 只做一次并缓存。代价：大归档上的窄读要整单元读一次（旧路径只读涉及的一个 D2 批）；量级与校验器已在做的整份归档严格重解析相同。
+5. **旧历史**：旧布局的读取、证明与前缀补齐路径原样保留并有回归测试。混用两种布局、或同一单元提交两次，均失败关闭。私有参数 `_legacy_batch_commits`（normalizer 与 Raw store 都有）只供测试构造旧历史，生产默认不用。
+6. **探针**：`write_crash` 改为"暂存完成、提交前"崩溃（无可见提交、只留孤儿）。`resume` 因此是一次完整的新写入（一次时钟读取）。`read_batch` 证明单元中间的窗口。新增 `--prefill-units K`：K 个两行小单元（各在更早的一天，真实摄取 + 规范化）只构建一次，每次测量前原样恢复到同一路径（Iceberg 元数据记录绝对路径）。
+
 ## 参考
 
 - [E1-CAP-1 正式探针记录](../reviews/2026-10-02-e1-cap1-main-50d6bb6.md)
