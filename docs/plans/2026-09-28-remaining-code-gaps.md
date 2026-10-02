@@ -56,7 +56,7 @@
 
 | 项 | 分类 | 当前处理 |
 |---|---|---|
-| E1-CAP-1：完整进程 ≤32 MiB | 容量 / 验证门 | main 的正式 probe 在 10k 全阶段及 100k verify_archive 后中断；候选 full-shape probe 的 500k verify_archive 在超过 15 分钟后中断。均无总容量 PASS/FAIL 结论；保留门槛。 |
+| E1-CAP-1：完整进程 ≤32 MiB | 容量 / 验证门 | `main@50d6bb6` 正式矩阵数值 PASS（2026-10-02），但元数据随批次数线性增长、不满足关闭标准；新增架构决定 ADR-0108（Proposed）为前置，不作为可直接执行的代码缺口。 |
 | ADR-0077 DQ-9 参数 | 容量证据依赖 | 获得有效容量证据后再确定，不由局部 smoke 外推。 |
 | P0.5 seed tags/assets | 人工决定 | 等具名审阅者，不自动填标签。 |
 | P11 真实运行 | 部署 / 合格输入 | 需要部署环境与符合 ADR-0100 的 repro inputs。 |

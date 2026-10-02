@@ -122,7 +122,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 7. Current Known Risks
 
-- 两轮大规模补全代码均未测试；首次全仓门禁可能暴露大量失败
+- Canonical 每微批一个 Iceberg snapshot 且不过期：metadata 与 manifest 数随数据量线性增长，提交 / 扫描成本无界（ADR-0108 Proposed，推荐按单元一次提交）
 - pypi.org 索引域名在本机被阻断（files.pythonhosted.org 可达）：离线安装用 uv.lock 精确版本
 - WSL 内存约 15 GiB；Docker 未安装；外部数据盘未挂载；warehouse 无异地副本；CI 未配置
 - 官方资料不能证明任何历史 revision 的公开时刻：`binance.spot.publication@1.0.0` 一律 `available_time = ingest_time` + 证据缺口，未绑定 ADR-0032 假设时早于本机 ingest 的历史不可用；归档替换一律 competing heads
@@ -152,4 +152,4 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Phase 0 基线：tag `phase-0-complete`
 - `main` ← `phase/1` 经 PR #20 / #21 整合（2026-10-01）：四项代码缺口与 E1 Canonical 窗口复用收口；全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过）。见 `docs/reviews/2026-10-01-w1-gate-repair.md`
 - 历史契约固定值的核对方式：`tests/contract_version_support.py::at_contract_version` 在新解释器里按记录时的契约版本重建；只有证明差异仅来自契约信封或已接受 ADR 的有意变化时才可重钉
-- 下一步：在与 `main` 一致的提交上跑 E1-CAP-1 正式矩阵；未合入 worktree 候选仍按模块计划逐项审阅
+- E1-CAP-1：`main@50d6bb6` 正式矩阵数值 PASS（2026-10-02），但 Iceberg 元数据随批次数线性增长，未关闭；下一步决定 ADR-0108，再重跑（含预填充历史）
