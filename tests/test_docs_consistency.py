@@ -73,10 +73,15 @@ def test_adr_index_matches_adr_status() -> None:
         if path.name.startswith("0000"):
             continue
         head = path.read_text(encoding="utf-8").split("## 背景")[0]
-        status = next(
-            (candidate for candidate in ("Accepted", "Proposed", "BLOCKED") if candidate in head),
-            "Proposed",
-        )
+        # The 状态 row when present (its explanatory text may name other statuses), else the head.
+        status_rows = [ln for ln in head.splitlines() if ln.startswith("| 状态 |")]
+        scope = status_rows[0].split("|")[2] if status_rows else head
+        found = [
+            (scope.index(candidate), candidate)
+            for candidate in ("Rejected", "Superseded", "Accepted", "Proposed", "BLOCKED")
+            if candidate in scope
+        ]
+        status = min(found)[1] if found else "Proposed"  # the status the row states first
         rows = [ln for ln in index.splitlines() if ln.startswith("|") and f"]({path.name})" in ln]
         assert rows, f"{path.name} 未登记到 ADR 索引"
         assert status in rows[0], f"{path.name} 状态与索引不一致：{rows[0].strip()}"
