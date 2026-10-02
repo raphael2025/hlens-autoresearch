@@ -599,9 +599,9 @@ def test_contract_schema_version_is_unchanged_by_this_batch() -> None:
     from core.domain.base import CONTRACT_SCHEMA_VERSION
 
     # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0,
-    # ADR-0088 to 2.4.0 and ADR-0094 to 2.5.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
-    assert feature().schema_version == "2.5.0"  # a new object: the current envelope
+    # ADR-0088 to 2.4.0, ADR-0094 to 2.5.0 and ADR-0109 to 2.6.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"
+    assert feature().schema_version == "2.6.0"  # a new object: the current envelope
 
 
 # ======================================================================================

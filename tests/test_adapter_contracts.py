@@ -1562,8 +1562,9 @@ def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) ->
     committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
     if name in SCHEMA_SHA256_AT_2_3_0:  # gained ADR-0088's optional fields (2.4.0, 9925f0a)
-        # With exactly those additions stripped, the ADR-0088 (2.4.0) and ADR-0094 (2.5.0) bumps
-        # may change only the envelope default: the original 2.0.0 pin still holds.
+        # With exactly those additions stripped, the ADR-0088 (2.4.0), ADR-0094 (2.5.0) and
+        # ADR-0109 (2.6.0) bumps may change only the envelope default: the original 2.0.0 pin
+        # still holds.
         for schema in (committed, regenerated):
             stripped = _schema_bytes(_without_adr_0088(name, json.loads(schema)))
             digest = hashlib.sha256(as_published_at_2_0_0(stripped)).hexdigest()
@@ -1581,8 +1582,8 @@ def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) ->
             digest = hashlib.sha256(as_published_at(schema, "2.1.0")).hexdigest()
             assert digest == ADR_0052_SCHEMA_SHA256[name]
         return
-    # ADR-0052 §4 / ADR-0055 / ADR-0077 / ADR-0088 / ADR-0094: the 2.1.0 through 2.5.0 bumps may
-    # change only the envelope default.
+    # ADR-0052 §4 / ADR-0055 / ADR-0077 / ADR-0088 / ADR-0094 / ADR-0109: the 2.1.0 through 2.6.0
+    # bumps may change only the envelope default.
     assert (
         hashlib.sha256(as_published_at_2_0_0(committed)).hexdigest() == (PRE_B3_SCHEMA_SHA256[name])
     )
@@ -1606,8 +1607,8 @@ def test_v1_snapshots_and_vectors_are_byte_identical() -> None:
 
 def test_contract_version_and_reused_patterns_are_unchanged() -> None:
     # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0, ADR-0088
-    # to 2.4.0, and ADR-0094 to 2.5.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
+    # to 2.4.0, ADR-0094 to 2.5.0, and ADR-0109 to 2.6.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.6.0"
     assert revision.SNAPSHOT_TABLE_PATTERN == r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
     assert revision.BINDING_ID_PATTERN == r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$"
 
