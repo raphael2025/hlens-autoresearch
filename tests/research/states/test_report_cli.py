@@ -130,7 +130,7 @@ def test_unexpected_errors_print_only_the_exception_type(
     stored: tuple[Files, Path, StateResult], monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     files, store_dir, result = stored
-    secret = "postgresql://user:secret@example.invalid/db"
+    secret = "postgresql://user:fake-secret@example.invalid/db"
 
     def boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError(secret)

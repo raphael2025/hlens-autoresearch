@@ -158,26 +158,26 @@ def test_a_catalog_failure_exits_4_without_leaking_credentials(
     path, _ = make_profile(tmp_path)
 
     def failing(settings: Any, registry: Any) -> Any:
-        raise CatalogUnavailable(f"cannot connect to {SECRET_DSN} (password s3cr3t-pw)")
+        raise CatalogUnavailable(f"cannot connect to {SECRET_DSN} (password fake-s3cr3t-pw)")
 
     monkeypatch.setattr(factory, "open_postgres_catalog_adapter", failing)
     code, out, err = _run(capsys, w, _argv("show", path))
     assert (code, out) == (cli.EXIT_ENVIRONMENT, None)
     assert "did not open" in err and "CatalogUnavailable" in err
-    for secret in ("s3cr3t-pw", "hlens_user", SECRET_DSN):
+    for secret in ("fake-s3cr3t-pw", "hlens_user", SECRET_DSN):
         assert secret not in err
 
 
 def test_redaction_removes_the_dsn_and_url_credentials() -> None:
     text = f"boom {SECRET_DSN}; also https://user:tok@host/x and mysql://a@b"
     cleaned = cli._redact(text, [SECRET_DSN])
-    assert "s3cr3t-pw" not in cleaned and "tok" not in cleaned and "user:" not in cleaned
+    assert "fake-s3cr3t-pw" not in cleaned and "tok" not in cleaned and "user:" not in cleaned
     assert "<redacted>" in cleaned and "host/x" in cleaned
     assert cli._redact("nothing here", [""]) == "nothing here"
 
 
 def test_secrets_cover_the_dsn_and_its_user_and_password(w: World) -> None:
-    assert cli._secrets(settings_for(w)) == [SECRET_DSN, "s3cr3t-pw", "hlens_user"]
+    assert cli._secrets(settings_for(w)) == [SECRET_DSN, "fake-s3cr3t-pw", "hlens_user"]
 
 
 def test_an_unexpected_failure_prints_only_its_type(
@@ -207,7 +207,7 @@ def test_a_known_failure_is_reported_redacted(
     monkeypatch.setattr(cli, "pin_dataset_pit_spec", explode)
     code, _, err = _run(capsys, w, _argv("show", path))
     assert code == cli.EXIT_FAILED
-    assert "CatalogError" in err and "s3cr3t-pw" not in err and "<redacted>" in err
+    assert "CatalogError" in err and "fake-s3cr3t-pw" not in err and "<redacted>" in err
 
 
 # ------------------------------------------------------------------------- the real path

@@ -17,8 +17,8 @@ from infrastructure.settings import Settings
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.tools import cli_support
 
-SECRET_DSN: Final = "postgresql://hlens_user:s3cr3t-pw@db.invalid:5432/hlens"
-SECRETS: Final = ("s3cr3t-pw", "hlens_user", SECRET_DSN)
+SECRET_DSN: Final = "postgresql://hlens_user:fake-s3cr3t-pw@db.invalid:5432/hlens"
+SECRETS: Final = ("fake-s3cr3t-pw", "hlens_user", SECRET_DSN)
 
 
 def settings_over(storage: LocalFileStorageAdapter, scratch: Path, origin: str) -> Settings:

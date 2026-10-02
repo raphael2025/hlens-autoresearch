@@ -22,7 +22,7 @@ from infrastructure.event_bus import InMemoryEventBus
 
 REPO = Path(__file__).resolve().parents[2]
 TOPIC = "worker.dataset"
-SECRET = "postgresql://user:s3cr3t@db.invalid/hlens"
+SECRET = "postgresql://user:fake-s3cr3t@db.invalid/hlens"
 REQUEST: dict[str, Any] = {"window": "w1", "pit": {"name": "p"}}
 
 

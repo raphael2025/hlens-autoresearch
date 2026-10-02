@@ -135,7 +135,7 @@ def test_apply_table_does_not_create_a_missing_table(
 def test_catalog_and_settings_errors_are_redacted(
     files: Files, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    secret = "postgresql://state-test:secret@example.invalid/catalog"
+    secret = "postgresql://state-test:fake-secret@example.invalid/catalog"
 
     @contextmanager
     def open_adapter(_settings: object, _registry: Any) -> Iterator[Any]:

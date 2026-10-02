@@ -32,7 +32,7 @@ from tests.infrastructure.dataset.test_quality_v3_dataset_integration import (
 from tests.infrastructure.quality.test_listing_report_v2 import _reporter
 from tests.infrastructure.revision.rest_store_support import DAY
 
-SECRET_DSN: Final = "postgresql://hlens_user:s3cr3t-pw@db.invalid:5432/hlens"
+SECRET_DSN: Final = "postgresql://hlens_user:fake-s3cr3t-pw@db.invalid:5432/hlens"
 
 PROFILE_DOCUMENT: Final[dict[str, Any]] = {
     "schema_version": "1.0.0",
