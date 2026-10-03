@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 恢复点（2026-10-02）：`phase/1@1536a409` = 第三轮收口（ADR-0101 ~ 0106、0108 ~ 0110），全仓门禁全绿（10570 passed / 148 skipped）；`main@d9ddd67` 待经 PR 合入；E1-CAP-1 待在 `main` 上重跑。代码队列见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
+> 恢复点（2026-10-03）：`main@25ffada5` = 第三轮收口（ADR-0101 ~ 0106、0108 ~ 0110）+ E1-CAP-1 修复；全仓门禁全绿（10572 passed / 148 skipped）；E1-CAP-1 正式矩阵 K = 0 证据级 PASS，预填充历史 K = 1000 / 3000 待完成。代码队列见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
 
 ## 1. Project Identity
 
@@ -84,7 +84,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0094：PIT v3 完整冲突 heads 写有界 evidence stream（契约 2.5.0）；v2 与 2.3 / 2.4 replay 不变
 - ADR-0097：PIT bounded graph 用调用级 SQLite scratch index
 - D-NET：可下载 BTCUSDT / ETHUSDT 各 1 ~ 3 天官方公共归档，只写本机、不入仓库
-- ADR-0108：Raw 归档元素与 Canonical 写入为一个逻辑单元一个 Iceberg snapshot（infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；snapshot 不过期）；残余随单元数增长记为 D-META-AGE
+- ADR-0108：Raw 归档元素与 Canonical 写入为一个逻辑单元一个 Iceberg snapshot（infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；snapshot 不过期）；单元数据文件上限为一个 4096 行 row group（整单元大文件会使有界扫描 O(单元)）；残余随单元数增长记为 D-META-AGE
 - D-E1-CANONICAL-SCRATCH：Canonical 位置索引用 `Settings.canonical_scratch_uri`（默认 `data/scratch`），不回退 `TMPDIR`
 
 **Phase 0.5 / 2 ~ 14 与 apps**
@@ -158,5 +158,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Phase 0 基线：tag `phase-0-complete`
 - `main` ← `phase/1` 经 PR #20 / #21 整合（2026-10-01）：四项代码缺口与 E1 Canonical 窗口复用收口；全仓门禁全绿（pytest 9313 passed / 144 skipped / 0 failed，PostgreSQL 用例另行实跑；ruff、format、mypy 通过）。见 `docs/reviews/2026-10-01-w1-gate-repair.md`
 - 历史契约固定值的核对方式：`tests/contract_version_support.py::at_contract_version` 在新解释器里按记录时的契约版本重建；只有证明差异仅来自契约信封或已接受 ADR 的有意变化时才可重钉
-- `phase/1@1536a409`（2026-10-02）：第三轮收口，全仓门禁全绿（四段运行，10570 passed / 148 skipped / 0 failed；ruff、format、mypy 通过）
+- `main@25ffada5`（2026-10-03，PR #23 / #24）：第三轮收口 + E1-CAP-1 修复，全仓门禁全绿（四段运行，10572 passed / 148 skipped / 0 failed；ruff、format、mypy 通过）
+- E1-CAP-1 正式矩阵 `main@25ffada5`（K = 0）证据级 PASS：每 stage 随 N 增长 ≤ 12.2 MiB；记录 `docs/reviews/2026-10-03-e1-cap1-main-25ffada5.md`
 - E1-CAP-1：`main@50d6bb6` 正式矩阵数值 PASS（2026-10-02），但 Iceberg 元数据随批次数线性增长，未关闭；ADR-0108 已实现，待在 `main` 上重跑（含预填充历史）。记录见 `docs/reviews/2026-10-02-e1-cap1-main-50d6bb6.md`
