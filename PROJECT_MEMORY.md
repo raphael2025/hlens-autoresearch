@@ -52,7 +52,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0001：重大架构决定用 ADR 记录
 - ADR-0002：架构基线（原则 P1–P17、四个 Plane、默认技术栈）
 - ADR-0003：Python 3.13 + uv，与系统 Python 隔离
-- ADR-0004：本地 Git，不改全局配置，一次性提交身份；ADR-0025 / ADR-0112：远程 = 独立 GitHub `raphael2025/hlens-autoresearch`，Raphael 已要求公开发布；CI 未配置
+- ADR-0004：本地 Git，不改全局配置，一次性提交身份；ADR-0025 / ADR-0112：远程 = 独立 GitHub `raphael2025/hlens-autoresearch`，已按 Raphael 指令公开发布（MIT，默认分支 phase/1）；CI 未配置
 - ADR-0005：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Promotion 链今天拒绝所有策略；Q-1 / Q-2 / Q-3 / Q-7 开放
 - ADR-0006：生命周期 v2（OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；ACTIVE 带 `execution_mode`，不设 LIVE 状态）；Q-4 ~ Q-6 开放
 - ADR-0007：三层验证（Constitution / Validation Profile / Experiment Metadata）+ 两步冻结

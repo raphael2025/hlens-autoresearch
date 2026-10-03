@@ -50,7 +50,7 @@
 
 ## 4. 当前正在做
 
-- 公开发布准备（ADR-0112）：依据 Raphael 直接指令，补充许可证、开源说明和审查证据；推送/可见性以 GitHub 实际状态为准。
+- ✅ 已独立公开发布（ADR-0112）：GitHub PUBLIC、MIT License、默认分支 `phase/1`，已通过 API 核验；不代表 Phase 1 验收。
 
 - ✅ ADR-0111 Accepted：`REFACTOR_TARGET.md`、`CLAUDE.md` 单一授权表、本文件重置、Action Plan
 - ⏹ ADR-0108 §9(e) 预填充探针：Raphael 决定停止；检查时已无探针进程在运行，K 轴没有结果入库

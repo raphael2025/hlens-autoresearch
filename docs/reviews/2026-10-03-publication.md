@@ -30,4 +30,13 @@
 
 ## 外部核验
 
-公开和推送完成后补录 GitHub 的实际可见性、默认分支及许可证识别结果。
+已于 2026-10-03 通过 GitHub API 核验：
+
+- 仓库：`https://github.com/raphael2025/hlens-autoresearch`。
+- 可见性：`PUBLIC`（`private: false`）。
+- 默认分支：`phase/1`。
+- GitHub 识别许可证：`MIT License`。
+- 首次公开时的 `phase/1` 提交：`274bb95a`；包含之前的架构审查与发布文档。
+- 公开前新增提交的历史扫描相对已人工审核的 8 个误报基线：`no leaks found`。
+- `main` 未合并；另建草稿 PR 记录开发分支差异，不标记 Phase 验收。
+

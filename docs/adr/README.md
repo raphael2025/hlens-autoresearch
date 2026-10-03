@@ -116,7 +116,7 @@
 | [0109](0109-v3-manifest-legacy-quality-binding.md) | v3 Dataset manifest 的旧质量表绑定（契约 2.6.0） | Accepted（2026-10-02；PM）：2.6.0+ v3 manifest 不再要求绑定 `quality.data_quality_reports`（有 snapshot 才绑定，同 Raw evidence / 缺口表规则）；关闭 D-V3-LEGACY-BIND；旧版本规则与哈希不变；未实现 |
 | [0110](0110-p7-durable-restore.md) | P7 准入候选的持久化恢复 | Accepted（2026-10-02；PM）：检查点中 P7 来源的策略行带 `origin=p7` / `plan_hash` / `round_index`，恢复经 `P7PlanSource` 重建并以 admission 日志 COMMIT 为证明；未准入 P7 的状态逐字节不变；未实现 |
 | [0111](0111-refactor-target-vertical-slice.md) | 重构目标：Phase 1 垂直切片、Phase 0.5 / 2 ~ 14 归档、直读 Parquet、单一授权表 | Accepted（2026-10-03；Raphael 确认）：`REFACTOR_TARGET.md` 为最高指导文档；取代 ADR-0021 对“Parquet + 自有清单”的否决；Phase 1 关闭条件改为切片验收；关闭 D-AUTH-CONFLICT；未实现 |
-| [ADR-0112](0112-independent-publication-and-private-project-archives.md) | HLENS 独立公开发布与其他项目私有归档 | Accepted | 2026-10-03 |
+| [0112](0112-independent-publication-and-private-project-archives.md) | HLENS 独立公开发布与其他项目私有归档 | Accepted（2026-10-03；Raphael 直接指令）：独立公开、MIT、默认 phase/1；其他项目在私有 memex 分项目归档 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
