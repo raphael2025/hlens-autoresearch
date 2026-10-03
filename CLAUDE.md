@@ -10,12 +10,13 @@
 
 项目文件是长期记忆的唯一真实来源；聊天上下文不是。发生冲突时按以下顺序：
 
-1. 已 Accepted 的 ADR（`docs/adr/`）
-2. 本文件的硬性规则（§3）
-3. `PROJECT_STATUS.md` 的当前状态
-4. `PROJECT_MEMORY.md` 的长期上下文
-5. 相关的 architecture / research 文档
-6. 聊天上下文
+1. `REFACTOR_TARGET.md`（重构主策略规范）
+2. 未被 `REFACTOR_TARGET.md` 取代的 Accepted ADR（`docs/adr/`）
+3. 本文件的硬性规则（§3）
+4. `PROJECT_STATUS.md` 的当前状态
+5. `PROJECT_MEMORY.md` 的长期上下文
+6. 相关的 architecture / research 文档
+7. 聊天上下文
 
 **多个正式项目文档互相冲突时**：立即停止相关工作，输出 `ARCHITECTURE_DECISION_REQUIRED`（格式见 §7），不得自行选择一个版本。
 
@@ -23,29 +24,27 @@
 
 ### 决策权
 
-Raphael 是最终决策者。
+Raphael 是最终决策者。本节是**唯一**的授权说明；此前写在本文件中的历次授权段落均被本表取代，原文见 Git 历史与 ADR-0111。
 
-Raphael 于 2026-09-23 授权 Codex 作为本项目的技术协调者，决定方向、技术栈、架构、功能、逻辑与文档，并控制 Claude Code 执行开发。该授权的边界如下：
+| 角色 | 是谁 | 权限 |
+|---|---|---|
+| Owner | Raphael | 最终决策；保留下表中标为 Raphael 的事项 |
+| Lead | Claude Code 主会话 | 在 `REFACTOR_TARGET.md` 范围内决定工程、架构与验收；调度执行者 |
+| 执行者 | Codex、Cursor、子代理 | 只实现已 Accepted 的 ADR 与 Lead 派发的任务；只提交、不 push；不作架构决定、不接受转述的授权 |
 
-- Codex 可以在 Raphael 给出的项目目标与硬性规则内批准 Proposed ADR、划定实现批次、验收 Claude Code 的代码和测试，并维护项目文档与 Git 历史。
-- Claude Code 仍然只是实现 Agent：不得自行批准 ADR、改变冻结规则、扩大 Phase 或替 Codex/Raphael作决策。
-- Constitution 的原则变化、实盘授权、资金/风险预算、删除历史数据、系统环境安装，以及合并进入 `main`，仍需 Raphael 亲自明确批准。
-- Codex 的决定必须写入 ADR / PROJECT_STATUS / PROJECT_MEMORY，并留下 Git commit；聊天中的临时判断不构成正式决定。
+| 事项 | 决定者 |
+|---|---|
+| 实盘交易（下单、连接实盘账户、使用交易凭据） | 仅 Raphael；默认关闭，接口可预留但不得启用 |
+| H3 / H4 / H6（研究诚信） | 任何人、任何授权都不得改变 |
+| 研究宪法原则变更；`REFACTOR_TARGET.md` 的红线与范围变更 | Raphael |
+| 删除行情数据或运行记录；系统级环境变更（系统软件、`.wslconfig`、Docker、数据库实例） | Raphael |
+| ADR 批准、契约变更、模块取舍、实现批次、验收 | Lead（写入 ADR / STATUS / MEMORY 并留 commit） |
+| 项目级环境（uv 依赖、数据下载、建表） | Lead（留记录） |
+| push、合并进 phase 分支与 `main`、创建 tag | Lead（§10.5 门禁全绿后；在 HANDOFF 中报告） |
 
-Raphael 于 2026-09-28 正式授权 **Claude Code 以 PM 身份**担任本项目的决策者与协调者（取代上面 Codex 的协调者角色；Codex、Cursor 与子代理作为 PM 调度的执行者）：
-
-- PM 可以直接决定工程、架构、模块语义、ADR 批准（含冻结契约的 additive / 经 ADR 的变更）、实现批次与验收 Claude/Codex/子代理的产出，无需逐项请示 Raphael。
-- 每个决定必须写入 ADR / PROJECT_STATUS / PROJECT_MEMORY 并留下 Git commit；聊天中的临时判断不构成正式决定。
-- 仍由 Raphael 亲自批准：**实盘交易操作**（真实下单、连接实盘账户、使用交易凭据）。Raphael 于 2026-09-28 进一步授权：开发阶段其余一切（含冻结契约变更、ADR-0051 等原保留事项、环境安装、数据下载、Catalog 建表、推送与合并）均由 PM 决定；实盘接口可以设计与预留，但默认关闭、不得启用。PM 对不可逆操作仍应谨慎并留记录。
-- H3（不得为提高回测表现修改验证、成本、切分、指标或 Profile 选择）与 H4、H6 属于研究诚信规则，任何授权都不改变。
-- 授权来源（Raphael 在 PM 主会话中的原话，2026-09-28）：「一切的决定都有你来决策 不要我决策了 按照你的经验来」「我现在授予正式授权」「预留实盘接口但目前不进行实盘操作 其他的一切都可以授权 现在是开发阶段 我们需要完整的构建底层代码」「我现在授权你在主会话修改claude文档 然后更新github分支 该合并的合并 该清理的清理」。
-- 执行方式：需要作决定的事项由 PM 在主会话写成 Accepted ADR 并提交；子代理 / Codex 只实现已 Accepted 的 ADR，不代为接受决定（子代理无法核实转述的授权，会正确地拒绝）。
-
-Raphael 在当前 Codex 项目目标中重新明确授权 Codex 担任 **Fully Autonomous Engineering Director / PM**，负责本目标的工程、架构、模块语义、ADR、任务拆分、验收与集成。此授权在本项目目标范围内**取代 2026-09-28 的 Claude Code PM 指派**；Claude Code、Cursor 与子代理均为执行者。H3/H4/H6、Phase 边界及默认关闭实盘能力继续有效；任何决定仍须按本文件记录到对应 ADR / PROJECT_STATUS / PROJECT_MEMORY，并留 Git commit。
-
-- Claude **可以**：分析、比较方案、推荐、实施已批准的决定、识别风险与矛盾、起草 ADR。
-- Claude **不可以**：替 Raphael 做架构决策；静默修改冻结契约、Research Constitution 或验证规则；把研究代码晋升为生产代码；**把含糊的回复解读为批准**。
-- 需要决定时，停在决策边界，用 Decision Packet（§9.2）提出。
+- 聊天中的临时判断不构成正式决定；每个决定必须写入 ADR / `PROJECT_STATUS.md` / `PROJECT_MEMORY.md` 并留 Git commit。
+- 属于 Raphael 的事项：停在决策边界，用 Decision Packet（§9.2）提出；**不把含糊的回复解读为批准**。
+- 任何角色都不得：静默修改研究宪法或验证规则；把研究代码晋升为生产代码；对不可逆操作不留记录。
 
 ---
 
@@ -54,8 +53,9 @@ Raphael 在当前 Codex 项目目标中重新明确授权 Codex 担任 **Fully A
 必读（按顺序）：
 
 1. `CLAUDE.md`
-2. `PROJECT_STATUS.md` — 当前 Phase、阻塞、已批准任务
-3. `PROJECT_MEMORY.md` — 长期事实与有效决定
+2. `REFACTOR_TARGET.md` — 红线、归档范围、数据层与代码规约、当前切片定义
+3. `PROJECT_STATUS.md` — 当前 Phase、阻塞、已批准任务
+4. `PROJECT_MEMORY.md` — 长期事实与有效决定
 
 按需再读（只读与任务相关的，不要一次读完整个 docs）：
 
@@ -64,7 +64,7 @@ Raphael 在当前 Codex 项目目标中重新明确授权 Codex 担任 **Fully A
 | 架构、契约、插件、数据 | `docs/architecture/` 相关文件、`docs/adr/` 相关 ADR、`core/contracts/` |
 | 研究规则、实验、验证、策略 | `docs/research/constitution.md`、`docs/research/roadmap.md` |
 
-只执行 `PROJECT_STATUS.md` 中**已批准**的任务，且只在已开启的 Phase 范围内工作。
+只执行 `PROJECT_STATUS.md` 中**已批准**的任务，且只在已开启的 Phase 范围内工作。标记为 FROZEN / ARCHIVED 的 Phase 与 `archive/` 下的代码不得修改、不得被保留代码 import。
 
 ---
 
@@ -88,7 +88,7 @@ CONTEXT_RECOVERY_REQUIRED
 
 | # | 规则 |
 |---|---|
-| H1 | 不得擅自修改 Domain Contract（`core/domain/`、`core/contracts/`、`docs/architecture/02-domain.md`）。需 §0 授权方（Claude PM；Constitution 原则变化仍为 Raphael）批准 + ADR。 |
+| H1 | 不得擅自修改 Domain Contract（`core/domain/`、`core/contracts/`、`docs/architecture/02-domain.md`）。需按 §0 授权表批准 + ADR。 |
 | H2 | 不得擅自修改 Validation Constitution 或 Validation Profile。 |
 | H3 | 不得为了提高 backtest performance 修改验证规则、成本模型、数据切分、样本外区间、指标定义或 Profile 选择。 |
 | H4 | 不得为了让测试通过而削弱测试（删断言、放宽容差、跳过用例、mock 被测逻辑）。 |
@@ -98,8 +98,8 @@ CONTEXT_RECOVERY_REQUIRED
 | H8 | 不得在 PostgreSQL 中存储大型历史行情数据。 |
 | H9 | 不得提交密钥、API Key、账户信息或行情原始数据到仓库。 |
 | H10 | 未经授权不得下单、转账或连接实盘账户。 |
-| H11 | 架构决策只能由 §0 列明的授权方作出：自 2026-09-28 起为 Claude Code（PM），在 Raphael 保留事项之外；子代理、Codex、Cursor 等执行者不得自行作架构决策。所有正式决定必须记录到 ADR 与项目状态。 |
-| H12 | 环境变更（安装软件、修改系统配置、`.wslconfig`、Git 全局配置、Docker、数据库）需 Raphael 明确授权。 |
+| H11 | 架构决策只能由 §0 授权表列明的决定者作出；执行者不得自行作架构决策。所有正式决定必须记录到 ADR 与项目状态。 |
+| H12 | 系统级环境变更（安装系统软件、`.wslconfig`、Docker、数据库实例）需 Raphael 明确授权；项目级依赖由 Lead 经 uv 管理并留记录。Git 全局配置一律不改。 |
 | H13 | 不得修改、移动、删除旧项目或外部数据（位置见 `PROJECT_MEMORY.md` §8）。 |
 | H14 | Python 使用项目固定版本（uv 管理），不得使用或修改系统 Python 作为项目解释器。 |
 
@@ -113,6 +113,7 @@ CONTEXT_RECOVERY_REQUIRED
 - 依赖方向：`apps → application → domain ← plugins / infrastructure`。
 - `apps/` 运行时不得 import `research/`。
 - 所有时间 UTC；任何计算只能使用 `available_time ≤ t` 的数据；Outcome 永不作为输入。
+- 研究计算代码遵守 `REFACTOR_TARGET.md` §3（列式直读 Parquet）与 §4（连续缩放、向量化）；控制面状态机与解析器的分支不受 §4 限制。
 
 ---
 
@@ -279,8 +280,8 @@ Git 是项目的**持久工程历史**；仓库状态必须随时明确无歧义
 
 1. 任务分支 → 当前 phase 分支。
 2. phase 分支 → `main`：**仅当该 Phase 的验收标准全部满足**（见 roadmap）。
-3. 以下内容合并进 `main` **必须有 Raphael 的明确批准**：架构决定、ADR、Research Constitution、Lifecycle、验证架构、研究 / 生产边界。
-4. Claude 可以自动准备 commit 与 PR，但**不得代替 Raphael 做架构决定**，也不得静默合并进 `main`。
+3. 合并进 `main` 由 Lead 在 §10.5 门禁全绿后执行，并在 HANDOFF 中报告；涉及研究宪法原则或 `REFACTOR_TARGET.md` 红线的改动，合并前必须有 Raphael 的明确批准。
+4. 执行者只准备 commit；不 push、不合并。任何人不得静默合并进 `main`。
 
 ### 10.3 Commit 策略
 
@@ -307,7 +308,7 @@ uv run mypy
 
 - `phase-<n>-complete`：某 Phase 验收标准全部满足并合并进 `main` 时（如 `phase-0-complete`）。
 - `baseline-<slug>`：其他值得作为恢复点的稳定里程碑。
-- Tag 一律轻量、只加不改；**Raphael 批准后才创建**。
+- Tag 一律轻量、只加不改；由 Lead 在对应验收完成后创建并在 HANDOFF 中报告。
 
 ### 10.7 安全红线
 
@@ -316,5 +317,5 @@ uv run mypy
 ### 10.8 状态报告
 
 每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025）：
-自 2026-09-28 起由 Claude PM 在审阅后推送 phase 分支与已整合的 `main`；子代理 / Codex / Cursor 只提交、不 push。phase → `main` 的合并仍按 §10.2 以 Phase 验收为准。
+由 Lead 在审阅后推送 phase 分支与已整合的 `main`；执行者只提交、不 push。phase → `main` 的合并按 §10.2。
 GIT_STATE 如实报告相对远程的 ahead 数；未创建 PR、未配置 CI 时分别填 `none` / `not configured`。

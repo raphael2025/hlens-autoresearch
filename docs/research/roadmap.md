@@ -3,8 +3,8 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 1 已开启（2026-09-24）：ADR-0021 ~ 0024、0026、0027 已 Accepted；D3A～D3E 已由 Codex 验收，D4 已关闭；当前阻断为 E1-CAP-1 容量边界，详见 PROJECT_STATUS.md 与对应复核记录；Phase 0 已完成（tag `phase-0-complete`）** |
-| 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
+| 当前 Phase | **Phase 1 垂直切片（ADR-0111，2026-10-03）**：关闭条件见 `REFACTOR_TARGET.md` §6；Phase 0.5、2 ~ 14 为 FROZEN / ARCHIVED；Phase 0 已完成（tag `phase-0-complete`）。下文各 Phase 的定义与 Phase 1 验收矩阵 #1 ~ #21 作为历史记录保留，不再是当前关闭条件；文中“由 Codex 复核 / 推送”一律读作“由 Lead 审阅 / 推送”（`CLAUDE.md` §0） |
+| 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭；重开冻结 Phase 需切片验收完成加新的 ADR |
 
 ## 依赖图（D10）
 

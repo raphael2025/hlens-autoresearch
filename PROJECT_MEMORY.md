@@ -3,7 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
-> 恢复点（2026-10-03）：`main@25ffada5` = 第三轮收口（ADR-0101 ~ 0106、0108 ~ 0110）+ E1-CAP-1 修复；全仓门禁全绿（10572 passed / 148 skipped）；E1-CAP-1 正式矩阵 K = 0 证据级 PASS，预填充历史 K = 1000 / 3000 待完成。代码队列见 `docs/plans/2026-09-28-remaining-code-gaps.md`，进度见 `PROJECT_STATUS.md`。
+> 恢复点（2026-10-03）：`main@25ffada5` 全仓门禁全绿；ADR-0111 重构目标已 Accepted，归档与切片按 `docs/plans/2026-10-03-archive-and-bypass-action-plan.md` 执行。最高指导文档：`REFACTOR_TARGET.md`。
 
 ## 1. Project Identity
 
@@ -12,8 +12,8 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启、未验收，E1-CAP-1（完整进程 32 MiB 容量门）仍阻断：数值 PASS 但 metadata 随批次数线性增长，ADR-0108 已实现，待在 `main` 上重跑
-- 决策权：CLAUDE.md §0 同时包含 2026-09-28 Claude Code PM 授权与 2026-09-30 早段 Codex PM 段落（`fc9f643`），互相冲突；Raphael 于 2026-09-30 在 Claude Code 主会话指令 Claude Code 接管、「你自己决定一切」，本轮据此执行；CLAUDE.md 自身修改被环境安全检查拦截，冲突留待 Raphael 本地删除 §0 Codex 段落（见 `PROJECT_STATUS.md` §6 D-AUTH-CONFLICT）。实盘操作始终需 Raphael 亲自批准；H3 / H4 / H6 不受任何授权改变
+- 当前阶段：Phase 0 已完成；Phase 1 = 垂直切片（ADR-0111），未验收；Phase 0.5、2 ~ 14 与 apps 为 FROZEN / ARCHIVED
+- 决策权：`CLAUDE.md` §0 单一授权表（ADR-0111）——Owner = Raphael；Lead = Claude Code 主会话；Codex / Cursor / 子代理为执行者。实盘、宪法原则、红线变更、删数据、系统级环境归 Raphael；H3 / H4 / H6 不受任何授权改变
 
 ## 2. Current Architecture
 
@@ -22,7 +22,7 @@
 - current Schema **148 份**，与 `CONTRACT_MODELS` 一一对应；legacy v1 35 份（`schemas/v1/`）只读；v1 与 v2 哈希不可比较，读取 v1 不赋予任何登记 / 晋升资格
 - 研究 Provider Protocol 0 个是 ADR-0017 的决定；Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector），可复用 suite 在 `tests/contract_suites/`
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
-- PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
+- PostgreSQL = Control Plane（不存大型行情）；研究数据层 = DuckDB / Polars 直读不可变 Parquet + manifest（ADR-0111）；原 Iceberg 数据平面原地冻结；
   Iceberg Catalog 用独立 PostgreSQL 库、warehouse 为本地 `file://`、Phase 1 ~ 6 无 NATS（ADR-0021）
 - 数据架构冻结正文（表、分区、source / parser / policy / universe 标识符、PIT I/O、依赖与设置字段）：`docs/architecture/03-data.md`
 - Provider / Plugin 架构；LLM、Backtest Engine 均可替换；LLM 只产出数据，永不作裁判
@@ -36,15 +36,15 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - 新颖性主要来自确定性的组合 / 条件化 / 时序算子，并且每次组合都计入尝试次数
 - 路线图：`docs/research/roadmap.md`
-- 开发顺序（Raphael 2026-09-27 起）：先补齐并整合各模块底层代码，再由 Raphael 本地统一运行门禁、逐模块调试与验收；代码整合 / 合并不等于 Phase 验收，验证状态必须单独记录
+- 开发顺序（ADR-0111 起）：先打通 Phase 1 垂直切片（真实数据 → 特征 → 带成本回测 → 指标），验收后才考虑重开其它 Phase；“全阶段框架代码先行”的旧顺序作废
 
 ## 4. Current Phase
 
-- Current Phase：Phase 1（Market Representation）已开启（2026-09-24），未验收；D0 ~ D3E 已独立验收，D4 已关闭
-- Current Blocker：E1-CAP-1 完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）的 32 MiB 门槛。`main@50d6bb6` 正式矩阵数值 PASS，但 Iceberg metadata 随批次数线性增长，不满足关闭标准；修复方案 ADR-0108 已实现（2026-10-02），待在 `main` 上重跑
-- 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写，全仓测试门禁于 2026-10-01 首次全绿；未逐 Phase 验收
-- Next Milestone：`phase/1` 合入 `main` → 在 `main` 上重跑 E1-CAP-1（含预填充历史场景）→ Phase 1 验收
-- 仍开放：E1-CAP-1 未关闭、DQ-9 未定、D-META-AGE（单元级提交后 metadata 仍随历史单元数增长）；P11 真实运行需部署设置；知识库种子具名人工审阅；P14 无迁移目标；真实 Catalog `event.*` / `state.*` 建表（已授权未执行）；Profile 数值未冻结
+- Current Phase：Phase 1 垂直切片（`REFACTOR_TARGET.md` §5、§6），未验收
+- Current Blocker：真实数据未到位（仓库内只有两天 1m K 线，无 aggTrades）；切片代码未写
+- 其余 Phase 0.5 / 2 ~ 14 与 apps：代码已写、从未验收，FROZEN / ARCHIVED，待迁入 `archive/`
+- Next Milestone：Action Plan 批次 A0 ~ A5（归档）与 B0 ~ B4（切片）→ Phase 1 验收
+- 随重构冻结（记录保留、不再推进）：E1-CAP-1 的 K 轴、D-META-AGE、DQ-9、P11 真实运行、知识库种子审阅、真实 Catalog 建表、Profile 数值
 
 ## 5. Active Decisions
 
@@ -114,6 +114,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0107 Rejected（被 ADR-0108 取代）；ADR-0109：契约 2.6.0，v3 manifest 的旧质量表"有 snapshot 才绑定"（关闭 D-V3-LEGACY-BIND）
 - D-STATE-INC 暂缓（ADR-0035）
 
+**重构**
+- ADR-0111（Raphael 确认）：`REFACTOR_TARGET.md` 为最高指导文档；Phase 0.5 / 2 ~ 14 归档；研究数据层直读 Parquet（取代 ADR-0021 对该方案的否决）；Phase 1 关闭条件 = 切片验收；单一授权表
+
 ## 6. Active Constraints
 
 - 硬性规则全文见 `CLAUDE.md` §3（H1–H14），摘要如下：
@@ -150,7 +153,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 旧研究中的 anti-leakage / red-team 规范可能成为新系统素材（尚未评估内容）
 - 旧策略或旧结论进入新系统时必须重新登记并重新验证，不能直接信任
 - Phase 0 审查链：C1 `FIX_BEFORE_CLOSE` → ADR-0018 / 0019 → C3 `READY_FOR_HUMAN_CONSTITUTION_GATE` → ADR-0020；记录见 `docs/reviews/`
-- 授权演变：2026-09-23 Codex 协调者 → 2026-09-24 "授权所有"（Codex）→ 2026-09-28 Claude Code PM → 2026-09-30 早段 Codex PM 段落 → 2026-09-30 Raphael 在主会话指令 Claude Code 接管（冲突见 §1）
+- 授权演变：2026-09-23 至 2026-09-30 的多段授权互相冲突（D-AUTH-CONFLICT），2026-10-03 由 ADR-0111 收敛为单一授权表
 - 2026-10-01：17 个 Codex 临时分支 tip 已保存至 `refs/archive/2026-10-01/branches/codex/`，分支与干净 Codex worktree 已清理；Claude feature worktree 的未提交 / 未合入内容仍需逐项审阅，不计为主线完成。具体当前数量见 `PROJECT_STATUS.md` 快照。
 
 ## 9. Last Known Good State

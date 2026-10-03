@@ -14,7 +14,7 @@ Research Agent 的一切产出都是**数据**（Hypothesis / ExperimentSpec）�
 
 ## 2. 通用规则
 
-1. 先读 `CLAUDE.md`、`PROJECT_STATUS.md`、`PROJECT_MEMORY.md`，再按任务读取相关 docs、ADR 与契约。项目文件是真实来源，聊天上下文不是。
+1. 先读 `CLAUDE.md`、`REFACTOR_TARGET.md`、`PROJECT_STATUS.md`、`PROJECT_MEMORY.md`，再按任务读取相关 docs、ADR 与契约。项目文件是真实来源，聊天上下文不是。
 2. 只执行 `PROJECT_STATUS.md` 中已批准的任务，只在已开启的 Phase 范围内工作。
 3. 冻结内容（见 00-overview.md §冻结清单）只能通过 ADR 修改。
 4. 新能力优先实现为 Plugin（`docs/architecture/05-plugin.md`）。
@@ -24,13 +24,13 @@ Research Agent 的一切产出都是**数据**（Hypothesis / ExperimentSpec）�
 
 ## 3. 多 Agent 并行开发约定
 
-- 每个 Agent 任务应限定在单一模块/插件内；跨模块改动需要协调者批准（当前 Codex Engineering Director，见 CLAUDE.md §0 的最新授权）。
-- 修改 `core/` 的任务不得与其他**触及 `core/` 或依赖其正在修改契约**的任务并行（PM 2026-09-28 决定；文件边界互不重叠的非 core 任务可并行）。
+- 每个 Agent 任务应限定在单一模块/插件内；跨模块改动需要 Lead 批准（Claude Code 主会话，见 CLAUDE.md §0 授权表）。
+- 修改 `core/` 的任务不得与其他**触及 `core/` 或依赖其正在修改契约**的任务并行（文件边界互不重叠的非 core 任务可并行）。
 - 每次提交说明：所属 Phase、触及的契约（若有）、测试结果、关联 ADR。
 
 ## 4. Git 工作流
 
-分支模型、合并策略、PR 要求、合并前验证与 tag 约定见 [CLAUDE.md](CLAUDE.md) §10。要点：不直接在 `main` 上做实现工作；合并进 `main` 需 Raphael 批准；声称通过的检查必须真正运行过。
+分支模型、合并策略、PR 要求、合并前验证与 tag 约定见 [CLAUDE.md](CLAUDE.md) §10。要点：不直接在 `main` 上做实现工作；执行者只提交、不 push、不合并，合并由 Lead 在门禁全绿后执行；声称通过的检查必须真正运行过。
 
 ## 5. 交付格式
 

@@ -115,6 +115,7 @@
 | [0108](0108-canonical-commit-granularity-and-metadata-growth.md) | Canonical 提交粒度与 Iceberg 元数据增长 | Accepted（2026-10-02；PM 依 Raphael 直接指令）：方案 A，一个逻辑单元 = 一个 snapshot（Canonical 与 Raw 归档元素），infrastructure 内暂存多文件提交，不改契约；旧逐微批历史只读兼容；已在 phase/1 实现（窄证明的单元内容复核 2026-10-02 补齐）；残余"随单元数 K 增长"记为 D-META-AGE |
 | [0109](0109-v3-manifest-legacy-quality-binding.md) | v3 Dataset manifest 的旧质量表绑定（契约 2.6.0） | Accepted（2026-10-02；PM）：2.6.0+ v3 manifest 不再要求绑定 `quality.data_quality_reports`（有 snapshot 才绑定，同 Raw evidence / 缺口表规则）；关闭 D-V3-LEGACY-BIND；旧版本规则与哈希不变；未实现 |
 | [0110](0110-p7-durable-restore.md) | P7 准入候选的持久化恢复 | Accepted（2026-10-02；PM）：检查点中 P7 来源的策略行带 `origin=p7` / `plan_hash` / `round_index`，恢复经 `P7PlanSource` 重建并以 admission 日志 COMMIT 为证明；未准入 P7 的状态逐字节不变；未实现 |
+| [0111](0111-refactor-target-vertical-slice.md) | 重构目标：Phase 1 垂直切片、Phase 0.5 / 2 ~ 14 归档、直读 Parquet、单一授权表 | Accepted（2026-10-03；Raphael 确认）：`REFACTOR_TARGET.md` 为最高指导文档；取代 ADR-0021 对“Parquet + 自有清单”的否决；Phase 1 关闭条件改为切片验收；关闭 D-AUTH-CONFLICT；未实现 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
