@@ -1,0 +1,725 @@
+{
+  "reviewed_commit": "e8e3a4260ef2593110a7087e4bd970a4bd0888c3",
+  "date": "2026-10-03",
+  "python": "3.13.15",
+  "scope": "Static inventory, critical-path review, selected tests, bounded synthetic probes; no market-performance or full-suite acceptance.",
+  "inventory": {
+    "metrics": {
+      "apps": {
+        "files": 32,
+        "lines": 6918,
+        "functions": 356,
+        "branches": 387
+      },
+      "core": {
+        "files": 35,
+        "lines": 10729,
+        "functions": 447,
+        "branches": 584
+      },
+      "infrastructure": {
+        "files": 161,
+        "lines": 73662,
+        "functions": 2638,
+        "branches": 4897
+      },
+      "plugins": {
+        "files": 37,
+        "lines": 8847,
+        "functions": 421,
+        "branches": 560
+      },
+      "research": {
+        "files": 128,
+        "lines": 48948,
+        "functions": 1784,
+        "branches": 3385
+      },
+      "tests": {
+        "files": 491,
+        "lines": 148116,
+        "functions": 8954,
+        "branches": 1408
+      }
+    },
+    "top_files": [
+      {
+        "file": "research/loop/durable.py",
+        "lines": 4090
+      },
+      {
+        "file": "infrastructure/canonical/normalizer.py",
+        "lines": 3562
+      },
+      {
+        "file": "infrastructure/revision/channel_reconcile.py",
+        "lines": 2736
+      },
+      {
+        "file": "infrastructure/dataset/builder.py",
+        "lines": 2558
+      },
+      {
+        "file": "infrastructure/revision/row_integrity.py",
+        "lines": 2520
+      },
+      {
+        "file": "research/operations/authority.py",
+        "lines": 2422
+      },
+      {
+        "file": "infrastructure/tools/normalizer_memory_probe.py",
+        "lines": 2253
+      },
+      {
+        "file": "infrastructure/pit/selector.py",
+        "lines": 2158
+      },
+      {
+        "file": "research/synthetic_lab/gate_calibration.py",
+        "lines": 1860
+      },
+      {
+        "file": "research/loop/trials.py",
+        "lines": 1808
+      },
+      {
+        "file": "infrastructure/catalog/iceberg_adapter.py",
+        "lines": 1719
+      },
+      {
+        "file": "infrastructure/revision/store.py",
+        "lines": 1645
+      },
+      {
+        "file": "infrastructure/parser/binance_archive.py",
+        "lines": 1643
+      },
+      {
+        "file": "infrastructure/collector/binance_rest.py",
+        "lines": 1600
+      },
+      {
+        "file": "apps/worker/loop.py",
+        "lines": 1563
+      },
+      {
+        "file": "infrastructure/parser/binance_rest.py",
+        "lines": 1488
+      },
+      {
+        "file": "infrastructure/tools/capacity_probe.py",
+        "lines": 1352
+      },
+      {
+        "file": "research/validation/robustness.py",
+        "lines": 1334
+      },
+      {
+        "file": "infrastructure/catalog/phase1_tables.py",
+        "lines": 1260
+      },
+      {
+        "file": "research/loop/operator_config.py",
+        "lines": 1256
+      },
+      {
+        "file": "infrastructure/quality/report_v3.py",
+        "lines": 1228
+      },
+      {
+        "file": "core/contracts/strategy.py",
+        "lines": 1224
+      },
+      {
+        "file": "core/contracts/universe.py",
+        "lines": 1158
+      },
+      {
+        "file": "research/strategies/validation.py",
+        "lines": 1124
+      },
+      {
+        "file": "research/loop/replacement.py",
+        "lines": 1116
+      }
+    ],
+    "longest_functions": [
+      {
+        "file": "infrastructure/revision/channel_reconcile.py",
+        "name": "_verified_edge_run",
+        "line": 2052,
+        "lines": 581,
+        "branches": 35
+      },
+      {
+        "file": "infrastructure/tools/normalizer_memory_probe.py",
+        "name": "run_probe",
+        "line": 1752,
+        "lines": 307,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/dataset/sources.py",
+        "name": "_selected_evaluations",
+        "line": 328,
+        "lines": 276,
+        "branches": 31
+      },
+      {
+        "file": "infrastructure/quality/report_v3.py",
+        "name": "_derive_streams",
+        "line": 955,
+        "lines": 274,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/tools/normalizer_memory_probe.py",
+        "name": "_stage",
+        "line": 927,
+        "lines": 274,
+        "branches": 21
+      },
+      {
+        "file": "research/loop/durable.py",
+        "name": "_open_locked",
+        "line": 2271,
+        "lines": 273,
+        "branches": 38
+      },
+      {
+        "file": "infrastructure/pit/selector.py",
+        "name": "_pit_bounded_stream",
+        "line": 1887,
+        "lines": 272,
+        "branches": 16
+      },
+      {
+        "file": "infrastructure/revision/exchange_info_store.py",
+        "name": "verify_table_bounded",
+        "line": 473,
+        "lines": 263,
+        "branches": 32
+      },
+      {
+        "file": "infrastructure/revision/channel_reconcile.py",
+        "name": "_validate_channel_graph_runs",
+        "line": 287,
+        "lines": 221,
+        "branches": 13
+      },
+      {
+        "file": "research/operations/authority.py",
+        "name": "resolve_degradation_inputs",
+        "line": 2202,
+        "lines": 221,
+        "branches": 17
+      },
+      {
+        "file": "infrastructure/revision/channel_reconcile.py",
+        "name": "_verify_edge_provenance_bounded",
+        "line": 1136,
+        "lines": 215,
+        "branches": 22
+      },
+      {
+        "file": "infrastructure/pit/selector.py",
+        "name": "_pit_canonical_row_roots",
+        "line": 1671,
+        "lines": 213,
+        "branches": 20
+      },
+      {
+        "file": "infrastructure/canonical/listing_bounded_verify.py",
+        "name": "verify_listing_history_bounded",
+        "line": 51,
+        "lines": 195,
+        "branches": 15
+      },
+      {
+        "file": "plugins/backtest/bar.py",
+        "name": "_simulate",
+        "line": 307,
+        "lines": 190,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/canonical/listing_history_runs.py",
+        "name": "listing_history_prefix_run",
+        "line": 30,
+        "lines": 189,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/quality/report_streams.py",
+        "name": "iter_quality_report_stream",
+        "line": 470,
+        "lines": 187,
+        "branches": 23
+      },
+      {
+        "file": "research/validation/robustness.py",
+        "name": "capacity_check",
+        "line": 917,
+        "lines": 186,
+        "branches": 15
+      },
+      {
+        "file": "infrastructure/tools/capacity_probe.py",
+        "name": "run_probe",
+        "line": 1107,
+        "lines": 185,
+        "branches": 4
+      },
+      {
+        "file": "infrastructure/canonical/listing_runs.py",
+        "name": "iter_planned_listing_revisions",
+        "line": 163,
+        "lines": 183,
+        "branches": 13
+      },
+      {
+        "file": "infrastructure/quality/report_v3.py",
+        "name": "_canonical_runs",
+        "line": 720,
+        "lines": 178,
+        "branches": 16
+      },
+      {
+        "file": "research/operations/degradation_cli.py",
+        "name": "main",
+        "line": 478,
+        "lines": 168,
+        "branches": 12
+      },
+      {
+        "file": "apps/execution/risk_replay.py",
+        "name": "replay_risk",
+        "line": 90,
+        "lines": 167,
+        "branches": 25
+      },
+      {
+        "file": "infrastructure/catalog/fingerprint_stream.py",
+        "name": "fingerprint_run",
+        "line": 56,
+        "lines": 166,
+        "branches": 18
+      },
+      {
+        "file": "infrastructure/parser/binance_rest.py",
+        "name": "_decode_klines",
+        "line": 931,
+        "lines": 164,
+        "branches": 16
+      },
+      {
+        "file": "research/promotion/service.py",
+        "name": "_check_profiles",
+        "line": 363,
+        "lines": 162,
+        "branches": 18
+      }
+    ],
+    "branchiest_functions": [
+      {
+        "file": "research/loop/durable.py",
+        "name": "_open_locked",
+        "line": 2271,
+        "lines": 273,
+        "branches": 38
+      },
+      {
+        "file": "infrastructure/revision/channel_reconcile.py",
+        "name": "_verified_edge_run",
+        "line": 2052,
+        "lines": 581,
+        "branches": 35
+      },
+      {
+        "file": "research/loop/durable.py",
+        "name": "_check_positions",
+        "line": 3274,
+        "lines": 146,
+        "branches": 33
+      },
+      {
+        "file": "infrastructure/revision/exchange_info_store.py",
+        "name": "verify_table_bounded",
+        "line": 473,
+        "lines": 263,
+        "branches": 32
+      },
+      {
+        "file": "infrastructure/dataset/sources.py",
+        "name": "_selected_evaluations",
+        "line": 328,
+        "lines": 276,
+        "branches": 31
+      },
+      {
+        "file": "apps/execution/risk_replay.py",
+        "name": "replay_risk",
+        "line": 90,
+        "lines": 167,
+        "branches": 25
+      },
+      {
+        "file": "infrastructure/canonical/listing_history_runs.py",
+        "name": "listing_history_prefix_run",
+        "line": 30,
+        "lines": 189,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/quality/report_v3.py",
+        "name": "_derive_streams",
+        "line": 955,
+        "lines": 274,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/tools/normalizer_memory_probe.py",
+        "name": "run_probe",
+        "line": 1752,
+        "lines": 307,
+        "branches": 24
+      },
+      {
+        "file": "plugins/backtest/bar.py",
+        "name": "_simulate",
+        "line": 307,
+        "lines": 190,
+        "branches": 24
+      },
+      {
+        "file": "research/operations/authority.py",
+        "name": "_check_validation_binding",
+        "line": 1673,
+        "lines": 137,
+        "branches": 24
+      },
+      {
+        "file": "infrastructure/quality/report_streams.py",
+        "name": "iter_quality_report_stream",
+        "line": 470,
+        "lines": 187,
+        "branches": 23
+      },
+      {
+        "file": "research/loop/durable.py",
+        "name": "_check_ledgers",
+        "line": 3917,
+        "lines": 122,
+        "branches": 23
+      },
+      {
+        "file": "infrastructure/revision/channel_reconcile.py",
+        "name": "_verify_edge_provenance_bounded",
+        "line": 1136,
+        "lines": 215,
+        "branches": 22
+      },
+      {
+        "file": "research/loop/operator.py",
+        "name": "check_state_dir",
+        "line": 467,
+        "lines": 105,
+        "branches": 22
+      },
+      {
+        "file": "research/router/deviation.py",
+        "name": "_check_aligned",
+        "line": 325,
+        "lines": 150,
+        "branches": 22
+      },
+      {
+        "file": "infrastructure/tools/normalizer_memory_probe.py",
+        "name": "_stage",
+        "line": 927,
+        "lines": 274,
+        "branches": 21
+      },
+      {
+        "file": "research/loop/durable.py",
+        "name": "_verify_round_offline",
+        "line": 3576,
+        "lines": 117,
+        "branches": 21
+      },
+      {
+        "file": "infrastructure/pit/selector.py",
+        "name": "_pit_canonical_row_roots",
+        "line": 1671,
+        "lines": 213,
+        "branches": 20
+      },
+      {
+        "file": "infrastructure/streaming/content_key_tree.py",
+        "name": "_fits_json_bytes",
+        "line": 602,
+        "lines": 61,
+        "branches": 19
+      },
+      {
+        "file": "research/router/deviation.py",
+        "name": "validate_scope_bound_payload",
+        "line": 594,
+        "lines": 109,
+        "branches": 19
+      },
+      {
+        "file": "infrastructure/canonical/listing_bounded_verify.py",
+        "name": "_preflight_arrow_jsonl_row",
+        "line": 308,
+        "lines": 110,
+        "branches": 18
+      },
+      {
+        "file": "infrastructure/catalog/fingerprint_stream.py",
+        "name": "fingerprint_run",
+        "line": 56,
+        "lines": 166,
+        "branches": 18
+      },
+      {
+        "file": "infrastructure/streaming/runs.py",
+        "name": "_read_run_record_at_ordinal",
+        "line": 499,
+        "lines": 146,
+        "branches": 18
+      },
+      {
+        "file": "research/loop/durable.py",
+        "name": "_check_retry_state",
+        "line": 2955,
+        "lines": 116,
+        "branches": 18
+      }
+    ],
+    "cross_root_edges": {
+      "apps -> core": 45,
+      "apps -> infrastructure": 2,
+      "apps -> plugins": 1,
+      "infrastructure -> core": 288,
+      "infrastructure -> plugins": 1,
+      "plugins -> core": 68,
+      "research -> core": 354,
+      "research -> apps": 22,
+      "research -> infrastructure": 69,
+      "research -> plugins": 15
+    },
+    "top_incoming": [
+      [
+        "core/domain/base.py",
+        213
+      ],
+      [
+        "core/domain/specs.py",
+        85
+      ],
+      [
+        "core/domain/research.py",
+        65
+      ],
+      [
+        "core/contracts/strategy.py",
+        49
+      ],
+      [
+        "core/contracts/revision.py",
+        47
+      ],
+      [
+        "infrastructure/catalog/phase1_tables.py",
+        46
+      ],
+      [
+        "core/contracts/storage.py",
+        45
+      ],
+      [
+        "infrastructure/catalog/iceberg_adapter.py",
+        43
+      ],
+      [
+        "core/contracts/catalog.py",
+        37
+      ],
+      [
+        "core/contracts/feature.py",
+        34
+      ],
+      [
+        "infrastructure/canonical/__init__.py",
+        34
+      ],
+      [
+        "infrastructure/contract_version.py",
+        31
+      ],
+      [
+        "core/contracts/validation_profile.py",
+        30
+      ],
+      [
+        "core/contracts/universe.py",
+        30
+      ],
+      [
+        "infrastructure/revision/store.py",
+        30
+      ],
+      [
+        "infrastructure/canonical/rules.py",
+        27
+      ],
+      [
+        "core/lifecycle/strategy.py",
+        25
+      ],
+      [
+        "core/contracts/outcome.py",
+        23
+      ],
+      [
+        "core/contracts/state.py",
+        21
+      ],
+      [
+        "infrastructure/settings.py",
+        20
+      ]
+    ],
+    "archive_broken_imports": [
+      {
+        "source": "apps/worker/__init__.py",
+        "target": "apps/worker/degradation.py",
+        "line": 4
+      },
+      {
+        "source": "apps/worker/__init__.py",
+        "target": "apps/worker/loop.py",
+        "line": 16
+      },
+      {
+        "source": "apps/worker/__init__.py",
+        "target": "apps/worker/metrics.py",
+        "line": 38
+      },
+      {
+        "source": "plugins/backtest/__init__.py",
+        "target": "plugins/backtest/reference.py",
+        "line": 32
+      },
+      {
+        "source": "plugins/features/__init__.py",
+        "target": "plugins/features/indicators.py",
+        "line": 34
+      },
+      {
+        "source": "plugins/features/__init__.py",
+        "target": "plugins/features/microstructure.py",
+        "line": 47
+      },
+      {
+        "source": "plugins/features/__init__.py",
+        "target": "plugins/features/p7_cross_sectional.py",
+        "line": 52
+      },
+      {
+        "source": "plugins/features/__init__.py",
+        "target": "plugins/features/p7_operators.py",
+        "line": 53
+      },
+      {
+        "source": "plugins/features/__init__.py",
+        "target": "plugins/features/range_volatility.py",
+        "line": 62
+      }
+    ],
+    "production_files": 393,
+    "production_lines": 149104
+  },
+  "feature_scaling": [
+    {
+      "n": 250,
+      "seconds": 0.098855,
+      "returned_values": 250,
+      "prefix_observations": 31375
+    },
+    {
+      "n": 500,
+      "seconds": 0.433251,
+      "returned_values": 500,
+      "prefix_observations": 125250
+    },
+    {
+      "n": 1000,
+      "seconds": 1.808367,
+      "returned_values": 1000,
+      "prefix_observations": 500500
+    },
+    {
+      "n": 2000,
+      "seconds": 7.445337,
+      "returned_values": 2000,
+      "prefix_observations": 2001000
+    }
+  ],
+  "feature_scaling_caveat": "One measured run per size; concurrent test workload. Excludes disk/network. Timing growth diagnostic, not production throughput.",
+  "semantic_probes": {
+    "cash": [
+      {
+        "weight": "1",
+        "quantity": "10",
+        "cash_after_fill": "-1.500500000000000000",
+        "final_equity": "998.499500000000000000"
+      },
+      {
+        "weight": "-1",
+        "quantity": "-10",
+        "cash_after_fill": "1998.500500000000000000",
+        "final_equity": "998.500500000000000000"
+      }
+    ],
+    "overlap_cluster_count": {
+      "1": 1000,
+      "2": 1,
+      "15": 1
+    },
+    "archive_import": {
+      "returncode": 1,
+      "last_stderr_line": "ModuleNotFoundError: simulated archive: plugins.backtest.reference"
+    }
+  },
+  "feature_profile": "         3807490 function calls (3807487 primitive calls) in 0.864 seconds\n\n   Ordered by: cumulative time\n   List reduced from 122 to 25 due to restriction <25>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.002    0.002    0.864    0.864 /tmp/hlens-architecture-audit-20261003/infrastructure/feature/runner.py:83(run_feature)\n      500    0.004    0.000    0.714    0.001 /tmp/hlens-architecture-audit-20261003/infrastructure/feature/runner.py:66(_answer)\n      500    0.002    0.000    0.648    0.001 /tmp/hlens-architecture-audit-20261003/plugins/features/bars.py:172(compute)\n      501    0.002    0.000    0.371    0.001 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:381(build)\n     2503    0.013    0.000    0.351    0.000 /tmp/hlens-architecture-audit-20261003/core/domain/base.py:532(content_hash)\n      500    0.024    0.000    0.300    0.001 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:244(_semantic_canonical_json)\n     3000    0.059    0.000    0.269    0.000 {built-in method builtins.sorted}\n      500    0.016    0.000    0.238    0.000 /tmp/hlens-architecture-audit-20261003/plugins/features/bars.py:104(_bars)\n     3503    0.043    0.000    0.206    0.000 {method 'join' of 'str' objects}\n   125750    0.025    0.000    0.179    0.000 /tmp/hlens-architecture-audit-20261003/plugins/features/bars.py:108(<genexpr>)\n   125750    0.024    0.000    0.156    0.000 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:258(<genexpr>)\n   125250    0.048    0.000    0.154    0.000 /tmp/hlens-architecture-audit-20261003/plugins/features/bars.py:83(__init__)\n     1503    0.001    0.000    0.134    0.000 /home/raphael/projects/hlens-autoresearch/.venv/lib/python3.13/site-packages/pydantic/main.py:253(__init__)\n     1503    0.030    0.000    0.134    0.000 {method 'validate_python' of 'pydantic_core._pydantic_core.SchemaValidator' objects}\n   125250    0.019    0.000    0.132    0.000 /tmp/hlens-architecture-audit-20261003/core/domain/base.py:561(_canonical_dump_json)\n   127753    0.096    0.000    0.118    0.000 /tmp/hlens-architecture-audit-20261003/core/domain/base.py:441(_memo_get)\n   250500    0.052    0.000    0.106    0.000 /tmp/hlens-architecture-audit-20261003/plugins/features/bars.py:97(_decimal)\n     1500    0.033    0.000    0.085    0.000 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:261(visible_at)\n      500    0.041    0.000    0.078    0.000 /tmp/hlens-architecture-audit-20261003/core/domain/base.py:424(_canonical_object_with_fragments)\n   376251    0.040    0.000    0.062    0.000 <frozen _collections_abc>:808(get)\n      500    0.023    0.000    0.052    0.000 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:219(_canonical_observations)\n      500    0.007    0.000    0.040    0.000 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:400(check_answers)\n   750500    0.038    0.000    0.038    0.000 /tmp/hlens-architecture-audit-20261003/core/contracts/feature.py:149(_observation_order)\n     2003    0.001    0.000    0.035    0.000 /tmp/hlens-architecture-audit-20261003/core/domain/base.py:420(_sha256_text)\n     2003    0.031    0.000    0.031    0.000 {built-in method _hashlib.openssl_sha256}\n\n\n",
+  "checks": {
+    "selected_python": "1624 passed in 533.75s (0:08:53)",
+    "mypy": "Success: no issues found in 884 source files",
+    "ruff_check": "All checks passed!",
+    "ruff_format_check_baseline": "unformatted: File would be reformatted\n   --> REFACTOR_TARGET.md:95:56\n   |\n94 | ```python\n   - vol_rank = pl.col(\"rv\").rolling_rank(window) / window         # 0~1\n   - trend    = (k_trend * pl.col(\"er_signed\")).tanh()             # -1~1\n95 + vol_rank = pl.col(\"rv\").rolling_rank(window) / window  # 0~1\n96 + trend = (k_trend * pl.col(\"er_signed\")).tanh()  # -1~1\n97 | position = trend * (1.0 - vol_rank).clip(0.0, 1.0) * target_scale\n   |\n\n1 file would be reformatted, 1158 files already formatted",
+    "web_test": [
+      "ℹ tests 135",
+      "ℹ suites 0",
+      "ℹ pass 135",
+      "ℹ fail 0",
+      "ℹ skipped 0",
+      "ℹ tests 127",
+      "ℹ suites 15",
+      "ℹ pass 127",
+      "ℹ fail 0",
+      "ℹ skipped 0"
+    ],
+    "web_build": "✓ built in 2.32s",
+    "data_python": ".....s.................................................................. [ 53%]\n...............................................................          [100%]\n============================= slowest 8 durations ==============================\n152.25s call     tests/infrastructure/e2e/test_phase1_first_slice_v3.py::test_phase1_first_slice_archive_to_representation_v3\n99.44s call     tests/infrastructure/e2e/test_phase1_first_slice_v3.py::test_phase1_first_slice_v3_on_a_catalog_without_legacy_quality_reports\n34.11s call     tests/infrastructure/e2e/test_phase1_first_slice.py::test_phase1_first_slice_archive_to_representation\n30.96s call     tests/infrastructure/e2e/test_versioned_replay_first_slice.py::test_an_earlier_first_slice_is_read_and_replayed_unchanged_now[2.1.0]\n30.67s call     tests/infrastructure/e2e/test_versioned_replay_first_slice.py::test_an_earlier_first_slice_is_read_and_replayed_unchanged_now[2.0.0]\n22.61s call     tests/infrastructure/e2e/test_phase1_first_slice_v3.py::test_a_v3_build_refuses_a_spec_that_leaves_an_existing_legacy_snapshot_unbound\n20.73s call     tests/infrastructure/redteam/test_rt_crash_points.py::test_a_crash_after_any_commit_then_a_rerun_equals_an_uninterrupted_run[legacy-19]\n20.06s call     tests/infrastructure/redteam/test_rt_crash_points.py::test_a_crash_after_any_commit_then_a_rerun_equals_an_uninterrupted_run[unit-16]\n134 passed, 1 skipped in 1265.78s (0:21:05)",
+    "review_docs_python": "31 passed in 1.00s",
+    "review_ruff_check": "All checks passed!",
+    "review_ruff_format_check": "unformatted: File would be reformatted\n   --> REFACTOR_TARGET.md:95:56\n   |\n94 | ```python\n   - vol_rank = pl.col(\"rv\").rolling_rank(window) / window         # 0~1\n   - trend    = (k_trend * pl.col(\"er_signed\")).tanh()             # -1~1\n95 + vol_rank = pl.col(\"rv\").rolling_rank(window) / window  # 0~1\n96 + trend = (k_trend * pl.col(\"er_signed\")).tanh()  # -1~1\n97 | position = trend * (1.0 - vol_rank).clip(0.0, 1.0) * target_scale\n   |\n\n1 file would be reformatted, 1160 files already formatted",
+    "unique_selected_python_passed": 1758,
+    "selected_python_skipped": 1,
+    "skip_reason": "PostgreSQL test catalog integration requires HLENS_TEST_CATALOG_URI; it was not configured.",
+    "full_python_suite_run": false
+  }
+}
