@@ -408,3 +408,19 @@ def test_dq9_diagnostic_parameters_cannot_qualify_as_e1_evidence() -> None:
     assert probe._DATASET_V3_DIAGNOSTIC_PIT["edge_batch_rows"] == probe.PROTOCOL_MICROBATCH
     assert probe._DATASET_V3_DIAGNOSTIC_UNIVERSE["capacity"] == probe.PROTOCOL_MICROBATCH
     assert probe._DATASET_V3_DIAGNOSTIC_UNIVERSE["merge_fanout"] == 4
+
+
+def test_prefill_units_before_2025_use_the_archive_millisecond_ticks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0108 §9(e) prefill: a unit dated before 2025-01-01 is a millisecond archive (parser
+    1.0.0 unit rule); microsecond ticks there were rejected at the 152nd unit of K = 1000."""
+    from datetime import date
+
+    monkeypatch.setattr(probe, "PROBE_DAY", date(2025, 1, 2))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    workdir = tmp_path / "prefill"
+    workdir.mkdir()
+    built = probe._prefill(workdir, 2, 256, 4096)  # 2025-01-01 (µs) and 2024-12-31 (ms)
+    assert built["units"] == 2 and built["unit_rows"] == probe.PREFILL_UNIT_ROWS
+    assert all(count >= 2 for count in built["snapshots"].values())

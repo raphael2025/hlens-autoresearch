@@ -42,9 +42,13 @@ from pyiceberg.utils.config import Config
 __all__ = ["StagedUnitWriter", "UNIT_FILE_ROWS", "UNIT_ROW_GROUP_ROWS"]
 
 #: Rows buffered per partition before one Parquet row group is written (engineering parameter).
-UNIT_ROW_GROUP_ROWS: Final = 8192
+UNIT_ROW_GROUP_ROWS: Final = 4096
 #: Rows per staged data file before it is closed and a new one opened (engineering parameter).
-UNIT_FILE_ROWS: Final = 4_194_304
+#: One row group per file, the size of the pre-ADR-0108 D2 element batch files: Arrow's Parquet
+#: fragment scan holds more as a file grows (more row groups), so whole-unit files made every
+#: bounded scan of a unit O(unit) — the E1-CAP-1 run on ``main@4e78e255`` grew 230-273 MiB at
+#: 500k rows. A unit stays one snapshot (ADR-0108 §1); only its data files are capped.
+UNIT_FILE_ROWS: Final = 4096
 
 
 @dataclass

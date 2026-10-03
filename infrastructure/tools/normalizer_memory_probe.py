@@ -204,6 +204,7 @@ from infrastructure.dataset.builder import (
     dataset_evidence_rule,
 )
 from infrastructure.dataset.sources import UniverseRunParams
+from infrastructure.parser.binance_archive import time_unit_for
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PitRunParams
 from infrastructure.pit.view import PinnedCatalogView
@@ -216,7 +217,6 @@ from infrastructure.tools.capacity_probe import (
     _KNOWLEDGE_NORMALIZE,
     DATA_TYPE,
     SYMBOL,
-    TICKS_PER_SECOND,
     _agg_trade_lines,
     _dataset_pipeline,
     _dataset_pit_spec,
@@ -706,8 +706,10 @@ def _prefill(workdir: Path, units: int, microbatch: int, d2_batch: int) -> dict[
             for index in range(units):
                 day = PROBE_DAY - timedelta(days=index + 1)
                 day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
-                step = (86_400 * TICKS_PER_SECOND) // PREFILL_UNIT_ROWS
-                start_ticks = int(day_start.timestamp()) * TICKS_PER_SECOND
+                # The archive's own tick unit for that day (milliseconds before 2025-01-01).
+                ticks_per_second = 1_000_000 // time_unit_for(DATA_TYPE, day_start).micros_per_tick
+                step = (86_400 * ticks_per_second) // PREFILL_UNIT_ROWS
+                start_ticks = int(day_start.timestamp()) * ticks_per_second
                 lines = [
                     f"{1_000 + row},50000.00000000,0.01000000,{2_000 + row * 2},"
                     f"{2_001 + row * 2},{start_ticks + row * step},False,True"
