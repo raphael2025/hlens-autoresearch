@@ -43,12 +43,14 @@
 ## 3. 已完成
 
 - ✅ Phase 0：契约、状态机、研究宪法 1.0.0，tag `phase-0-complete`
-- ✅ 工程基线：Python 3.13 + uv、Git 与私有 GitHub 远程
+- ✅ 工程基线：Python 3.13 + uv、Git 与独立 GitHub 远程（公开发布决定见 ADR-0112）
 - ✅ Binance 公共归档的下载（含 CHECKSUM）、严格解析与本地原子发布——切片继续复用
 - ✅ 2026-10-03 三路只读审计（文档与授权 / 契约与数据管线 / 策略逻辑与代码结构）
 - 🧱 Phase 0.5、2 ~ 14 与 Iceberg 数据平面的代码已写完，但从未验收，现已冻结（历史见 Git 与 `docs/reviews/`）
 
 ## 4. 当前正在做
+
+- 公开发布准备（ADR-0112）：依据 Raphael 直接指令，补充许可证、开源说明和审查证据；推送/可见性以 GitHub 实际状态为准。
 
 - ✅ ADR-0111 Accepted：`REFACTOR_TARGET.md`、`CLAUDE.md` 单一授权表、本文件重置、Action Plan
 - ⏹ ADR-0108 §9(e) 预填充探针：Raphael 决定停止；检查时已无探针进程在运行，K 轴没有结果入库

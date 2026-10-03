@@ -52,7 +52,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0001：重大架构决定用 ADR 记录
 - ADR-0002：架构基线（原则 P1–P17、四个 Plane、默认技术栈）
 - ADR-0003：Python 3.13 + uv，与系统 Python 隔离
-- ADR-0004：本地 Git，不改全局配置，一次性提交身份；ADR-0025：远程 = 私有 GitHub `raphael2025/hlens-autoresearch`，CI 未配置
+- ADR-0004：本地 Git，不改全局配置，一次性提交身份；ADR-0025 / ADR-0112：远程 = 独立 GitHub `raphael2025/hlens-autoresearch`，Raphael 已要求公开发布；CI 未配置
 - ADR-0005：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Promotion 链今天拒绝所有策略；Q-1 / Q-2 / Q-3 / Q-7 开放
 - ADR-0006：生命周期 v2（OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；ACTIVE 带 `execution_mode`，不设 LIVE 状态）；Q-4 ~ Q-6 开放
 - ADR-0007：三层验证（Constitution / Validation Profile / Experiment Metadata）+ 两步冻结
@@ -113,6 +113,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0105：P11 运维收口（Lifecycle 写入 CLI、基线导出、批量驱动、Dataset 版 operator）；D-P11-WINDOW = 固定日历
 - ADR-0107 Rejected（被 ADR-0108 取代）；ADR-0109：契约 2.6.0，v3 manifest 的旧质量表"有 snapshot 才绑定"（关闭 D-V3-LEGACY-BIND）
 - D-STATE-INC 暂缓（ADR-0035）
+
+**公开发布**
+- ADR-0112（Raphael 直接指令）：HLENS 独立开源；其他项目在私有 memex 分项目归档；不把公开发布作为 Phase 验收。
 
 **重构**
 - ADR-0111（Raphael 确认）：`REFACTOR_TARGET.md` 为最高指导文档；Phase 0.5 / 2 ~ 14 归档；研究数据层直读 Parquet（取代 ADR-0021 对该方案的否决）；Phase 1 关闭条件 = 切片验收；单一授权表

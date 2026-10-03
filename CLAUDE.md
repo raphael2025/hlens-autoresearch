@@ -24,6 +24,8 @@
 
 ### 决策权
 
+2026-10-03 发布专项：Raphael 直接要求 Codex 推送并开源本仓库；本次公开发布与相关文档推送按 ADR-0112 执行，不改变日常开发授权。
+
 Raphael 是最终决策者。本节是**唯一**的授权说明；此前写在本文件中的历次授权段落均被本表取代，原文见 Git 历史与 ADR-0111。
 
 | 角色 | 是谁 | 权限 |
@@ -316,6 +318,6 @@ uv run mypy
 
 ### 10.8 状态报告
 
-每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025）：
+每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为独立 GitHub 仓库 `raphael2025/hlens-autoresearch`（公开发布决定见 ADR-0112，取代 ADR-0025 的私有性要求）：
 由 Lead 在审阅后推送 phase 分支与已整合的 `main`；执行者只提交、不 push。phase → `main` 的合并按 §10.2。
 GIT_STATE 如实报告相对远程的 ahead 数；未创建 PR、未配置 CI 时分别填 `none` / `not configured`。

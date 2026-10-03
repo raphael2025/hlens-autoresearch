@@ -92,8 +92,8 @@ data/lake/binance/spot/<table>/manifest-<dataset_id 前 12 位>.json
 示例（把三档 Regime 开关改为连续缩放）：
 
 ```python
-vol_rank = pl.col("rv").rolling_rank(window) / window         # 0~1
-trend    = (k_trend * pl.col("er_signed")).tanh()             # -1~1
+vol_rank = pl.col("rv").rolling_rank(window) / window  # 0~1
+trend = (k_trend * pl.col("er_signed")).tanh()  # -1~1
 position = trend * (1.0 - vol_rank).clip(0.0, 1.0) * target_scale
 ```
 

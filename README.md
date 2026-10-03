@@ -2,13 +2,17 @@
 
 > 一个长期演化的、模块化、可插拔、可验证的**加密市场自动化研究基础设施**。
 
-**当前阶段：Phase 0（Research Constitution）已完成**（2026-09-24，tag `phase-0-complete`）；**Phase 1（Market Representation）已开启，E1-CAP-1 容量边界阻断，尚未验收**。详见 [PROJECT_STATUS.md](PROJECT_STATUS.md)（当前状态以其为准）。
+**状态：研究原型，正在收缩重构。** 当前唯一开放的工作是 Phase 1：Binance BTCUSDT / ETHUSDT 的 1m K 线与 aggTrades 研究垂直切片。Phase 0.5、2～14 的既有框架已冻结，物理归档尚未执行。切片尚未验收，没有已验证或晋升的策略。
+
+**许可证：[MIT](LICENSE)。** 本仓库独立维护代码、测试、架构与审查记录；个人知识库和其他项目归档单独维护。
+
+优先阅读：[重构目标](REFACTOR_TARGET.md) · [当前状态](PROJECT_STATUS.md) · [独立架构审查](docs/reviews/2026-10-03-independent-architecture-audit.md)。
 
 ## 它是什么 / 不是什么
 
 HLENS-AutoResearch **不是**单纯的 Trading Bot、Backtest Framework、Alpha Library、LLM Agent 或 Strategy Bot。
 
-它是一个**研究闭环**：
+长期设计目标是以下**研究闭环**；该图不表示各阶段已经验收：
 
 ```mermaid
 flowchart LR
@@ -82,3 +86,12 @@ uv run python -m core.contracts.registry  # 重新导出 schemas/
 
 `schemas/` 中的 JSON Schema 由契约生成并随仓库提交：契约变更必须在 diff 中可见，
 `tests/test_contracts.py` 会检查两者是否一致。
+
+## 开源范围与参与方式
+
+- 提供代码、测试、Schema、架构决定和已保存的审查证据；不提供行情数据、数据库、运行环境或凭据。
+- 当前发布不代表交易系统可用，也不代表策略有效。现有计算复杂度、PIT 迁移和现货资金约束问题见独立审查。
+- GitHub 默认展示当前开发分支 `phase/1`；`main` 保留既有工程基线。分支公开不构成 Phase 1 验收或策略晋升。
+- 开发安装使用 `uv sync --locked`；数据库相关测试需要单独的测试 Catalog，未配置时会跳过相应测试。
+- 提交变更前阅读 [贡献说明](CONTRIBUTING.md)；安全问题参见 [安全说明](SECURITY.md)。
+- MIT 授权适用于本项目；第三方依赖仍适用各自许可证，行情与外部资料的使用权不随本项目许可证转移。
