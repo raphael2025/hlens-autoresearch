@@ -30,7 +30,7 @@ from infrastructure.catalog.iceberg_adapter import (
     UNIT_COMMIT_LAYOUT,
     PyIcebergCatalogAdapter,
 )
-from infrastructure.catalog.unit_commit import StagedUnitWriter
+from infrastructure.catalog.unit_commit import UNIT_FILE_ROWS, UNIT_ROW_GROUP_ROWS, StagedUnitWriter
 from tests.infrastructure.catalog.catalog_support import ALPHA, SqliteCatalogHarness, make_batch
 
 _SCHEMA = Schema(
@@ -231,3 +231,27 @@ def test_the_staged_writer_rolls_row_groups_and_files_in_bounded_steps(
     }
     with pytest.raises(RuntimeError):
         writer.add(_rows(0, 1))
+
+
+def test_a_committed_unit_is_spread_over_bounded_one_row_group_files(
+    adapter: PyIcebergCatalogAdapter, scratch: Path
+) -> None:
+    """E1-CAP-1 (ADR-0108 implementation record): a unit is one snapshot, but no data file holds
+    more than ``UNIT_FILE_ROWS`` rows in one row group, so a bounded scan never opens a file whose
+    reader state grows with the unit (whole-unit files grew 230-273 MiB at 500k rows)."""
+    import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
+    assert UNIT_FILE_ROWS == UNIT_ROW_GROUP_ROWS <= 4096
+    parts = _unit(total=3 * UNIT_FILE_ROWS + 10, size=256)
+    request = _request(UNIT.table, parts, "unit-bounded", None)
+    adapter.commit_unit(request, _factory(parts), scratch_directory=scratch, window_rows=256)
+    head = _head(adapter, UNIT.table)
+    assert head is not None
+    assert [item.batch_id for item in adapter.history(UNIT.table, head)] == ["unit-bounded"]
+    files = list(adapter._require(UNIT.table).scan().plan_files())
+    assert sum(task.file.record_count for task in files) == 3 * UNIT_FILE_ROWS + 10
+    for task in files:
+        assert task.file.record_count <= UNIT_FILE_ROWS
+        path = task.file.file_path.removeprefix("file://")
+        assert pq.ParquetFile(path).metadata.num_row_groups == 1
+    assert len(files) > 2  # more than one file per partition: the cap is what splits them
